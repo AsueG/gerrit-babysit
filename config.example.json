@@ -1,0 +1,12 @@
+{
+  "gerrit_host": "gerrit.example.com",
+  "ssh_port": 29418,
+  "zuul_api": "https://zuul.example.com/api/tenant/my-tenant",
+  "zuul_status_url": "https://zuul.example.com/t/my-tenant/status",
+  "bot_users": ["some-bot"],
+  "ci_labels": ["Verified"],
+  "protected_branches": ["main", "master"],
+  "periodic_build": {"pipeline": "periodic", "job": "my-nightly-build"},
+  "screenshot_regression_marker": null,
+  "language": "auto"
+}

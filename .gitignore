@@ -1,0 +1,6 @@
+# Personal settings and team overlay: never published.
+/config.json
+/LOCAL.md
+# Built by macos/install.sh.
+/GerritBabysit.app/
+__pycache__/

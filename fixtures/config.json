@@ -1,0 +1,11 @@
+{
+  "gerrit_host": "gerrit.example.com",
+  "gerrit_user": "sam.doe",
+  "zuul_api": "https://zuul.example.com/api/tenant/demo",
+  "bot_users": ["autosubmit-bot"],
+  "ci_labels": ["Build", "Quality", "Integration"],
+  "protected_branches": ["main", "master"],
+  "periodic_build": {"pipeline": "periodic", "job": "app-nightly"},
+  "screenshot_regression_marker": "UI regression detected",
+  "language": "en"
+}

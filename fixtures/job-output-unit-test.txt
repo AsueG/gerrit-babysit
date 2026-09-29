@@ -1,0 +1,40 @@
+2026-09-29 14:16:24.465051 | main | w: file:///home/zuul/src/gerrit.example.com/demo/app/features/cart/src/test/kotlin/com/example/cart/PriceMapperTest.kt:199:56 'fun toString(): String' is deprecated.
+2026-09-29 14:16:52.364998 | main | w: file:///home/zuul/src/gerrit.example.com/demo/app/features/profile/src/main/kotlin/com/example/profile/EditProfileScreen.kt:135:9 'fun LegacyCard(): Unit' is deprecated. Use Card instead.
+2026-09-29 14:16:54.665005 | main | w: file:///home/zuul/src/gerrit.example.com/demo/app/features/profile/src/test/kotlin/com/example/profile/ProfileViewModelTest.kt:200:9 This declaration needs opt-in.
+2026-09-29 14:17:46.864916 | main | /home/zuul/src/gerrit.example.com/demo/app/libraries/notification/build/intermediates/tmp/manifest/test/release/tempFile1ProcessTestManifest12050359607908912266.xml:7:5-46 Warning:
+2026-09-29 14:17:46.864955 | main | 	application@tools:allowBackup was tagged at tempFile1ProcessTestManifest12050359607908912266.xml:7 to replace other declarations but no other declaration present
+2026-09-29 14:17:53.064901 | main |
+2026-09-29 14:17:53.064947 | main | [Incubating] Problems report is available at: file:///home/zuul/src/gerrit.example.com/demo/app/build/reports/problems/problems-report.html
+2026-09-29 14:17:53.064959 | main |
+2026-09-29 14:17:53.064963 | main | FAILURE: Build failed with an exception.
+2026-09-29 14:17:53.064967 | main |
+2026-09-29 14:17:53.064971 | main | * What went wrong:
+2026-09-29 14:17:53.064975 | main | Execution failed for task ':features:inbox:compileReleaseUnitTestKotlin' (registered by plugin 'com.android.internal.library').
+2026-09-29 14:17:53.064980 | main | > A failure occurred while executing org.jetbrains.kotlin.compilerRunner.btapi.BuildToolsApiCompilationWork
+2026-09-29 14:17:53.064984 | main |    > Kotlin compiler: UNRESOLVED_IMPORT
+2026-09-29 14:17:53.064987 | main |        Kotlin compiler error
+2026-09-29 14:17:53.064990 | main |          Unresolved reference 'InboxFilter'.
+2026-09-29 14:17:53.064993 | main |          Location: /home/zuul/src/gerrit.example.com/demo/app/features/inbox/src/test/kotlin/com/example/inbox/InboxViewModelTest.kt:55
+2026-09-29 14:17:53.064996 | main |
+2026-09-29 14:17:53.064998 | main | * Try:
+2026-09-29 14:17:53.065000 | main | > Run with --stacktrace option to get the stack trace.
+2026-09-29 14:17:53.065002 | main | > Run with --info or --debug option to get more log output.
+2026-09-29 14:17:53.065004 | main | > Get more help at https://help.gradle.org.
+2026-09-29 14:17:53.065006 | main |
+2026-09-29 14:17:53.065010 | main | Deprecated Gradle features were used in this build, making it incompatible with Gradle 10.
+2026-09-29 14:17:53.065012 | main |
+2026-09-29 14:17:53.065014 | main | You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+2026-09-29 14:17:53.065016 | main |
+2026-09-29 14:17:53.065018 | main | For more on this, please refer to https://docs.gradle.org/9.8.0/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+2026-09-29 14:17:53.065020 | main |
+2026-09-29 14:17:53.065023 | main | BUILD FAILED in 5m 52s
+2026-09-29 14:17:54.164893 | main |
+2026-09-29 14:17:55.564927 | main |
+2026-09-29 14:17:55.564930 | main | Configuration cache entry stored.
+2026-09-29 14:17:56.195559 | main | ERROR
+2026-09-29 14:17:56.195700 | main | {
+2026-09-29 14:17:56.195726 | main |   "attempts": 1,
+2026-09-29 14:17:56.195748 | main |   "delta": "0:05:56.203885",
+2026-09-29 14:17:56.195764 | main |   "end": "2026-09-29 14:17:55.966645",
+2026-09-29 14:17:56.195779 | main |   "msg": "non-zero return code",
+2026-09-29 14:17:56.195794 | main |   "rc": 1,

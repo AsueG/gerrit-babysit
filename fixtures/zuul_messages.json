@@ -1,0 +1,47 @@
+{
+ "starting": {
+  "timestamp": 1790332224,
+  "reviewer": {
+   "name": "zuul",
+   "email": "ci@example.com",
+   "username": "zuul"
+  },
+  "message": "Patch Set 1:\n\nStarting check-integration jobs."
+ },
+ "succeeded": {
+  "timestamp": 1790332652,
+  "reviewer": {
+   "name": "zuul",
+   "email": "ci@example.com",
+   "username": "zuul"
+  },
+  "message": "Patch Set 1: Quality+1\n\nBuild Succeeded (check-quality pipeline).\nhttps://zuul.example.com/t/demo/buildset/d6d8c5e5735d439bb16b58011567c15f\n\n- app-e2e https://zuul.example.com/t/demo/build/36fc4fed285e440ab68ce47d0a3c41ec : SUCCESS in 6m 47s\n- app-lint https://zuul.example.com/t/demo/build/90785244774645e2bc3ea4aa8696aca5 : SUCCESS in 6m 20s\n- check-git-lfs-files https://zuul.example.com/t/demo/build/2de1a28c38cd427f85371f458afee6c7 : SUCCESS in 1m 57s"
+ },
+ "failed": {
+  "timestamp": 1790586069,
+  "reviewer": {
+   "name": "zuul",
+   "email": "ci@example.com",
+   "username": "zuul"
+  },
+  "message": "Patch Set 5: Build-1\n\nBuild Failed (check-build pipeline).\nFor more information on how to proceed,\nsee https://docs.example.com/ci/troubleshooting/.\n\nhttps://zuul.example.com/t/demo/buildset/d804f376c5ef44a8878eb33627753ab4\n\n- app-build https://zuul.example.com/t/demo/build/8369989e625140e0aa4d545c002369bd : FAILURE in 4m 26s"
+ },
+ "merge_failed": {
+  "timestamp": 1790240286,
+  "reviewer": {
+   "name": "zuul",
+   "email": "ci@example.com",
+   "username": "zuul"
+  },
+  "message": "Patch Set 1: Build-1\n\nMerge Failed.\n\nThis change or one of its cross-repo dependencies was unable to be automatically merged with the current state of its repository. Please rebase the change and upload a new patchset.\nWarning:\n  Error merging gerrit/demo/app for 12020,1"
+ },
+ "screenshots": {
+  "timestamp": 1789133342,
+  "reviewer": {
+   "name": "zuul",
+   "email": "ci@example.com",
+   "username": "zuul"
+  },
+  "message": "Patch Set 1: Integration-1\n\nBuild Failed (check-integration pipeline).\nFor more information on how to proceed,\nsee https://docs.example.com/ci/troubleshooting/.\n\nhttps://zuul.example.com/t/demo/buildset/d62945439309448f9028db89dd868f70\n\n- app-unit-test https://zuul.example.com/t/demo/build/60711cf80953431f9268b2b12b09337c : POST_FAILURE in 2h 52m 24s\n\nWarning:\n  🚨 UI regression detected! Check the [`🗃️ screenshots`](https://logs.zuul.example.com/26/11926/1/check-integration/app-unit-test/60711cf/artifacts/screenshots-report/index.html) build artifact for more details.\n\nHow to fix:\n- Amend the review with CI's [`📦 golden`](https://logs.zuul.example.com/26/11926/1/check-integration/app-unit-test/60711cf/artifacts/screenshots-golden.zip) artifact (`unzip -o screenshots-golden.zip [-d exdir]`)\n- Regenerate golden images on your computer with the `:my-module:recordScreenshots` Gradle task.\n  Only send the changes related to this review and discard the rest.\n\nAffected files (1948):\n- `com.example.features.inbox_InboxGlobalDashboardTest_default_state.png` ([delta](https://logs.zuul.example.com/26/11926/1/check-integration/app-unit-test/60711cf/artifacts/screenshots-report/features/Inbox/impl/build/paparazzi/failures/release/delta-com.example.features.inbox_InboxGlobalDashboardTest_default_state.png) • [golden](https://logs.zuul.example.com/26/11926/1/check-integration/app-unit-test/60711cf/artifacts/screenshots-report/features/Inbox/impl/build/paparazzi/failures/release/com.example.features.inbox_InboxGlobalDashboardTest_default_state.png))\n- `com.example.features.inbox_InboxGlobalDashboardTest_enabled.png` ([delta](https://logs.zuul.example.com/26/11926/1/check-integration/app-unit-test/60711cf/artifacts/screenshots-report/features/Inbox/impl/build/paparazzi/failures/release/delta-com.example.features.inbox_InboxGlobalDashboardTest_enabled.png) • [golden](https://logs.zuul.example.com/26/11926/1/check-integration/app-unit-test/60711cf/artifacts/screenshots-report/features/Inbox/impl/build/paparazzi/failures/release/com.example.features.inbox_InboxGlobalDashboardTest_enabled.png))\n- `com.example.features.inbox_InboxGlobalDashboardTest_isLoading.png` ([delta](https://logs.zuul.example.com/26/11926/1/check-integration/app-unit-test/60711cf/artifacts/screenshots-report/features/Inbox/impl/build/paparazzi/failures/release/delta-com.example.features.inbox_InboxGlobalDashboardTest_isLoading.png) • [golden](https://logs.zuul.example.com/26/11926/1/check-integration/app-unit-test/60711cf/artifacts/screenshots-report/features/Inbox/impl/build/paparazzi/failures/release/com.example.features.inbox_InboxGlobalDashboardTest_isLoading.png))\n- `com.example.features.inbox_InboxGlobalDashboardTest_upda"
+ }
+}
