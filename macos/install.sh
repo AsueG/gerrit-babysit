@@ -6,7 +6,11 @@ SKILL=${0:A:h:h}
 PY=/usr/bin/python3
 setting() { $PY -c 'import sys; sys.path.insert(0, sys.argv[1]); import config; print(config.CONFIG[sys.argv[2]] or "")' "$SKILL" "$1"; }
 
-[[ -n $(setting gerrit_host) ]] || { echo "Set gerrit_host in $SKILL/config.json first (see config.example.json)." >&2; exit 1; }
+[[ -n $(setting gerrit_host) ]] || { echo "Set gerrit_host in config.json first (see config.example.json)." >&2; exit 1; }
+# launchd starts the daemon and the applet from /, so outside <repo>/.claude/skills the checkout must be named.
+if [[ -z $(setting repo) ]] && ! $PY -c 'import sys; sys.path.insert(0, sys.argv[1]); import config; sys.exit(not config.inside_repo())' "$SKILL"; then
+  echo "Set repo in config.json to the git checkout to watch (the skill is not inside it)." >&2; exit 1
+fi
 
 LABEL=$(setting launchd_label)
 CACHE=$HOME/.cache/gerrit-babysit

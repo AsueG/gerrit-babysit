@@ -41,6 +41,25 @@ class ConfigTest(unittest.TestCase):
         # Then
         self.assertEqual((["Verified"], "zuul"), (loaded["ci_labels"], loaded["ci_user"]))
 
+    def test_a_skill_cloned_into_the_repo_watches_that_repo(self):
+        # Given
+        skill = self.dir / "repo" / ".claude" / "skills" / "gerrit-babysit"
+        # When
+        with mock.patch.object(config, "SKILL_DIR", skill):
+            repo = config.default_repo()
+        # Then
+        self.assertEqual(self.dir / "repo", repo)
+
+    def test_a_plugin_watches_the_claude_project(self):
+        # Given
+        plugin = self.dir / ".claude" / "plugins" / "cache" / "gerrit-babysit" / "gerrit-babysit" / "1.0.0"
+        # When
+        with mock.patch.object(config, "SKILL_DIR", plugin), \
+                mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(self.dir / "project")}):
+            repo = config.default_repo()
+        # Then
+        self.assertEqual(self.dir / "project", repo)
+
     def test_macos_language_is_read_from_apple_languages(self):
         # Given
         output = '(\n    "fr-FR",\n    "en-FR"\n)\n'

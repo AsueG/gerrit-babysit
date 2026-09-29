@@ -1,0 +1,10 @@
+{
+  "name": "gerrit-babysit",
+  "version": "1.0.0",
+  "description": "Babysits your Gerrit changes: a token-free watcher wakes Claude only for reviewer comments, classified CI failures, conflicts and ready-to-submit changes; nothing is published without your yes.",
+  "author": {"name": "AsueG"},
+  "repository": "https://github.com/AsueG/gerrit-babysit",
+  "license": "MIT",
+  "keywords": ["gerrit", "code-review", "zuul", "ci"],
+  "skills": "./"
+}

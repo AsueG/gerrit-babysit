@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "timeout": 10, "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/stop_hook.py\""}]}
+    ]
+  }
+}

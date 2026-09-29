@@ -6,7 +6,19 @@ Never publish anything on Gerrit while setting up.
 
 ## 1. Install location
 
-The skill expects to live in `<repo>/.claude/skills/gerrit-babysit`, where `<repo>` is the git checkout
+**As a plugin** (every repository, Stop hook included):
+
+```sh
+claude plugin marketplace add AsueG/gerrit-babysit
+claude plugin install gerrit-babysit@gerrit-babysit
+```
+
+The skill is then `/gerrit-babysit:gerrit-babysit` and `<skill>` is the plugin folder, which updates replace:
+put `config.json` and `LOCAL.md` in `~/.config/gerrit-babysit/`. The watched repository is the Claude
+Code project the session runs in; set `repo` anyway if the macOS extras are wanted (section 5). Skip the
+Stop hook of section 4, and do not also clone the skill, or the hook runs twice.
+
+**As a cloned skill**, it expects to live in `<repo>/.claude/skills/gerrit-babysit`, where `<repo>` is the git checkout
 whose Gerrit changes are watched:
 
 ```sh
@@ -21,7 +33,8 @@ Installed elsewhere (e.g. `~/.claude/skills/`), set `repo` in `config.json` to t
 
 ## 2. `config.json`
 
-Copy `config.example.json` to `config.json` in the skill folder (git-ignored). The file is looked up in
+Copy `config.example.json` to `config.json` in the skill folder (git-ignored), or to
+`~/.config/gerrit-babysit/` for a plugin install. The file is looked up in
 this order: `$GERRIT_BABYSIT_CONFIG`, `<skill>/config.json`, `~/.config/gerrit-babysit/config.json`.
 Missing keys take the defaults of `config.py`.
 
@@ -30,7 +43,7 @@ Missing keys take the defaults of `config.py`.
 | `gerrit_host` | — (required) | Host of the `origin` remote or of `.gitreview` |
 | `ssh_port` | `29418` | `.gitreview`, or the SSH remote URL |
 | `gerrit_user` | `$GERRIT_USER`, `git config gitreview.username`, `whoami` | Check with `ssh -p <port> <user>@<host> gerrit version` |
-| `repo` | three levels above the skill | Only when the skill is not inside the repo |
+| `repo` | three levels above the skill; else the Claude Code project | When the skill is not inside the repo; always for the macOS extras then |
 | `gerrit_mcp_config` | `null` → `~/.netrc` | Path to a gerrit-mcp-server `gerrit_config.json` if the user has one; else a `machine <host> login <user> password <HTTP password>` line in `~/.netrc` (mode 600) |
 | `ci_user` | `"zuul"` | Username that posts CI verdicts (look at a change's messages) |
 | `ci_labels` | `["Verified"]` | Labels CI votes on (`gerrit query --format=JSON --all-approvals change:<n>`) |
@@ -56,7 +69,8 @@ way as long as `ci_user` and `ci_labels` match it.
 
 ## 3. Team overlay: `LOCAL.md`
 
-`SKILL.md` stays generic. Everything specific to the user's team goes in `<skill>/LOCAL.md` (git-ignored),
+`SKILL.md` stays generic. Everything specific to the user's team goes in `<skill>/LOCAL.md` (git-ignored;
+`~/.config/gerrit-babysit/LOCAL.md` for a plugin install),
 which the skill reads first and which wins over `SKILL.md`. Typical content:
 
 - the exact build, test and screenshot commands, or the skills that hold them;
@@ -69,7 +83,8 @@ Ask the user for these rather than guessing; start small and let it grow.
 
 ## 4. Claude Code wiring
 
-- **Stop hook** (recommended, keeps the watcher alive): in `<repo>/.claude/settings.local.json`,
+- **Stop hook** (recommended, keeps the watcher alive; the plugin already ships it): in
+  `<repo>/.claude/settings.local.json`,
 
   ```json
   {"hooks": {"Stop": [{"hooks": [{"type": "command", "timeout": 10,
@@ -87,7 +102,8 @@ Ask the user for these rather than guessing; start small and let it grow.
 
 `macos/install.sh` builds the `GerritBabysit.app` applet, installs the LaunchAgent (`watch.py --daemon`:
 snapshot + notifications even without a Claude session) and links the SwiftBar plugin when SwiftBar is
-configured. Rerun it after moving the skill or changing `launchd_label`. Notifications go through
+configured. Rerun it after moving the skill, changing `launchd_label` or updating the plugin (the plugin
+folder's path changes with each version). Outside `<repo>/.claude/skills`, it requires `repo`. Notifications go through
 SwiftBar (`swiftbar://notify`); without it, the daemon still keeps the snapshot fresh.
 
 `macos/open-babysit.sh` focuses the running `/gerrit-babysit` session or opens one, in an Orca

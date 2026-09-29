@@ -10,12 +10,15 @@ Event loop: `watch.py` polls Gerrit over SSH every 60 s **without spending token
 when an actionable event arrives. (`gerrit stream-events` needs a capability most accounts lack, hence
 the polling.)
 
-**Before anything else**, if `LOCAL.md` exists next to this file, read it: it holds this team's
-conventions (build commands, recheck variants, fix recipes, ownership rules) and overrides the generic
-advice below. Talk to the user in their language.
+`<skill>` below is this skill's directory: `${CLAUDE_PLUGIN_ROOT}` when installed as a plugin (if that
+still reads literally, the skill was cloned: use the folder of this file).
 
-`<skill>` below is this skill's directory. Settings (Gerrit host, CI labels, zuul API…) live in
-`<skill>/config.json`; `ADAPTING.md` explains them.
+**Before anything else**, read `LOCAL.md` if it exists, next to this file or in `~/.config/gerrit-babysit/`
+(plugin installs): it holds this team's conventions (build commands, recheck variants, fix recipes,
+ownership rules) and overrides the generic advice below. Talk to the user in their language.
+
+Settings (Gerrit host, CI labels, zuul API…) live in `<skill>/config.json` or
+`~/.config/gerrit-babysit/config.json`; `ADAPTING.md` explains them.
 
 **Absolute rule: nothing visible to others without an explicit "yes".** No push, no published comment,
 no vote, no recheck. Everything else (worktree, fix, local amend, tests) happens on its own.

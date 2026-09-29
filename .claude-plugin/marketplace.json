@@ -1,0 +1,14 @@
+{
+  "name": "gerrit-babysit",
+  "description": "The gerrit-babysit Claude Code plugin.",
+  "owner": {
+    "name": "AsueG"
+  },
+  "plugins": [
+    {
+      "name": "gerrit-babysit",
+      "source": "./",
+      "description": "Babysits your Gerrit changes and waits for your approval before anything visible to others."
+    }
+  ]
+}

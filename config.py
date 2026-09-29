@@ -7,6 +7,8 @@ import re
 import subprocess
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parent
+# Survives plugin updates, unlike SKILL_DIR: config.json and LOCAL.md for plugin installs.
+USER_DIR = pathlib.Path.home() / ".config" / "gerrit-babysit"
 CACHE = pathlib.Path.home() / ".cache" / "gerrit-babysit"
 STATUS = CACHE / "status.json"
 # A daemon loop can take interval + fetch timeout + ssh timeout before it writes again.
@@ -37,8 +39,7 @@ DEFAULTS = {
 
 
 def config_path():
-    candidates = [os.environ.get("GERRIT_BABYSIT_CONFIG"), SKILL_DIR / "config.json",
-                  pathlib.Path.home() / ".config" / "gerrit-babysit" / "config.json"]
+    candidates = [os.environ.get("GERRIT_BABYSIT_CONFIG"), SKILL_DIR / "config.json", USER_DIR / "config.json"]
     return next((pathlib.Path(p).expanduser() for p in candidates if p and pathlib.Path(p).expanduser().is_file()),
                 None)
 
@@ -48,9 +49,24 @@ def load():
     return {**DEFAULTS, **(json.loads(path.read_text()) if path else {})}
 
 
+def inside_repo():
+    """Cloned as <repo>/.claude/skills/gerrit-babysit, the layout that needs no `repo` setting."""
+    return SKILL_DIR.parent.name == "skills" and SKILL_DIR.parents[1].name == ".claude"
+
+
+def default_repo():
+    if inside_repo():
+        return SKILL_DIR.parents[2]
+    # Plugin or user-level install: the Claude Code project the session runs in.
+    return pathlib.Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+
+
+# Plugin skills are namespaced by the plugin name; cloned or symlinked skills are not.
+PLUGIN = pathlib.Path.home() / ".claude" / "plugins" in SKILL_DIR.parents
+COMMAND = "/gerrit-babysit:gerrit-babysit" if PLUGIN else "/gerrit-babysit"
+
 CONFIG = load()
-# Default layout: <repo>/.claude/skills/gerrit-babysit.
-REPO = pathlib.Path(CONFIG["repo"]).expanduser() if CONFIG["repo"] else SKILL_DIR.parents[2]
+REPO = pathlib.Path(CONFIG["repo"]).expanduser() if CONFIG["repo"] else default_repo()
 
 
 def gerrit_user():
@@ -106,12 +122,12 @@ MESSAGES = {
         "bar_submitted": "{n} submitted",
         "bar_submit_failed": "Submit of {n} failed",
         "bar_copied": "Copied",
-        "bar_no_snapshot": "No snapshot: run /gerrit-babysit in Claude Code",
+        "bar_no_snapshot": "No snapshot: run {command} in Claude Code",
         "bar_no_changes": "No open changes",
         "bar_stopped": "Watcher stopped — data from {age} ago",
         "bar_unreachable": "Gerrit unreachable (VPN?) — data from {age} ago",
         "bar_active": "Watcher running",
-        "bar_open_claude": "Open Claude (/gerrit-babysit)",
+        "bar_open_claude": "Open Claude ({command})",
         "bar_dashboard": "Changes to review",
         "bar_refresh": "Refresh",
     },
@@ -149,12 +165,12 @@ MESSAGES = {
         "bar_submitted": "{n} soumise",
         "bar_submit_failed": "Échec du submit de {n}",
         "bar_copied": "Copié",
-        "bar_no_snapshot": "Aucun snapshot : lance /gerrit-babysit dans Claude Code",
+        "bar_no_snapshot": "Aucun snapshot : lance {command} dans Claude Code",
         "bar_no_changes": "Aucune CL ouverte",
         "bar_stopped": "Watcher arrêté — données d'il y a {age}",
         "bar_unreachable": "Gerrit injoignable (VPN ?) — données d'il y a {age}",
         "bar_active": "Watcher actif",
-        "bar_open_claude": "Ouvrir Claude (/gerrit-babysit)",
+        "bar_open_claude": "Ouvrir Claude ({command})",
         "bar_dashboard": "CLs à reviewer",
         "bar_refresh": "Rafraîchir",
     },

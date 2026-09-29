@@ -17,7 +17,7 @@ import time
 # Installed as a symlink into the SwiftBar plugin folder: resolve it to find the skill.
 SELF = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(SELF.parents[1]))
-from config import (CI_STUCK_S, CONFIG, SKILL_DIR, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN,  # noqa: E402
+from config import (CI_STUCK_S, COMMAND, CONFIG, SKILL_DIR, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN,  # noqa: E402
                     gerrit_user, t)
 
 HOST = CONFIG["gerrit_host"]
@@ -160,7 +160,7 @@ def main():
     if not STATUS.exists():
         print(f"– | {ICON}")
         print("---")
-        print(t("bar_no_snapshot"))
+        print(t("bar_no_snapshot", command=COMMAND))
         return
     snapshot = json.loads(STATUS.read_text())
     now = time.time()
@@ -197,7 +197,7 @@ def main():
     else:
         print(f"{t('bar_active')} | sfimage=dot.radiowaves.left.and.right")
     if OPEN_CLAUDE.exists():
-        print(f"{t('bar_open_claude')} | href={OPEN_CLAUDE.as_uri()} sfimage=sparkles")
+        print(f"{t('bar_open_claude', command=COMMAND)} | href={OPEN_CLAUDE.as_uri()} sfimage=sparkles")
     print(f"{t('bar_dashboard')} | href={DASHBOARD} sfimage=eye")
     print(f"{t('bar_refresh')} | refresh=true")
 

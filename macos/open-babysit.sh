@@ -3,7 +3,9 @@
 # falling back to Terminal.app if Orca is not installed or unreachable.
 # Launched from a LaunchAgent/applet with a bare PATH, hence the fallbacks.
 SKILL=${0:A:h:h}
-REPO=$(/usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import config; print(config.REPO)' "$SKILL")
+setting() { /usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import config; print(getattr(config, sys.argv[2]))' "$SKILL" "$1"; }
+REPO=$(setting REPO)
+COMMAND=$(setting COMMAND)
 CLAUDE=${commands[claude]:-$HOME/.local/bin/claude}
 ORCA=${commands[orca]:-/opt/homebrew/bin/orca}
 LOCK=$HOME/.cache/gerrit-babysit/session.json
@@ -26,10 +28,10 @@ fi
 if has_orca; then
   open -a Orca
   $ORCA terminal create --worktree "path:$REPO" --title "gerrit-babysit" \
-      --command "${(q)CLAUDE} /gerrit-babysit" --focus >/dev/null 2>&1 && exit 0
+      --command "${(q)CLAUDE} $COMMAND" --focus >/dev/null 2>&1 && exit 0
 fi
 # Paths go in as argv, never spliced into the script: a quote in them cannot break or inject AppleScript.
 osascript -e 'on run argv' \
-    -e 'tell application "Terminal" to do script "cd " & quoted form of item 1 of argv & " && " & quoted form of item 2 of argv & " /gerrit-babysit"' \
+    -e 'tell application "Terminal" to do script "cd " & quoted form of item 1 of argv & " && " & quoted form of item 2 of argv & " " & item 3 of argv' \
     -e 'tell application "Terminal" to activate' \
-    -e 'end run' "$REPO" "$CLAUDE"
+    -e 'end run' "$REPO" "$CLAUDE" "$COMMAND"
