@@ -60,6 +60,7 @@ clone free of local edits, so updating is just `git pull`.
 |---|---|
 | `SKILL.md` | What Claude does with each event |
 | `watch.py` | Polls Gerrit, turns the state into events, prints them as JSON and exits (session mode) or notifies (`--daemon`) |
+| `ci.py` | Zuul failure diagnosis: failing jobs, gradle/lint errors, category, flakiness hints |
 | `config.py` | Settings and FR/EN strings |
 | `stop_hook.py` | Claude Code Stop hook that keeps the watcher running during a babysit session |
 | `statusline_segment.py` | Status line segment read from the snapshot |

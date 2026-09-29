@@ -1,4 +1,6 @@
 """Run from this directory: python3 -m unittest"""
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -11,6 +13,7 @@ from unittest import mock
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 os.environ["GERRIT_BABYSIT_CONFIG"] = str(FIXTURES / "config.json")
 
+import ci  # noqa: E402
 import watch  # noqa: E402
 ZUUL = json.loads((FIXTURES / "zuul_messages.json").read_text())
 
@@ -21,6 +24,7 @@ def approval(label, value, by="someone"):
 
 NOW = time.time()
 DAY = "2026-09-29"
+CHANGE_ID = "I" + "abc0" * 10
 
 
 def patch_set(number=1, *approvals, parents=("base",), created=NOW):
@@ -578,243 +582,6 @@ class ReviewEventsTest(unittest.TestCase):
         self.assertEqual([[], ["1:review_reply:20"]], replies)
 
 
-class CiDiagnosisTest(unittest.TestCase):
-    def test_failed_jobs_skip_success_and_canceled(self):
-        # Given
-        text = ZUUL["failed"]["message"]
-        # When
-        jobs = watch.failed_jobs(text)
-        # Then
-        self.assertTrue(jobs)
-        self.assertTrue(all(j["result"] not in ("SUCCESS", "CANCELED") for j in jobs))
-        self.assertTrue(all(j["uuid"] and j["url"].startswith("https://") for j in jobs))
-
-    def test_gradle_failure_extracts_the_block_without_prefixes(self):
-        # Given
-        log = (FIXTURES / "job-output-unit-test.txt").read_text()
-        # When
-        failure = watch.gradle_failure(log)
-        # Then
-        self.assertTrue(failure.startswith("Execution failed for task"))
-        self.assertIn("Unresolved reference 'InboxFilter'.", failure)
-        self.assertNotIn("* Try:", failure)
-        self.assertNotIn("| main |", failure)
-
-    def test_gradle_failure_absent(self):
-        # Given
-        log = "2026-09-28 10:56:59.095837 | main | BUILD SUCCESSFUL"
-        # When
-        failure = watch.gradle_failure(log)
-        # Then
-        self.assertEqual("", failure)
-
-    def test_lint_errors_keep_only_error_level(self):
-        # Given
-        location = {"physicalLocation": {"artifactLocation": {"uri": "A.kt"}, "region": {"startLine": 3}}}
-        sarif = {"runs": [{"results": [
-            {"ruleId": "EndOfLifeRequired", "level": "error", "locations": [location], "message": {"text": "m"}},
-            {"ruleId": "DeprecatedCall", "locations": [location], "message": {"text": "w"}}]}]}
-        # When
-        errors = watch.lint_errors(sarif)
-        # Then
-        self.assertEqual([{"rule": "EndOfLifeRequired", "file": "A.kt", "line": 3, "message": "m"}], errors)
-
-    def test_lint_errors_fall_back_to_the_rule_default_level(self):
-        # Given
-        location = {"physicalLocation": {"artifactLocation": {"uri": "A.kt"}, "region": {"startLine": 84}}}
-        rules = [{"id": "PriceFormat", "defaultConfiguration": {"level": "error"}},
-                 {"id": "Named", "defaultConfiguration": {"level": "note"}}]
-        sarif = {"runs": [{"tool": {"driver": {"rules": rules}}, "results": [
-            {"ruleId": "PriceFormat", "locations": [location], "message": {"text": "m"}},
-            {"ruleId": "Named", "locations": [location], "message": {"text": "n"}},
-            {"ruleId": "PriceFormat", "level": "warning", "locations": [location], "message": {"text": "w"}}]}]}
-        # When
-        errors = watch.lint_errors(sarif)
-        # Then
-        self.assertEqual([("PriceFormat", "m")], [(e["rule"], e["message"]) for e in errors])
-
-    def test_categories(self):
-        # Given
-        cases = {
-            "screenshots": ("app-unit-test", ZUUL["screenshots"]["message"], "POST_FAILURE", "", ()),
-            "dependency_guard": ("app-dependency-guard", "", "FAILURE", "", ()),
-            "lint": ("app-lint", "", "FAILURE", "", [{"rule": "JUnitAssertionsUsage"}]),
-            "compile": ("app-build", "", "FAILURE", "> Kotlin compiler: UNRESOLVED_REFERENCE", ()),
-            "unit_tests": ("app-unit-test", "", "FAILURE", "> There were failing tests. See", ()),
-            "infra": ("app-unit-test", "", "TIMED_OUT", "", ()),
-            "unknown": ("app-e2e", "", "FAILURE", "something else", ()),
-        }
-        # When
-        found = {expected: watch.categorize(*args) for expected, args in cases.items()}
-        # Then
-        self.assertEqual({k: k for k in cases}, found)
-
-    def test_screenshot_regression_only_tags_the_job_that_regressed(self):
-        # Given
-        verdict = ZUUL["screenshots"]["message"]
-        # When
-        categories = [watch.categorize(job, verdict, "FAILURE", "> Kotlin compiler: X", ())
-                      for job in ("app-unit-test", "app-build")]
-        # Then
-        self.assertEqual(["screenshots", "compile"], categories)
-
-    def test_file_comments_keep_errors_and_untagged_findings(self):
-        # Given
-        payload = {"A.kt": [
-            {"message": "**🔴 Misleading**\n\n**Fix:** Replace with 200_00\n\n---\n> `PriceFormat` • `Error` • `C`\n> d",
-             "line": 84},
-            {"message": "**🔵 Named**\n\n---\n> `MissingNamedParameters` • `Note` • `Productivity`", "line": 26},
-            {"message": "detekt: too long", "line": 3}]}
-        # When
-        found = watch.file_comments(payload)
-        # Then
-        self.assertEqual([("PriceFormat", 84, "**🔴 Misleading**\n\n**Fix:** Replace with 200_00"), (None, 3, "detekt: too long")],
-                         [(c["rule"], c["line"], c["message"]) for c in found])
-
-    def test_missing_file_comments_are_not_an_error(self):
-        # Given
-        missing = watch.urllib.error.HTTPError("u", 404, "Not Found", {}, None)
-        self.addCleanup(missing.close)
-        # When
-        with mock.patch.object(watch, "http_get", side_effect=missing):
-            found = watch.fetch_file_comments("https://logs/x")
-        # Then
-        self.assertEqual([], found)
-
-    def test_diagnose_ci_reads_one_build_history_for_both_signals(self):
-        # Given
-        event = {"change": 1, "message": ZUUL["failed"]["message"]}
-        build = {"log_url": "https://logs/x/", "end_time": "2026-09-29T12:00:00", "artifacts": []}
-        history = [{"job_name": "app-build", "result": "FAILURE", "end_time": "2026-09-29T11:00:00",
-                    "ref": {"change": "2", "patchset": "1"}}]
-        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}",
-                   "/builds?": json.dumps(history)}
-        get = lambda url: next(body for marker, body in answers.items() if marker in url)
-        # When
-        with mock.patch.object(watch, "http_get", side_effect=get) as http:
-            diagnosis = watch.diagnose_ci(event)
-        # Then
-        self.assertEqual(([2], 1), (diagnosis[0]["others_failing"], diagnosis[0]["job_history"]["builds"]))
-        self.assertEqual(1, sum("/builds?" in c.args[0] for c in http.call_args_list))
-
-    def test_others_failing_excludes_self_old_and_successes(self):
-        # Given
-        around = watch.iso_to_epoch("2026-09-29T12:00:00")
-        builds = [
-            {"job_name": "j", "result": "FAILURE", "end_time": "2026-09-29T11:00:00", "ref": {"change": "2"}},
-            {"job_name": "j", "result": "FAILURE", "end_time": "2026-09-29T12:30:00", "ref": {"change": 3}},
-            {"job_name": "j", "result": "FAILURE", "end_time": "2026-09-29T11:59:00", "ref": {"change": "1"}},
-            {"job_name": "j", "result": "FAILURE", "end_time": "2026-09-28T12:00:00", "ref": {"change": "4"}},
-            {"job_name": "j", "result": "SUCCESS", "end_time": "2026-09-29T12:00:00", "ref": {"change": "5"}},
-            {"job_name": "j", "result": "FAILURE", "end_time": None, "ref": {"change": "6"}},
-        ]
-        # When
-        others = watch.others_failing(builds, "j", 1, around)
-        # Then
-        self.assertEqual([2, 3], others)
-
-    def test_job_history_counts_failures_and_reruns_that_went_green(self):
-        # Given
-        def build(change_, ps, result, end):
-            return {"result": result, "end_time": f"2026-09-29T{end}:00:00", "ref": {"change": change_, "patchset": ps}}
-        builds = [build(1, "1", "SUCCESS", "12"), build(1, "1", "FAILURE", "10"),
-                  build(2, "3", "FAILURE", "11"), build(2, "3", "FAILURE", "13"),
-                  build(3, "1", "FAILURE", "09"), build(4, "1", "SUCCESS", "09"),
-                  build(5, "1", "ABORTED", "09")]
-        # When
-        history = watch.job_history(builds)
-        # Then
-        self.assertEqual({"builds": 6, "failure_rate": 0.67, "retried": 2, "retried_green": 1}, history)
-
-    def test_job_history_without_builds(self):
-        # Given
-        builds = []
-        # When
-        history = watch.job_history(builds)
-        # Then
-        self.assertEqual({"builds": 0, "failure_rate": None, "retried": 0, "retried_green": 0}, history)
-
-    def test_a_job_red_on_several_changes_fetches_its_history_once(self):
-        # Given
-        events = [{"kind": "message", "change": n, "branch": "main", "author_username": "zuul",
-                   "message": ZUUL["failed"]["message"]} for n in (1, 2)]
-        build = {"log_url": "https://logs/x/", "end_time": "2026-09-29T12:00:00", "artifacts": []}
-        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}",
-                   "/builds?": "[]"}
-        get = lambda url: next(body for marker, body in answers.items() if marker in url)
-        jobs = {j["job"] for j in watch.failed_jobs(ZUUL["failed"]["message"])}
-        # When
-        with mock.patch.object(watch, "http_get", side_effect=get) as http, \
-                mock.patch.object(watch, "ZUUL_API", "https://zuul/api"), \
-                mock.patch.object(watch, "PERIODIC_BUILD", None):
-            watch.enrich(events)
-        # Then
-        self.assertEqual(len(jobs), sum("/builds?" in c.args[0] for c in http.call_args_list))
-
-    def test_diagnose_ci_survives_network_errors(self):
-        # Given
-        event = {"change": 1, "message": ZUUL["failed"]["message"]}
-        # When
-        with mock.patch.object(watch, "http_get", side_effect=OSError("offline")):
-            diagnosis = watch.diagnose_ci(event)
-        # Then
-        self.assertTrue(diagnosis)
-        self.assertTrue(all(d["diagnosis_error"] == "offline" and d["category"] for d in diagnosis))
-
-
-class BaseBuildTest(unittest.TestCase):
-    def test_latest_periodic_build_of_the_branch(self):
-        # Given
-        build = {"result": "FAILURE", "end_time": "2026-09-29T12:11:28", "log_url": "https://logs/x/", "uuid": "u"}
-        # When
-        with mock.patch.object(watch, "http_get", return_value=json.dumps([build])) as get:
-            found = watch.base_build("main")
-        # Then
-        self.assertEqual({"result": "FAILURE", "end_time": "2026-09-29T12:11:28", "log_url": "https://logs/x/"}, found)
-        self.assertIn("pipeline=periodic", get.call_args.args[0])
-        self.assertIn("branch=main", get.call_args.args[0])
-
-    def test_no_build_or_offline(self):
-        # Given
-        answers = [mock.patch.object(watch, "http_get", return_value="[]"),
-                   mock.patch.object(watch, "http_get", side_effect=OSError("offline"))]
-        # When
-        found = []
-        for answer in answers:
-            with answer:
-                found.append(watch.base_build("main"))
-        # Then
-        self.assertEqual([None, {"error": "offline"}], found)
-
-
-class ZuulQueueTest(unittest.TestCase):
-    def test_queued_patch_set_lists_waiting_and_running_jobs(self):
-        # Given
-        item = {"enqueue_time": 1790687541256, "remaining_time": 343846, "jobs": [
-            {"name": "lint", "pipeline": "check-quality", "start_time": 1.0, "result": None},
-            {"name": "lava", "pipeline": "check-quality", "start_time": 1.0, "result": "SUCCESS"},
-            {"name": "unit", "pipeline": "check-quality", "start_time": None, "result": None}]}
-        # When
-        with mock.patch.object(watch, "http_get", return_value=json.dumps([item])) as get:
-            queue = watch.zuul_queue(1, 2)
-        # Then
-        self.assertEqual([{"pipeline": "check-quality", "enqueued_at": 1790687541, "remaining_s": 343,
-                           "jobs_waiting": ["unit"], "jobs_running": ["lint"]}], queue)
-        self.assertTrue(get.call_args.args[0].endswith("/status/change/1,2"))
-
-    def test_unknown_to_zuul_or_offline(self):
-        # Given
-        answers = [mock.patch.object(watch, "http_get", return_value="[]"),
-                   mock.patch.object(watch, "http_get", side_effect=OSError("offline"))]
-        # When
-        found = []
-        for answer in answers:
-            with answer:
-                found.append(watch.zuul_queue(1, 2))
-        # Then
-        self.assertEqual([[], {"error": "offline"}], found)
-
-
 class BotsTest(unittest.TestCase):
     def test_bot_messages_are_not_actionable(self):
         # Given
@@ -845,12 +612,29 @@ class EnrichTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         # When
-        with mock.patch.object(watch, "zuul_queue", return_value=[]), \
+        with mock.patch.object(ci, "zuul_queue", return_value=[]), \
                 mock.patch.object(watch, "CACHE", pathlib.Path(tmp.name)):
             watch.enrich([stuck, requested])
         # Then
         self.assertEqual([], stuck["zuul_queue"])
         self.assertEqual({"path": f"{tmp.name}/prereview/3-4.md", "done": False}, requested["prereview"])
+
+    def test_a_job_red_on_several_changes_fetches_its_history_once(self):
+        # Given
+        events = [{"kind": "message", "change": n, "branch": "main", "author_username": "zuul",
+                   "message": ZUUL["failed"]["message"]} for n in (1, 2)]
+        build = {"log_url": "https://logs/x/", "end_time": "2026-09-29T12:00:00", "artifacts": []}
+        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}",
+                   "/builds?": "[]"}
+        get = lambda url: next(body for marker, body in answers.items() if marker in url)
+        jobs = {j["job"] for j in ci.failed_jobs(ZUUL["failed"]["message"])}
+        # When
+        with mock.patch.object(ci, "http_get", side_effect=get) as http, \
+                mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
+                mock.patch.object(ci, "PERIODIC_BUILD", None):
+            watch.enrich(events)
+        # Then
+        self.assertEqual(len(jobs), sum("/builds?" in c.args[0] for c in http.call_args_list))
 
     def test_only_ci_failures_and_new_patch_sets_get_extras(self):
         # Given
@@ -858,8 +642,8 @@ class EnrichTest(unittest.TestCase):
         human = {"kind": "message", "change": 1, "branch": "main", "author_username": "reviewer", "message": "m"}
         patch = {"kind": "review_new_patch_set", "change": 2, "since_ref": "a", "current_ref": "b"}
         # When
-        with mock.patch.object(watch, "diagnose_ci", return_value=["d"]), \
-                mock.patch.object(watch, "base_build", return_value={"result": "SUCCESS"}), \
+        with mock.patch.object(ci, "diagnose_ci", return_value=["d"]), \
+                mock.patch.object(ci, "base_build", return_value={"result": "SUCCESS"}), \
                 mock.patch.object(watch, "interdiff", return_value={"stat": "s"}):
             watch.enrich([failure, human, patch])
         # Then
@@ -1093,14 +877,14 @@ class CleanupCandidatesTest(GitRepoTest):
         watch._cleanup_memo.clear()
 
     def run_cleanup(self, merged_revisions, open_ids=frozenset()):
-        rows = [{"id": "Iabc", "number": 7, "subject": "s", "patchSets": [{"revision": r} for r in merged_revisions]}]
+        rows = [{"id": CHANGE_ID, "number": 7, "subject": "s", "patchSets": [{"revision": r} for r in merged_revisions]}]
         with mock.patch.object(watch, "gerrit_query", return_value=rows) as self.query:
             return [e for _, e in watch.cleanup_candidates(open_ids)]
 
     def test_unchanged_branches_are_not_queried_twice(self):
         # Given
         self.git("checkout", "-q", "-b", "feature")
-        pushed = self.commit("feat", "Iabc")
+        pushed = self.commit("feat", CHANGE_ID)
         self.git("checkout", "-q", "main")
         first = self.run_cleanup([pushed])
         # When
@@ -1112,10 +896,10 @@ class CleanupCandidatesTest(GitRepoTest):
     def test_branches_of_open_changes_are_skipped(self):
         # Given
         self.git("checkout", "-q", "-b", "feature")
-        pushed = self.commit("feat", "Iabc")
+        pushed = self.commit("feat", CHANGE_ID)
         self.git("checkout", "-q", "main")
         # When
-        found = self.run_cleanup([pushed], open_ids=frozenset({"Iabc"}))
+        found = self.run_cleanup([pushed], open_ids=frozenset({CHANGE_ID}))
         # Then
         self.assertEqual([], found)
         self.query.assert_not_called()
@@ -1123,7 +907,7 @@ class CleanupCandidatesTest(GitRepoTest):
     def test_branch_at_a_merged_patch_set_is_a_candidate(self):
         # Given
         self.git("checkout", "-q", "-b", "feature")
-        pushed = self.commit("feat", "Iabc")
+        pushed = self.commit("feat", CHANGE_ID)
         self.git("checkout", "-q", "main")
         # When
         found = self.run_cleanup([pushed])
@@ -1133,8 +917,8 @@ class CleanupCandidatesTest(GitRepoTest):
     def test_local_amend_after_merge_is_kept(self):
         # Given
         self.git("checkout", "-q", "-b", "feature")
-        pushed = self.commit("feat", "Iabc")
-        self.git("commit", "-q", "--amend", "--allow-empty", "-m", "feat v2\n\nChange-Id: Iabc")
+        pushed = self.commit("feat", CHANGE_ID)
+        self.git("commit", "-q", "--amend", "--allow-empty", "-m", f"feat v2\n\nChange-Id: {CHANGE_ID}")
         self.git("checkout", "-q", "main")
         # When
         found = self.run_cleanup([pushed])
@@ -1144,7 +928,7 @@ class CleanupCandidatesTest(GitRepoTest):
     def test_a_dirty_worktree_is_held_back_until_clean_without_a_new_query(self):
         # Given
         self.git("checkout", "-q", "-b", "feature")
-        pushed = self.commit("feat", "Iabc")
+        pushed = self.commit("feat", CHANGE_ID)
         self.git("checkout", "-q", "main")
         worktree = pathlib.Path(self.tmp.name + "-wt")
         self.git("worktree", "add", "-q", str(worktree), "feature")
@@ -1162,11 +946,120 @@ class CleanupCandidatesTest(GitRepoTest):
     def test_checked_out_and_protected_branches_are_excluded(self):
         # Given
         self.git("checkout", "-q", "-b", "feature")
-        pushed = self.commit("feat", "Iabc")
+        pushed = self.commit("feat", CHANGE_ID)
         # When
         found = self.run_cleanup([pushed])
         # Then
         self.assertEqual([], found)
+
+    def test_a_malformed_change_id_never_reaches_the_query(self):
+        # Given
+        self.git("checkout", "-q", "-b", "feature")
+        pushed = self.commit("feat", "I1' OR owner:someone")
+        self.git("checkout", "-q", "main")
+        # When
+        found = self.run_cleanup([pushed])
+        # Then
+        self.assertEqual([], found)
+        self.query.assert_not_called()
+
+
+class WorktreesByChangeIdTest(GitRepoTest):
+    def setUp(self):
+        super().setUp()
+        watch._worktrees_memo.clear()
+
+    def test_recomputed_only_when_a_head_moves(self):
+        # Given
+        self.commit("one", CHANGE_ID)
+        first = watch.worktrees_by_change_id()
+        with mock.patch.object(watch, "git", wraps=watch.git) as git:
+            unchanged = watch.worktrees_by_change_id()
+        other = "I" + "def1" * 10
+        self.commit("two", other)
+        # When
+        moved = watch.worktrees_by_change_id()
+        # Then
+        self.assertEqual(first, unchanged)
+        self.assertEqual(1, git.call_count)
+        self.assertEqual({CHANGE_ID, other}, set(moved))
+
+
+class RestGetTest(unittest.TestCase):
+    def setUp(self):
+        watch._rest_auth = None
+        self.addCleanup(setattr, watch, "_rest_auth", None)
+
+    @staticmethod
+    def response(body):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = f")]}}'\n{json.dumps(body)}".encode()
+        return response
+
+    def test_a_rotated_token_is_reread_once(self):
+        # Given
+        unauthorized = watch.urllib.error.HTTPError("url", 401, "Unauthorized", {}, io.BytesIO())
+        credentials = mock.Mock(side_effect=[("me", "old"), ("me", "new")])
+        # When
+        with mock.patch.object(watch, "http_credentials", credentials), \
+                mock.patch.object(watch.urllib.request, "urlopen",
+                                  side_effect=[unauthorized, self.response({"ok": 1})]) as urlopen:
+            found = watch.rest_get("/changes/1/comments")
+        # Then
+        self.assertEqual({"ok": 1}, found)
+        self.assertEqual(2, credentials.call_count)
+        self.assertIn("me:new".encode(), [watch.base64.b64decode(c.args[0].get_header("Authorization")[6:])
+                                           for c in urlopen.call_args_list])
+
+    def test_a_token_still_refused_after_rereading_raises(self):
+        # Given
+        unauthorized = watch.urllib.error.HTTPError("url", 401, "Unauthorized", {}, io.BytesIO())
+        self.addCleanup(unauthorized.close)
+        # When / Then
+        with mock.patch.object(watch, "http_credentials", return_value=("me", "bad")), \
+                mock.patch.object(watch.urllib.request, "urlopen", side_effect=unauthorized) as urlopen, \
+                self.assertRaises(watch.urllib.error.HTTPError):
+            watch.rest_get("/changes/1/comments")
+        self.assertEqual(2, urlopen.call_count)
+
+
+class DaemonTest(unittest.TestCase):
+    class Stop(Exception):
+        pass
+
+    def run_daemon(self, rounds, **patches):
+        sleeps = mock.Mock(side_effect=[None] * (rounds - 1) + [self.Stop()])
+        stderr = io.StringIO()
+        with mock.patch.object(watch.time, "sleep", sleeps), \
+                mock.patch.object(watch, "swiftbar"), \
+                mock.patch.object(watch, "write_daemon_poll"), \
+                mock.patch("sys.stderr", stderr), \
+                contextlib.ExitStack() as stack:
+            for name, value in patches.items():
+                stack.enter_context(mock.patch.object(watch, name, value))
+            with self.assertRaises(self.Stop):
+                watch.daemon(60)
+        return stderr.getvalue()
+
+    def test_a_bug_after_the_poll_is_logged_once_and_the_daemon_keeps_going(self):
+        # Given
+        status = mock.Mock()
+        # When
+        log = self.run_daemon(3, poll=mock.Mock(return_value={}), write_status=status,
+                              daemon_round=mock.Mock(side_effect=KeyError("number")))
+        # Then
+        self.assertEqual(1, log.count("Traceback"))
+        self.assertEqual([mock.call(error="KeyError: 'number'")] * 3, status.call_args_list)
+
+    def test_a_repeated_poll_failure_is_logged_once(self):
+        # Given
+        down = OSError("Could not resolve hostname")
+        # When
+        log = self.run_daemon(3, poll=mock.Mock(side_effect=[down, down, {}]), write_status=mock.Mock(),
+                              daemon_round=mock.Mock())
+        # Then
+        self.assertEqual(1, log.count("poll failed"))
+        self.assertIn("recovered", log)
 
 
 class NotificationsTest(unittest.TestCase):

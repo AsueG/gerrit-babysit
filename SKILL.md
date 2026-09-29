@@ -240,7 +240,7 @@ decided with the user.
 
 ## Watcher tests
 
-After any change to `watch.py`, `config.py`, `stop_hook.py`, `statusline_segment.py` or
+After any change to `watch.py`, `ci.py`, `config.py`, `stop_hook.py`, `statusline_segment.py` or
 `macos/gerrit.30s.py`: `cd <skill> && python3 -m unittest`
 (stdlib only, anonymized Gerrit/zuul fixtures in `fixtures/`), then restart the LaunchAgent if installed.
 

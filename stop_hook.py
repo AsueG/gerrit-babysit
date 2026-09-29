@@ -33,12 +33,15 @@ def descends_from(pid, ancestor, table):
 
 
 def is_session_watcher(command):
-    """Matched on the resolved path, not the folder name: the skill may be cloned or symlinked under any name."""
+    """Matched on the resolved path, not the folder name: the skill may be cloned or symlinked under any name.
+
+    `ps` joins argv with spaces, so a path containing spaces is rebuilt from consecutive words."""
     args = command.split()
     if "--daemon" in args or "--pending" in args:
         return False
-    return any(pathlib.Path(arg).name == "watch.py" and pathlib.Path(arg).expanduser().resolve() == WATCH_PY
-               for arg in args)
+    return any(pathlib.Path(" ".join(args[start:end + 1])).expanduser().resolve() == WATCH_PY
+               for end, arg in enumerate(args) if arg.endswith("watch.py")
+               for start in range(end + 1))
 
 
 def main():

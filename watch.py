@@ -2,9 +2,7 @@
 """Block until one of my open Gerrit changes gets a new actionable event, print it as JSON, exit."""
 import argparse
 import base64
-import calendar
 import datetime
-import gzip
 import json
 import netrc
 import os
@@ -14,10 +12,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
 
+import ci
 from config import CACHE, CI_STUCK_S, CONFIG, REPO, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, gerrit_user, t
 
 HOST = CONFIG["gerrit_host"]
@@ -28,9 +28,6 @@ REVIEW_QUERY = "reviewer:self status:open -owner:self"
 ATTENTION_QUERY = "attention:self status:open"
 # Group additions put dozens of people on a change: not a personal review request.
 MAX_REVIEWERS = CONFIG["max_reviewers"]
-ZUUL_API = CONFIG["zuul_api"]
-INFRA_RESULTS = {"POST_FAILURE", "TIMED_OUT", "NODE_FAILURE", "RETRY_LIMIT", "ERROR", "DISK_FULL"}
-FLAKY_WINDOW_S = 3 * 3600
 STATE = CACHE / "seen.json"
 CI_USER = CONFIG["ci_user"]
 # "" = Gerrit itself (auto-abandon notices carry no username).
@@ -44,8 +41,6 @@ DAEMON_POLL = CACHE / "daemon-poll.json"
 SESSION = CACHE / "session.json"
 MAX_THREADS = 20
 REST = f"https://{HOST}/a"
-PERIODIC_BUILD = CONFIG["periodic_build"]
-SCREENSHOT_MARKER = CONFIG["screenshot_regression_marker"]
 # Longer than the daemon's interval, so the session sees at least one newer poll before reporting.
 SETTLE_S = 90
 SEEN_RETENTION_S = 30 * 86400
@@ -53,7 +48,6 @@ WORK_HOURS = tuple(CONFIG["work_hours"])
 UNREVIEWED_WORKING_DAYS = 2
 # Past this many notifications in one poll (typically the morning flush), a single summary replaces them.
 DIGEST_OVER = 3
-JOB_HISTORY_LIMIT = 200
 DASHBOARD = f"https://{HOST}/dashboard/self"
 
 
@@ -94,14 +88,24 @@ def http_credentials():
     return entry[0], entry[2]
 
 
-def rest_get(path):
+def rest_get(path, retry=True):
     global _rest_auth
     if _rest_auth is None:
         _rest_auth = base64.b64encode(":".join(http_credentials()).encode()).decode()
     request = urllib.request.Request(REST + path, headers={"Authorization": f"Basic {_rest_auth}"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        # Gerrit prefixes every JSON body with )]}' against XSSI.
-        return json.loads(response.read().decode().split("\n", 1)[1])
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            # Gerrit prefixes every JSON body with )]}' against XSSI.
+            return json.loads(response.read().decode().split("\n", 1)[1])
+    except urllib.error.HTTPError as error:
+        if error.code != 401:
+            raise
+        # The token may have been rotated since the daemon started: reread it once.
+        _rest_auth = None
+        if not retry:
+            raise
+        error.close()
+        return rest_get(path, retry=False)
 
 
 _threads_memo = {}
@@ -266,8 +270,13 @@ def merge_conflicts(changes):
     return conflicts
 
 
+CHANGE_ID = re.compile(r"I[0-9a-f]{40}")
+
+
 def change_id_of(sha):
-    return git("log", "-1", "--format=%(trailers:key=Change-Id,valueonly)", sha).strip()
+    """Only a well-formed Change-Id: the value ends up inside a quoted Gerrit query."""
+    value = git("log", "-1", "--format=%(trailers:key=Change-Id,valueonly)", sha).strip()
+    return value if CHANGE_ID.fullmatch(value) else ""
 
 
 _cleanup_memo = {}
@@ -385,116 +394,6 @@ def is_merge_failed(change, patch_set):
     return verdict is not None and "Merge Failed." in verdict["message"]
 
 
-ZUUL_JOB_LINE = re.compile(r"^- (\S+) (https://\S+/build/(\w+)) : (\w+)", re.MULTILINE)
-LOG_PREFIX = re.compile(r"^\S+ \S+ \| \w+ \| ?")
-
-
-def failed_jobs(message):
-    return [{"job": job, "url": url, "uuid": uuid, "result": result}
-            for job, url, uuid, result in ZUUL_JOB_LINE.findall(message)
-            if result not in ("SUCCESS", "CANCELED", "SKIPPED")]
-
-
-def gradle_failure(log):
-    """Gradle's `* What went wrong:` block(s), without zuul's timestamp prefixes."""
-    lines = [LOG_PREFIX.sub("", line) for line in log.splitlines()]
-    if "* What went wrong:" not in lines:
-        return ""
-    block = []
-    for line in lines[lines.index("* What went wrong:") + 1:]:
-        if line.startswith(("* Try:", "BUILD FAILED")):
-            break
-        block.append(line)
-    return "\n".join(block).strip()[:3000]
-
-
-def lint_errors(sarif):
-    errors = []
-    for run in sarif.get("runs", []):
-        # Android Lint leaves `level` off its results: the severity is the rule's default configuration.
-        defaults = {rule["id"]: rule.get("defaultConfiguration", {}).get("level")
-                    for rule in run.get("tool", {}).get("driver", {}).get("rules", [])}
-        errors += [{"rule": r["ruleId"],
-                    "file": r["locations"][0]["physicalLocation"]["artifactLocation"].get("uri"),
-                    "line": r["locations"][0]["physicalLocation"].get("region", {}).get("startLine"),
-                    "message": r["message"]["text"][:300]}
-                   for r in run.get("results", []) if (r.get("level") or defaults.get(r["ruleId"])) == "error"]
-    return errors
-
-
-def has_screenshot_regression(job, message):
-    """The verdict lists every job; only the regression line's report link names the job that regressed."""
-    return bool(SCREENSHOT_MARKER) and any(f"/{job}/" in line for line in message.splitlines()
-                                           if SCREENSHOT_MARKER in line)
-
-
-FILE_COMMENT_TAGS = re.compile(r"^> `(\w+)` • `(\w+)`", re.MULTILINE)
-
-
-def file_comments(payload):
-    """zuul-file-comments.json (the robot comments zuul posts inline, with their **Fix:** hint), errors only."""
-    found = []
-    for file, comments in payload.items():
-        for comment in comments:
-            text = comment.get("message", "")
-            tags = FILE_COMMENT_TAGS.search(text)
-            rule, level = tags.groups() if tags else (None, None)
-            # Untagged comments come from other analyzers whose severity we can't read: keep them.
-            if level not in (None, "Error", "Fatal"):
-                continue
-            found.append({"file": file, "line": comment.get("line"), "rule": rule,
-                          "message": text.split("\n---\n", 1)[0].strip()[:500]})
-    return found[:30]
-
-
-def fetch_file_comments(log_url):
-    try:
-        return file_comments(json.loads(http_get(f"{log_url}/zuul-file-comments.json")))
-    except urllib.error.HTTPError as error:
-        # Jobs without inline findings publish no file at all.
-        if error.code == 404:
-            return []
-        raise
-
-
-def categorize(job, message, result, failure="", errors=()):
-    if has_screenshot_regression(job, message):
-        return "screenshots"
-    if "dependency-guard" in job:
-        return "dependency_guard"
-    if errors:
-        return "lint"
-    if "Kotlin compiler" in failure or re.search(r"compile\w*Kotlin", failure):
-        return "compile"
-    if "failing tests" in failure or re.search(r"\d+ tests? completed, \d+ failed", failure):
-        return "unit_tests"
-    if result in INFRA_RESULTS:
-        return "infra"
-    return "unknown"
-
-
-def others_failing(builds, job, change, around):
-    """Other changes this job failed on around the same time: several of them hint at a flaky job or a red base."""
-    return sorted({int(b["ref"]["change"]) for b in builds
-                   if b.get("job_name", job) == job and b.get("result") == "FAILURE"
-                   and b.get("ref", {}).get("change") and str(b["ref"]["change"]) != str(change)
-                   and b.get("end_time") and abs(around - iso_to_epoch(b["end_time"])) < FLAKY_WINDOW_S})
-
-
-def job_history(builds):
-    """The job's recent track record: a high failure rate, or failures that went green when rerun, point to flakiness."""
-    finished = sorted((b for b in builds if b.get("result") in ("SUCCESS", "FAILURE")),
-                      key=lambda b: b.get("end_time") or "")
-    runs = {}
-    for build in finished:
-        ref = build.get("ref", {})
-        runs.setdefault((ref.get("change"), ref.get("patchset")), []).append(build["result"])
-    retried = [results for results in runs.values() if "FAILURE" in results[:-1]]
-    failures = sum(b["result"] == "FAILURE" for b in finished)
-    return {"builds": len(finished), "failure_rate": round(failures / len(finished), 2) if finished else None,
-            "retried": len(retried), "retried_green": sum(results[-1] == "SUCCESS" for results in retried)}
-
-
 RECHECK = re.compile(r"^recheck(?:-[\w-]+)?$")
 
 
@@ -504,90 +403,6 @@ def my_rechecks(change, patch_set, before):
     return sum(1 for m in change.get("comments", [])
                if m["reviewer"].get("username") == USER and m["timestamp"] < before
                and m["message"].startswith(prefix) and RECHECK.match(m["message"].partition("\n")[2].strip()))
-
-
-def iso_to_epoch(stamp):
-    """Zuul timestamps are UTC without a suffix."""
-    return calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%S"))
-
-
-def http_get(url):
-    request = urllib.request.Request(url, headers={"Accept-Encoding": "gzip"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        body = response.read()
-        if response.headers.get("Content-Encoding") == "gzip" or body[:2] == b"\x1f\x8b":
-            body = gzip.decompress(body)
-    return body.decode(errors="replace")
-
-
-def diagnose_ci(event, histories=None):
-    """Network-bound: only for fresh zuul failures, so the idle loop stays free.
-
-    `histories` ({job: builds}) is shared across the events of one wake-up: a job red on several changes is
-    fetched once."""
-    histories = {} if histories is None else histories
-    diagnosis = []
-    for job in failed_jobs(event["message"]):
-        entry = {"job": job["job"], "result": job["result"], "url": job["url"]}
-        try:
-            build = json.loads(http_get(f"{ZUUL_API}/build/{job['uuid']}"))
-            log_url = build["log_url"].rstrip("/")
-            entry["log_url"] = log_url
-            entry["failure"] = gradle_failure(http_get(f"{log_url}/job-output.txt"))
-            sarif = next((a["url"] for a in build.get("artifacts", []) if a["name"].endswith("lint.sarif")), None)
-            errors = lint_errors(json.loads(http_get(sarif))) if sarif else []
-            if errors:
-                entry["lint_errors"] = errors
-            comments = fetch_file_comments(log_url)
-            if comments:
-                entry["file_comments"] = comments
-            # One call covers both: 200 builds of a job span well over the ±3 h flaky window.
-            if job["job"] not in histories:
-                histories[job["job"]] = json.loads(
-                    http_get(f"{ZUUL_API}/builds?job_name={job['job']}&limit={JOB_HISTORY_LIMIT}"))
-            history = histories[job["job"]]
-            around = iso_to_epoch(build["end_time"]) if build.get("end_time") else time.time()
-            entry["others_failing"] = others_failing(history, job["job"], event["change"], around)
-            entry["job_history"] = job_history(history)
-        except (OSError, ValueError, KeyError) as error:
-            entry["diagnosis_error"] = str(error)
-        entry["category"] = categorize(job["job"], event["message"], job["result"], entry.get("failure", ""),
-                                       entry.get("lint_errors") or entry.get("file_comments") or ())
-        diagnosis.append(entry)
-    return diagnosis
-
-
-def base_build(branch):
-    """Latest periodic build of the target branch: red means the base itself is broken, so a recheck can't help."""
-    query = urllib.parse.urlencode({"pipeline": PERIODIC_BUILD["pipeline"], "job_name": PERIODIC_BUILD["job"],
-                                    "branch": branch, "limit": 1})
-    try:
-        builds = json.loads(http_get(f"{ZUUL_API}/builds?{query}"))
-    except (OSError, ValueError) as error:
-        return {"error": str(error)}
-    if not builds:
-        return None
-    return {key: builds[0].get(key) for key in ("result", "end_time", "log_url")}
-
-
-def zuul_queue(change, patch_set):
-    """Where zuul has this patch set: [] means it lost track of it (recheck), otherwise it is only queued."""
-    try:
-        items = json.loads(http_get(f"{ZUUL_API}/status/change/{change},{patch_set}"))
-    except (OSError, ValueError) as error:
-        return {"error": str(error)}
-    queue = []
-    for item in items:
-        jobs = item.get("jobs", [])
-        remaining = item.get("remaining_time")
-        queue.append({
-            "pipeline": next((j["pipeline"] for j in jobs if j.get("pipeline")), None),
-            "enqueued_at": (item.get("enqueue_time") or 0) // 1000,
-            "remaining_s": remaining // 1000 if remaining is not None else None,
-            "jobs_waiting": [j["name"] for j in jobs if j.get("start_time") is None],
-            "jobs_running": [j["name"] for j in jobs if j.get("start_time") is not None and j.get("result") is None],
-        })
-    return queue
 
 
 def prereview(event):
@@ -620,14 +435,14 @@ def enrich(reported):
     histories = {}
     for event in reported:
         verdict = event.get("ci_verdict") or (event.get("message") if event.get("author_username") == CI_USER else None)
-        if verdict and ZUUL_API:
-            event["ci_diagnosis"] = diagnose_ci({"change": event["change"], "message": verdict}, histories)
-            if PERIODIC_BUILD:
-                event["base_build"] = base_build(event["branch"])
+        if verdict and ci.ZUUL_API:
+            event["ci_diagnosis"] = ci.diagnose_ci({"change": event["change"], "message": verdict}, histories)
+            if ci.PERIODIC_BUILD:
+                event["base_build"] = ci.base_build(event["branch"])
         if event["kind"] == "review_new_patch_set" and event.get("since_ref") and event.get("current_ref"):
             event["interdiff"] = interdiff(event)
-        if event["kind"] == "ci_stuck" and ZUUL_API:
-            event["zuul_queue"] = zuul_queue(event["change"], event["patch_set"])
+        if event["kind"] == "ci_stuck" and ci.ZUUL_API:
+            event["zuul_queue"] = ci.zuul_queue(event["change"], event["patch_set"])
         if event["kind"] == "review_requested" and not event.get("participated"):
             event["prereview"] = prereview(event)
     return reported
@@ -641,16 +456,24 @@ def ci_state(change, patch_set, votes):
     return "running"
 
 
+_worktrees_memo = {}
+
+
 def worktrees_by_change_id():
-    """Change-Id → worktree path; linked worktrees win over the main checkout, whose branch keeps moving."""
-    paths = [line.removeprefix("worktree ") for line in git("worktree", "list", "--porcelain").splitlines()
-             if line.startswith("worktree ")]
-    found = {}
-    for path in reversed(paths):
-        trailers = git("log", "-10", "--format=%(trailers:key=Change-Id,valueonly)", "HEAD", cwd=path)
-        for change_id in trailers.split():
-            found.setdefault(change_id, path)
-    return found
+    """Change-Id → worktree path; linked worktrees win over the main checkout, whose branch keeps moving.
+
+    Only recomputed when a worktree appears, disappears or moves its HEAD."""
+    listing = git("worktree", "list", "--porcelain")
+    if listing not in _worktrees_memo:
+        paths = [line.removeprefix("worktree ") for line in listing.splitlines() if line.startswith("worktree ")]
+        found = {}
+        for path in reversed(paths):
+            trailers = git("log", "-10", "--format=%(trailers:key=Change-Id,valueonly)", "HEAD", cwd=path)
+            for change_id in trailers.split():
+                found.setdefault(change_id, path)
+        _worktrees_memo.clear()
+        _worktrees_memo[listing] = found
+    return _worktrees_memo[listing]
 
 
 def write_status(result=None, error=None):
@@ -977,33 +800,53 @@ def notifications(fresh):
 def daemon(interval):
     """Status snapshot + notifications with no Claude session; clicking a notification opens one."""
     first_run = not DAEMON_STATE.exists()
+    last_error = None
     while True:
         try:
             result = poll()
         except (subprocess.SubprocessError, OSError, ValueError) as error:
             detail = error_detail(error)
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} poll failed: {detail}", file=sys.stderr, flush=True)
+            # Logged once per distinct error: a VPN left off overnight would otherwise add a line a minute.
+            if detail != last_error:
+                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} poll failed: {detail}", file=sys.stderr, flush=True)
+                last_error = detail
             write_status(error=detail)
             write_daemon_poll(error=detail)
             swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
             time.sleep(interval)
             continue
-        write_status(result)
-        write_daemon_poll(result)
-        swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
-
-        now = time.time()
-        current = dict(events(result, now))
-        seen = load_seen(DAEMON_STATE)
-        quiet = is_quiet(now)
-        if not first_run and not quiet:
-            for title, body, href in notifications(current[key] for key in sorted(current.keys() - seen.keys())):
-                swiftbar("notify", plugin=SWIFTBAR_PLUGIN, title=title, body=body, href=href)
-        # Held back at night and on weekends: still unseen, they notify at the start of the next working day.
-        marked = () if quiet and not first_run else current.keys()
-        first_run = False
-        save_seen(remember(seen, marked, result, current, now), DAEMON_STATE)
+        try:
+            daemon_round(result, first_run)
+            first_run = False
+            if last_error is not None:
+                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} recovered", file=sys.stderr, flush=True)
+                last_error = None
+        except Exception as error:  # noqa: BLE001
+            # A bug on one odd change must not turn into a silent launchd crash loop.
+            detail = f"{type(error).__name__}: {error}"
+            if detail != last_error:
+                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {traceback.format_exc()}", file=sys.stderr, flush=True)
+                last_error = detail
+            write_status(error=detail)
+            swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
         time.sleep(interval)
+
+
+def daemon_round(result, first_run):
+    write_status(result)
+    write_daemon_poll(result)
+    swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
+
+    now = time.time()
+    current = dict(events(result, now))
+    seen = load_seen(DAEMON_STATE)
+    quiet = is_quiet(now)
+    if not first_run and not quiet:
+        for title, body, href in notifications(current[key] for key in sorted(current.keys() - seen.keys())):
+            swiftbar("notify", plugin=SWIFTBAR_PLUGIN, title=title, body=body, href=href)
+    # Held back at night and on weekends: still unseen, they notify at the start of the next working day.
+    marked = () if quiet and not first_run else current.keys()
+    save_seen(remember(seen, marked, result, current, now), DAEMON_STATE)
 
 
 def main():

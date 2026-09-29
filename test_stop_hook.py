@@ -57,6 +57,17 @@ class StopHookTest(unittest.TestCase):
         # Then
         self.assertIsNone(verdict)
 
+    def test_the_skill_path_can_contain_spaces(self):
+        # Given
+        link = pathlib.Path(self.session.parent) / "my skills" / "babysit"
+        link.parent.mkdir()
+        link.symlink_to(stop_hook.WATCH_PY.parent)
+        processes = {300: (HOOK, f"/usr/bin/python3 {link}/watch.py --interval 60")}
+        # When
+        verdict = self.run_hook(processes)
+        # Then
+        self.assertIsNone(verdict)
+
     def test_an_unrelated_watch_py_does_not_count(self):
         # Given
         processes = {300: (HOOK, "python3 /elsewhere/gerrit-babysit/watch.py")}
