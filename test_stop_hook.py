@@ -9,7 +9,7 @@ from unittest import mock
 import stop_hook
 
 BABYSIT, OTHER, HOOK = 100, 200, 150
-WATCHER = "python3 /repo/.claude/skills/gerrit-babysit/watch.py"
+WATCHER = f"python3 {stop_hook.WATCH_PY}"
 
 
 class StopHookTest(unittest.TestCase):
@@ -46,6 +46,24 @@ class StopHookTest(unittest.TestCase):
         verdict = self.run_hook(processes)
         # Then
         self.assertIsNone(verdict)
+
+    def test_the_skill_folder_can_have_any_name(self):
+        # Given
+        link = pathlib.Path(self.session.parent) / "renamed-skill"
+        link.symlink_to(stop_hook.WATCH_PY.parent)
+        processes = {300: (HOOK, f"python3 {link}/watch.py")}
+        # When
+        verdict = self.run_hook(processes)
+        # Then
+        self.assertIsNone(verdict)
+
+    def test_an_unrelated_watch_py_does_not_count(self):
+        # Given
+        processes = {300: (HOOK, "python3 /elsewhere/gerrit-babysit/watch.py")}
+        # When
+        verdict = self.run_hook(processes)
+        # Then
+        self.assertEqual("block", verdict["decision"])
 
     def test_a_watcher_of_another_session_does_not_count(self):
         # Given

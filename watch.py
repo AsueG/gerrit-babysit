@@ -12,12 +12,13 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from config import CACHE, CONFIG, REPO, gerrit_user, t
+from config import CACHE, CI_STUCK_S, CONFIG, REPO, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, gerrit_user, t
 
 HOST = CONFIG["gerrit_host"]
 PORT = str(CONFIG["ssh_port"])
@@ -31,7 +32,6 @@ ZUUL_API = CONFIG["zuul_api"]
 INFRA_RESULTS = {"POST_FAILURE", "TIMED_OUT", "NODE_FAILURE", "RETRY_LIMIT", "ERROR", "DISK_FULL"}
 FLAKY_WINDOW_S = 3 * 3600
 STATE = CACHE / "seen.json"
-STATUS = CACHE / "status.json"
 CI_USER = CONFIG["ci_user"]
 # "" = Gerrit itself (auto-abandon notices carry no username).
 BOT_USERS = {CI_USER, "", *CONFIG["bot_users"]}
@@ -41,14 +41,11 @@ PROTECTED_BRANCHES = set(CONFIG["protected_branches"])
 FETCH_NAMESPACE = "refs/gerrit-babysit"
 DAEMON_STATE = CACHE / "daemon-seen.json"
 DAEMON_POLL = CACHE / "daemon-poll.json"
-# A daemon loop can take interval + fetch timeout + ssh timeout before it writes again.
-DAEMON_ALIVE_S = 360
 SESSION = CACHE / "session.json"
 MAX_THREADS = 20
 REST = f"https://{HOST}/a"
 PERIODIC_BUILD = CONFIG["periodic_build"]
 SCREENSHOT_MARKER = CONFIG["screenshot_regression_marker"]
-CI_STUCK_S = 2 * 3600
 # Longer than the daemon's interval, so the session sees at least one newer poll before reporting.
 SETTLE_S = 90
 SEEN_RETENTION_S = 30 * 86400
@@ -57,7 +54,6 @@ UNREVIEWED_WORKING_DAYS = 2
 # Past this many notifications in one poll (typically the morning flush), a single summary replaces them.
 DIGEST_OVER = 3
 JOB_HISTORY_LIMIT = 200
-SWIFTBAR_PLUGIN = "gerrit"
 DASHBOARD = f"https://{HOST}/dashboard/self"
 
 
@@ -86,7 +82,11 @@ def http_credentials():
     """(user, HTTP password): from the Gerrit MCP server's config when set, so the token lives in one place."""
     if CONFIG["gerrit_mcp_config"]:
         hosts = json.loads(pathlib.Path(CONFIG["gerrit_mcp_config"]).expanduser().read_text())["gerrit_hosts"]
-        auth = hosts[0]["authentication"]
+        entry = next((h for h in hosts if HOST in {urllib.parse.urlparse(h.get(key) or "").hostname
+                                                   for key in ("external_url", "internal_url")}), None)
+        if not entry:
+            raise KeyError(f"no gerrit_hosts entry for {HOST} in {CONFIG['gerrit_mcp_config']}")
+        auth = entry["authentication"]
         return auth["username"], auth["auth_token"]
     entry = netrc.netrc().authenticators(HOST)
     if not entry:
@@ -195,7 +195,7 @@ def daemon_poll():
     if not DAEMON_POLL.exists():
         return None
     heartbeat = json.loads(DAEMON_POLL.read_text())
-    if time.time() - heartbeat["attempt"] > DAEMON_ALIVE_S:
+    if time.time() - heartbeat["attempt"] > STALE_AFTER_S:
         return None
     if heartbeat["error"]:
         raise DaemonError(heartbeat["error"])
@@ -209,10 +209,11 @@ def write_daemon_poll(result=None, error=None):
 
 
 def atomic_write(path, payload):
-    CACHE.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False))
-    tmp.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A unique temp name: two writers (daemon and session) must not clobber each other's half-written file.
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as tmp:
+        tmp.write(json.dumps(payload, ensure_ascii=False))
+    pathlib.Path(tmp.name).replace(path)
 
 
 def git_run(*args, cwd=None, timeout=60):
@@ -221,6 +222,17 @@ def git_run(*args, cwd=None, timeout=60):
 
 def git(*args, cwd=None):
     return git_run(*args, cwd=cwd).stdout
+
+
+def fetch_refs(refspecs):
+    """One fetch for all; on failure one per refspec, so a single vanished ref does not blind the whole poll."""
+    command = ["fetch", "--quiet", "--no-write-fetch-head", "origin"]
+    result = git_run(*command, *refspecs, timeout=180)
+    if result.returncode == 0:
+        return
+    results = [git_run(*command, refspec, timeout=180) for refspec in refspecs]
+    if all(r.returncode for r in results):
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
 
 _conflicts_memo = {}
@@ -234,16 +246,20 @@ def merge_conflicts(changes):
     refspecs = {f"+refs/heads/{c['branch']}:{FETCH_NAMESPACE}/{c['branch']}" for c, _ in candidates}
     refspecs |= {f"+{ps['ref']}:{FETCH_NAMESPACE}/changes/{c['number']}"
                  for c, ps in candidates if git_run("cat-file", "-e", ps["revision"]).returncode != 0}
-    subprocess.run(["git", "-C", str(REPO), "fetch", "--quiet", "--no-write-fetch-head", "origin", *sorted(refspecs)],
-                   capture_output=True, text=True, timeout=180, check=True)
+    fetch_refs(sorted(refspecs))
 
     conflicts = {}
     for change, patch_set in candidates:
-        target = git("rev-parse", f"{FETCH_NAMESPACE}/{change['branch']}").strip()
+        target = git("rev-parse", "--verify", "--quiet", f"{FETCH_NAMESPACE}/{change['branch']}").strip()
+        if not target:
+            continue
         key = (target, patch_set["revision"])
         if key not in _conflicts_memo:
             # A 3-way merge of the whole patch set onto the branch tip: conflicts iff Gerrit's rebase-on-submit would.
             result = git_run("merge-tree", "--write-tree", "--name-only", "--no-messages", target, patch_set["revision"])
+            if result.returncode not in (0, 1):
+                # Patch set not fetched (its ref failed): unknown, not clean, so retry on the next poll.
+                continue
             _conflicts_memo[key] = result.stdout.splitlines()[1:] if result.returncode == 1 else []
         if _conflicts_memo[key]:
             conflicts[change["number"]] = _conflicts_memo[key]

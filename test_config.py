@@ -64,12 +64,24 @@ class ConfigTest(unittest.TestCase):
     def test_http_credentials_come_from_the_gerrit_mcp_config(self):
         # Given
         mcp = self.dir / "gerrit_config.json"
-        mcp.write_text(json.dumps({"gerrit_hosts": [{"authentication": {"username": "u", "auth_token": "p"}}]}))
+        mcp.write_text(json.dumps({"gerrit_hosts": [
+            {"external_url": "https://other.example/", "authentication": {"username": "x", "auth_token": "y"}},
+            {"external_url": f"https://{watch.HOST}/", "authentication": {"username": "u", "auth_token": "p"}},
+        ]}))
         # When
         with mock.patch.dict(watch.CONFIG, {"gerrit_mcp_config": str(mcp)}):
             credentials = watch.http_credentials()
         # Then
         self.assertEqual(("u", "p"), credentials)
+
+    def test_http_credentials_refuse_another_hosts_token(self):
+        # Given
+        mcp = self.dir / "gerrit_config.json"
+        mcp.write_text(json.dumps({"gerrit_hosts": [
+            {"external_url": "https://other.example/", "authentication": {"username": "x", "auth_token": "y"}}]}))
+        # When / Then
+        with mock.patch.dict(watch.CONFIG, {"gerrit_mcp_config": str(mcp)}), self.assertRaises(KeyError):
+            watch.http_credentials()
 
     def test_http_credentials_fall_back_to_netrc(self):
         # Given

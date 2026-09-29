@@ -17,11 +17,9 @@ import time
 # Installed as a symlink into the SwiftBar plugin folder: resolve it to find the skill.
 SELF = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(SELF.parents[1]))
-from config import CACHE, CONFIG, SKILL_DIR, gerrit_user, t  # noqa: E402
+from config import (CI_STUCK_S, CONFIG, SKILL_DIR, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN,  # noqa: E402
+                    gerrit_user, t)
 
-STATUS = CACHE / "status.json"
-# Matches DAEMON_ALIVE_S in watch.py: one loop can take interval + fetch timeout + ssh timeout.
-STALE_AFTER_S = 360
 HOST = CONFIG["gerrit_host"]
 DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{HOST}/dashboard/self"
 ICON = "sfimage=arrow.triangle.pull"
@@ -51,7 +49,7 @@ def state_of(change):
     if change["code_review"] < 0:
         return f"CR {change['code_review']}", "hand.thumbsdown.fill", "red"
     if change.get("ci_stuck"):
-        return t("bar_ci_stuck"), "exclamationmark.arrow.triangle.2.circlepath", "orange"
+        return t("bar_ci_stuck", hours=CI_STUCK_S // 3600), "exclamationmark.arrow.triangle.2.circlepath", "orange"
     if change["ready"] and change.get("open_parent"):
         return t("bar_ready_parent", parent=change["open_parent"]), "link", "orange"
     if change["ready"]:
@@ -94,7 +92,7 @@ def submit(number, patch_set):
     else:
         osascript('on run argv\ndisplay alert (item 1 of argv) message (item 2 of argv) as critical\nend run',
                   t("bar_submit_failed", n=number), result.stderr.strip() or result.stdout.strip())
-    subprocess.run(["open", "-g", "swiftbar://refreshplugin?name=gerrit"], capture_output=True)
+    subprocess.run(["open", "-g", f"swiftbar://refreshplugin?name={SWIFTBAR_PLUGIN}"], capture_output=True)
 
 
 def open_worktree(path, number):

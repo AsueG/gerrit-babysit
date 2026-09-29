@@ -926,6 +926,47 @@ class StaleParentsTest(GitRepoTest):
         self.assertEqual([{}, {}], results)
 
 
+class MergeConflictsTest(GitRepoTest):
+    def setUp(self):
+        super().setUp()
+        self.git("remote", "add", "origin", str(self.repo))
+
+    def conflicting_change(self, number, branch):
+        (self.repo / "A.kt").write_text("base\n")
+        self.git("add", "A.kt")
+        self.git("commit", "-q", "-m", "base")
+        self.git("branch", "-f", branch)
+        (self.repo / "A.kt").write_text("theirs\n")
+        self.git("commit", "-q", "-am", "theirs")
+        self.git("checkout", "-q", "--detach", branch)
+        (self.repo / "A.kt").write_text("mine\n")
+        self.git("commit", "-q", "-am", "mine")
+        ref = f"refs/changes/0{number}/{number}/1"
+        self.git("update-ref", ref, "HEAD")
+        self.git("checkout", "-q", "main")
+        self.git("branch", "-f", branch, "main")
+        return change(number, current={**patch_set(1), "revision": self.git("rev-parse", ref), "ref": ref},
+                      branch=branch)
+
+    def test_a_vanished_branch_does_not_hide_other_conflicts(self):
+        # Given
+        live = self.conflicting_change(1, "release")
+        gone = change(2, current={**patch_set(1), "revision": "0" * 40, "ref": "refs/changes/02/2/1"},
+                      branch="deleted")
+        # When
+        conflicts = watch.merge_conflicts([live, gone])
+        # Then
+        self.assertEqual({1: ["A.kt"]}, conflicts)
+
+    def test_fetch_failing_for_every_ref_raises(self):
+        # Given
+        self.git("remote", "set-url", "origin", str(self.repo / "missing"))
+        c = change(1, current={**patch_set(1), "revision": "0" * 40})
+        # When / Then
+        with self.assertRaises(subprocess.CalledProcessError):
+            watch.merge_conflicts([c])
+
+
 class InterdiffTest(GitRepoTest):
     def publish(self, patch_set, files):
         """Writes `files` on a commit off `main` and publishes it as refs/changes/01/1/<patch_set>."""

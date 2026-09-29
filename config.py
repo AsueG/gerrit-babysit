@@ -8,6 +8,11 @@ import subprocess
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parent
 CACHE = pathlib.Path.home() / ".cache" / "gerrit-babysit"
+STATUS = CACHE / "status.json"
+# A daemon loop can take interval + fetch timeout + ssh timeout before it writes again.
+STALE_AFTER_S = 360
+CI_STUCK_S = 2 * 3600
+SWIFTBAR_PLUGIN = "gerrit"
 
 DEFAULTS = {
     "gerrit_host": None,
@@ -84,7 +89,7 @@ MESSAGES = {
         "bar_conflict": "merge conflict",
         "bar_stale_base": "rebase needed (Merge Failed)",
         "bar_ci_failed": "CI failed ({labels})",
-        "bar_ci_stuck": "CI stuck? (nothing from zuul for 2 h)",
+        "bar_ci_stuck": "CI stuck? (nothing from zuul for {hours} h)",
         "bar_ready_parent": "ready, but parent {parent} is open",
         "bar_ready": "ready to submit",
         "bar_ci_running": "CR {cr} · CI running",
@@ -127,7 +132,7 @@ MESSAGES = {
         "bar_conflict": "conflit",
         "bar_stale_base": "rebase requis (Merge Failed)",
         "bar_ci_failed": "CI en échec ({labels})",
-        "bar_ci_stuck": "CI bloquée ? (rien de zuul depuis 2 h)",
+        "bar_ci_stuck": "CI bloquée ? (rien de zuul depuis {hours} h)",
         "bar_ready_parent": "prête, mais parente {parent} ouverte",
         "bar_ready": "prête à soumettre",
         "bar_ci_running": "CR {cr} · CI en cours",

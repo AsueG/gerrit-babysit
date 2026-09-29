@@ -4,3 +4,4 @@
 # Built by macos/install.sh.
 /GerritBabysit.app/
 __pycache__/
+.DS_Store

@@ -26,7 +26,10 @@ fi
 if has_orca; then
   open -a Orca
   $ORCA terminal create --worktree "path:$REPO" --title "gerrit-babysit" \
-      --command "$CLAUDE \"/gerrit-babysit\"" --focus >/dev/null 2>&1 && exit 0
+      --command "${(q)CLAUDE} /gerrit-babysit" --focus >/dev/null 2>&1 && exit 0
 fi
-osascript -e "tell application \"Terminal\" to do script \"cd '$REPO' && '$CLAUDE' '/gerrit-babysit'\"" \
-    -e 'tell application "Terminal" to activate'
+# Paths go in as argv, never spliced into the script: a quote in them cannot break or inject AppleScript.
+osascript -e 'on run argv' \
+    -e 'tell application "Terminal" to do script "cd " & quoted form of item 1 of argv & " && " & quoted form of item 2 of argv & " /gerrit-babysit"' \
+    -e 'tell application "Terminal" to activate' \
+    -e 'end run' "$REPO" "$CLAUDE"

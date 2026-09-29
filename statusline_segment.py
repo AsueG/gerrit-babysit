@@ -3,10 +3,7 @@
 import json
 import time
 
-from config import CACHE, t
-
-STATUS = CACHE / "status.json"
-STALE_AFTER_S = 360
+from config import STALE_AFTER_S, STATUS, t
 
 
 def is_problem(change):
