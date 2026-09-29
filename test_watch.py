@@ -734,6 +734,23 @@ class CiDiagnosisTest(unittest.TestCase):
         # Then
         self.assertEqual({"builds": 0, "failure_rate": None, "retried": 0, "retried_green": 0}, history)
 
+    def test_a_job_red_on_several_changes_fetches_its_history_once(self):
+        # Given
+        events = [{"kind": "message", "change": n, "branch": "main", "author_username": "zuul",
+                   "message": ZUUL["failed"]["message"]} for n in (1, 2)]
+        build = {"log_url": "https://logs/x/", "end_time": "2026-09-29T12:00:00", "artifacts": []}
+        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}",
+                   "/builds?": "[]"}
+        get = lambda url: next(body for marker, body in answers.items() if marker in url)
+        jobs = {j["job"] for j in watch.failed_jobs(ZUUL["failed"]["message"])}
+        # When
+        with mock.patch.object(watch, "http_get", side_effect=get) as http, \
+                mock.patch.object(watch, "ZUUL_API", "https://zuul/api"), \
+                mock.patch.object(watch, "PERIODIC_BUILD", None):
+            watch.enrich(events)
+        # Then
+        self.assertEqual(len(jobs), sum("/builds?" in c.args[0] for c in http.call_args_list))
+
     def test_diagnose_ci_survives_network_errors(self):
         # Given
         event = {"change": 1, "message": ZUUL["failed"]["message"]}
@@ -875,6 +892,36 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(["1:10:reviewer", "1:20:reviewer"], sorted(json.loads((pathlib.Path(tmp.name) / "seen.json").read_text())))
         self.assertEqual(2, len(json.loads(out[0])["events"]))
 
+    def test_a_crash_while_enriching_leaves_the_events_unseen(self):
+        # Given
+        result = poll_result([change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10)])])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = pathlib.Path(tmp.name) / "seen.json"
+        with mock.patch.object(watch, "STATE", state), \
+                mock.patch.object(watch, "write_session_lock"), \
+                mock.patch.object(watch, "daemon_poll", return_value=result), \
+                mock.patch.object(watch, "cleanup_candidates", return_value=[]), \
+                mock.patch.object(watch, "enrich", side_effect=RuntimeError("boom")), \
+                mock.patch.object(watch.time, "sleep"), \
+                mock.patch("sys.argv", ["watch.py"]):
+            # When
+            with self.assertRaises(RuntimeError):
+                watch.main()
+        # Then
+        self.assertFalse(state.exists())
+
+
+class SwiftbarTest(unittest.TestCase):
+    def test_a_hung_swiftbar_does_not_kill_the_daemon(self):
+        # Given
+        hung = subprocess.TimeoutExpired("open", 10)
+        # When
+        with mock.patch.object(watch.subprocess, "run", side_effect=hung) as run:
+            watch.swiftbar("refreshplugin", name="gerrit")
+        # Then
+        run.assert_called_once()
+
 
 class GitRepoTest(unittest.TestCase):
     """A throwaway repo standing in for the checkout: REPO is resolved at call time."""
@@ -1010,6 +1057,23 @@ class InterdiffTest(GitRepoTest):
         self.assertFalse(found["rebased"])
         self.assertIn("B.kt", found["stat"])
 
+    def test_a_git_timeout_is_reported_and_the_refs_are_removed(self):
+        # Given
+        self.publish(1, {"A.kt": "one\n"})
+        self.publish(2, {"A.kt": "two\n"})
+        real = watch.git_run
+
+        def git_run(*args, **kwargs):
+            if args[0] == "diff":
+                raise subprocess.TimeoutExpired("git diff", 60)
+            return real(*args, **kwargs)
+        # When
+        with mock.patch.object(watch, "git_run", side_effect=git_run):
+            found = watch.interdiff(self.event())
+        # Then
+        self.assertIn("timed out", found["error"])
+        self.assertEqual("", self.git("for-each-ref", f"{watch.FETCH_NAMESPACE}/review"))
+
 
 class ParentStatusesTest(unittest.TestCase):
     def test_mine_are_open_and_others_are_queried(self):
@@ -1076,6 +1140,24 @@ class CleanupCandidatesTest(GitRepoTest):
         found = self.run_cleanup([pushed])
         # Then
         self.assertEqual([], found)
+
+    def test_a_dirty_worktree_is_held_back_until_clean_without_a_new_query(self):
+        # Given
+        self.git("checkout", "-q", "-b", "feature")
+        pushed = self.commit("feat", "Iabc")
+        self.git("checkout", "-q", "main")
+        worktree = pathlib.Path(self.tmp.name + "-wt")
+        self.git("worktree", "add", "-q", str(worktree), "feature")
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(worktree)])
+        (worktree / "scratch.txt").write_text("wip\n")
+        dirty = self.run_cleanup([pushed])
+        (worktree / "scratch.txt").unlink()
+        # When
+        clean = self.run_cleanup([pushed])
+        # Then
+        self.assertEqual([], dirty)
+        self.assertEqual(["feature"], [e["branch"] for e in clean])
+        self.query.assert_not_called()
 
     def test_checked_out_and_protected_branches_are_excluded(self):
         # Given

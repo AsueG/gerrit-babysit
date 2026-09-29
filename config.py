@@ -160,8 +160,16 @@ MESSAGES = {
     },
 }
 
-LANGUAGE = CONFIG["language"] if CONFIG["language"] != "auto" else system_language()
+# Resolved on first use: the status line imports this module on every refresh and rarely needs a string.
+_language = None
+
+
+def language():
+    global _language
+    if _language is None:
+        _language = CONFIG["language"] if CONFIG["language"] != "auto" else system_language()
+    return _language
 
 
 def t(key, **values):
-    return MESSAGES.get(LANGUAGE, MESSAGES["en"])[key].format(**values)
+    return MESSAGES.get(language(), MESSAGES["en"])[key].format(**values)

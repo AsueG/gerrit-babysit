@@ -56,7 +56,7 @@ class ConfigTest(unittest.TestCase):
         # When
         found = []
         for language in languages:
-            with mock.patch.object(config, "LANGUAGE", language):
+            with mock.patch.object(config, "_language", language):
                 found.append(config.t("conflict", n=1))
         # Then
         self.assertEqual(["1 has conflicts", "1 en conflit"], found)

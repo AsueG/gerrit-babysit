@@ -61,6 +61,7 @@ def state_of(change):
 
 
 def action(name, *params):
+    """Only plain tokens (numbers, action names) go through: SwiftBar params have no escaping for a `"`."""
     args = " ".join(f'param{i}="{p}"' for i, p in enumerate((name, *params), start=1))
     return f'bash="{SELF}" {args} terminal=false'
 
@@ -73,9 +74,13 @@ def notify(title, body):
     osascript("on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run", title, body)
 
 
-def submit(number, patch_set):
+def snapshot_row(number):
     changes = json.loads(STATUS.read_text()).get("changes", [])
-    subject = next((c["subject"] for c in changes if str(c["number"]) == number), "")
+    return next((c for c in changes if str(c["number"]) == number), {})
+
+
+def submit(number, patch_set):
+    subject = snapshot_row(number).get("subject", "")
     confirm = osascript(
         'on run argv\n'
         'display dialog (item 1 of argv & return & return & item 2 of argv) '
@@ -95,7 +100,10 @@ def submit(number, patch_set):
     subprocess.run(["open", "-g", f"swiftbar://refreshplugin?name={SWIFTBAR_PLUGIN}"], capture_output=True)
 
 
-def open_worktree(path, number):
+def open_worktree(number):
+    path = snapshot_row(number).get("worktree")
+    if not path:
+        return
     if pathlib.Path(ORCA).is_file():
         subprocess.run(["open", "-a", "Orca"], capture_output=True)
         created = subprocess.run([ORCA, "terminal", "create", "--worktree", f"path:{path}", "--title", f"CL {number}",
@@ -137,7 +145,7 @@ def print_change(change, label, symbol, color, fresh):
     print("-----")
     print(f"--{t('bar_open_gerrit')} | href={url} sfimage=safari")
     if change.get("worktree"):
-        print(f"--{t('bar_open_worktree')} | {action('worktree', change['worktree'], number)} sfimage=terminal")
+        print(f"--{t('bar_open_worktree')} | {action('worktree', number)} sfimage=terminal")
     print(f"--{t('bar_copy')} | {action('copy', number)} sfimage=doc.on.doc")
     if change.get("open_parent"):
         parent_url = url.rsplit("/", 1)[0] + f"/{change['open_parent']}"

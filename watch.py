@@ -271,27 +271,29 @@ def change_id_of(sha):
 
 
 _cleanup_memo = {}
+_change_ids = {}
 
 
 def cleanup_candidates(open_ids=frozenset()):
     """Read-only: local branches (and their worktree) whose tip is a pushed patch set of a merged CL of mine.
 
     Branches of still-open CLs are skipped, so the Gerrit query only reruns when a CL leaves `open_ids` or a
-    branch moves."""
+    branch moves. Runs every poll: only the few candidates pay for a `git status` of their worktree."""
+    global _change_ids
     blocks = [dict(line.partition(" ")[::2] for line in block.splitlines())
               for block in git("worktree", "list", "--porcelain").split("\n\n") if block.strip()]
     main_branch = blocks[0].get("branch", "").removeprefix("refs/heads/") if blocks else ""
     worktree_of = {b["branch"].removeprefix("refs/heads/"): b for b in blocks[1:] if "branch" in b}
 
+    tips = dict(line.split(" ") for line in
+                git("for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads").splitlines())
+    _change_ids = {sha: _change_ids[sha] if sha in _change_ids else change_id_of(sha) for sha in set(tips.values())}
     branches = {}
-    for line in git("for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads").splitlines():
-        branch, sha = line.split(" ")
-        if branch in PROTECTED_BRANCHES or branch == main_branch:
-            continue
+    for branch, sha in tips.items():
         worktree = worktree_of.get(branch)
-        if worktree and ("locked" in worktree or git("status", "--porcelain", cwd=worktree["worktree"]).strip()):
+        if branch in PROTECTED_BRANCHES or branch == main_branch or (worktree and "locked" in worktree):
             continue
-        change_id = change_id_of(sha)
+        change_id = _change_ids[sha]
         if change_id and change_id not in open_ids:
             branches[branch] = (sha, change_id, worktree["worktree"] if worktree else None)
     if not branches:
@@ -300,7 +302,9 @@ def cleanup_candidates(open_ids=frozenset()):
     if key not in _cleanup_memo:
         _cleanup_memo.clear()
         _cleanup_memo[key] = list(merged_branches(branches))
-    return _cleanup_memo[key]
+    # Checked on every call, not memoized: a worktree can get dirty without its branch moving.
+    return [(k, event) for k, event in _cleanup_memo[key]
+            if not event["worktree"] or not git("status", "--porcelain", cwd=event["worktree"]).strip()]
 
 
 def merged_branches(branches):
@@ -516,8 +520,12 @@ def http_get(url):
     return body.decode(errors="replace")
 
 
-def diagnose_ci(event):
-    """Network-bound: only for fresh zuul failures, so the idle loop stays free."""
+def diagnose_ci(event, histories=None):
+    """Network-bound: only for fresh zuul failures, so the idle loop stays free.
+
+    `histories` ({job: builds}) is shared across the events of one wake-up: a job red on several changes is
+    fetched once."""
+    histories = {} if histories is None else histories
     diagnosis = []
     for job in failed_jobs(event["message"]):
         entry = {"job": job["job"], "result": job["result"], "url": job["url"]}
@@ -534,7 +542,10 @@ def diagnose_ci(event):
             if comments:
                 entry["file_comments"] = comments
             # One call covers both: 200 builds of a job span well over the ±3 h flaky window.
-            history = json.loads(http_get(f"{ZUUL_API}/builds?job_name={job['job']}&limit={JOB_HISTORY_LIMIT}"))
+            if job["job"] not in histories:
+                histories[job["job"]] = json.loads(
+                    http_get(f"{ZUUL_API}/builds?job_name={job['job']}&limit={JOB_HISTORY_LIMIT}"))
+            history = histories[job["job"]]
             around = iso_to_epoch(build["end_time"]) if build.get("end_time") else time.time()
             entry["others_failing"] = others_failing(history, job["job"], event["change"], around)
             entry["job_history"] = job_history(history)
@@ -588,25 +599,29 @@ def interdiff(event):
     """What moved since the patch set I last saw; the diff is limited to the change's files to keep rebase noise out."""
     refs = {ref: f"{FETCH_NAMESPACE}/review/{event['change']}/{ref.rsplit('/', 1)[1]}"
             for ref in (event["since_ref"], event["current_ref"])}
-    fetch = git_run("fetch", "--quiet", "--no-write-fetch-head", "origin",
-                    *(f"+{ref}:{local}" for ref, local in refs.items()), timeout=180)
-    if fetch.returncode:
-        return {"error": error_detail(fetch)}
-    old, new = refs[event["since_ref"]], refs[event["current_ref"]]
-    files = sorted({f for sha in (old, new) for f in git("diff", "--name-only", f"{sha}^", sha).splitlines()})
-    result = {"rebased": git("rev-parse", f"{old}^") != git("rev-parse", f"{new}^"),
-              "stat": git("diff", "--stat", old, new, "--", *files).strip()[-3000:] if files else ""}
-    for local in refs.values():
-        git_run("update-ref", "-d", local)
-    return result
+    try:
+        fetch = git_run("fetch", "--quiet", "--no-write-fetch-head", "origin",
+                        *(f"+{ref}:{local}" for ref, local in refs.items()), timeout=180)
+        if fetch.returncode:
+            return {"error": error_detail(fetch)}
+        old, new = refs[event["since_ref"]], refs[event["current_ref"]]
+        files = sorted({f for sha in (old, new) for f in git("diff", "--name-only", f"{sha}^", sha).splitlines()})
+        return {"rebased": git("rev-parse", f"{old}^") != git("rev-parse", f"{new}^"),
+                "stat": git("diff", "--stat", old, new, "--", *files).strip()[-3000:] if files else ""}
+    except (subprocess.SubprocessError, OSError) as error:
+        return {"error": error_detail(error)}
+    finally:
+        for local in refs.values():
+            git_run("update-ref", "-d", local)
 
 
 def enrich(reported):
     """Network-bound extras, only for events about to be reported, so the idle loop stays free."""
+    histories = {}
     for event in reported:
         verdict = event.get("ci_verdict") or (event.get("message") if event.get("author_username") == CI_USER else None)
         if verdict and ZUUL_API:
-            event["ci_diagnosis"] = diagnose_ci({"change": event["change"], "message": verdict})
+            event["ci_diagnosis"] = diagnose_ci({"change": event["change"], "message": verdict}, histories)
             if PERIODIC_BUILD:
                 event["base_build"] = base_build(event["branch"])
         if event["kind"] == "review_new_patch_set" and event.get("since_ref") and event.get("current_ref"):
@@ -916,8 +931,12 @@ def save_seen(seen, state=None):
 
 
 def swiftbar(action, **params):
-    subprocess.run(["open", "-g", f"swiftbar://{action}?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"],
-                   capture_output=True, timeout=10)
+    """Best effort: a hung SwiftBar must not kill the daemon before it saves what it just notified."""
+    try:
+        subprocess.run(["open", "-g", f"swiftbar://{action}?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"],
+                       capture_output=True, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        pass
 
 
 def notification(event):
@@ -1039,8 +1058,10 @@ def main():
             continue
         settling = {key: current.get(key, event) for key, event in settling.items()} | fresh
         if settling:
+            # Enriched before being marked seen: a crash in the extras must not swallow the events.
+            report = enrich(list(settling.values()))
             save_seen(remember(seen, settling.keys(), result, current, now))
-            print(json.dumps({"status": "events", "events": enrich(list(settling.values())),
+            print(json.dumps({"status": "events", "events": report,
                               "threads_error": result.get("threads_error")}, ensure_ascii=False, indent=1))
             return 0
         time.sleep(args.interval)
