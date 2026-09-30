@@ -3,33 +3,16 @@
 import json
 import os
 import pathlib
-import subprocess
 import sys
 
-SESSION = pathlib.Path.home() / ".cache" / "gerrit-babysit" / "session.json"
+from config import CACHE
+from procs import descends_from, processes
+
+SESSION = CACHE / "session.json"
 WATCH_PY = pathlib.Path(__file__).resolve().parent / "watch.py"
 REASON = (f"The gerrit-babysit watcher is no longer running in this session. Relaunch `python3 {WATCH_PY}` "
           "with run_in_background before ending the turn. If watching should stop (stop requested), "
-          "delete ~/.cache/gerrit-babysit/session.json instead.")
-
-
-def processes():
-    """{pid: (ppid, command)}"""
-    out = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True).stdout
-    table = {}
-    for line in out.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) == 3:
-            table[int(parts[0])] = (int(parts[1]), parts[2])
-    return table
-
-
-def descends_from(pid, ancestor, table):
-    while pid > 1 and pid in table:
-        if pid == ancestor:
-            return True
-        pid = table[pid][0]
-    return False
+          f"delete {SESSION} instead.")
 
 
 def is_session_watcher(command):

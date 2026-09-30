@@ -3,33 +3,30 @@
 import json
 import time
 
+import snapshot
 import snooze
 from config import STALE_AFTER_S, STATUS, t
-
-
-def is_problem(change):
-    return change["conflict"] or change["ci"] in ("failed", "stale_base") or change["code_review"] < 0
 
 
 def main():
     if not STATUS.exists():
         return
-    snapshot = json.loads(STATUS.read_text())
-    changes = snapshot.get("changes", [])
+    status = json.loads(STATUS.read_text())
+    changes = status.get("changes", [])
     snoozed = snooze.active({c["number"]: c.get("patch_set") for c in changes})
-    active = [c for c in changes if not c["wip"] and c["number"] not in snoozed]
-    last_attempt = snapshot.get("last_attempt", snapshot.get("updated", 0))
-    segment = f"⎇ {len(active)}"
-    if snapshot.get("last_error") or time.time() - last_attempt > STALE_AFTER_S:
+    states = [snapshot.state(c) for c in changes if not c["wip"] and c["number"] not in snoozed]
+    last_attempt = status.get("last_attempt", status.get("updated", 0))
+    segment = f"⎇ {len(states)}"
+    if status.get("last_error") or time.time() - last_attempt > STALE_AFTER_S:
         segment += " · ?"
     else:
-        problems = sum(1 for c in active if is_problem(c))
-        ready = sum(1 for c in active if c["ready"] and not c.get("open_parent") and not is_problem(c))
+        problems = sum(1 for s in states if s in snapshot.PROBLEMS)
+        ready = states.count("ready")
         if problems:
             segment += f" · {problems}⚠"
         if ready:
             segment += f" · {ready}✓"
-        if snapshot.get("threads_error"):
+        if status.get("threads_error"):
             segment += f" · {t('threads_unknown')}"
     print(segment, end="")
 

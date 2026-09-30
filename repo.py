@@ -43,7 +43,10 @@ _conflicts_memo = {}
 
 
 def merge_conflicts(changes):
-    """{change number: conflicting files} — `is:mergeable` is often disabled server-side, so merge locally."""
+    """{change number: conflicting files} — `is:mergeable` is often disabled server-side, so merge locally.
+
+    The memo only keeps this poll's (branch tip, patch set) pairs: every push to the branch would grow it forever."""
+    global _conflicts_memo
     candidates = [(c, c["currentPatchSet"]) for c in changes if c.get("currentPatchSet", {}).get("revision")]
     if not candidates:
         return {}
@@ -53,21 +56,24 @@ def merge_conflicts(changes):
                  for c, ps in candidates if ps["revision"] in missing}
     fetch_refs(sorted(refspecs))
 
-    conflicts = {}
+    conflicts, memo = {}, {}
     for change, patch_set in candidates:
         target = git("rev-parse", "--verify", "--quiet", f"{FETCH_NAMESPACE}/{change['branch']}").strip()
         if not target:
             continue
         key = (target, patch_set["revision"])
-        if key not in _conflicts_memo:
+        if key in _conflicts_memo:
+            memo[key] = _conflicts_memo[key]
+        else:
             # A 3-way merge of the whole patch set onto the branch tip: conflicts iff Gerrit's rebase-on-submit would.
             result = git_run("merge-tree", "--write-tree", "--name-only", "--no-messages", target, patch_set["revision"])
             if result.returncode not in (0, 1):
                 # Patch set not fetched (its ref failed): unknown, not clean, so retry on the next poll.
                 continue
-            _conflicts_memo[key] = result.stdout.splitlines()[1:] if result.returncode == 1 else []
-        if _conflicts_memo[key]:
-            conflicts[change["number"]] = _conflicts_memo[key]
+            memo[key] = result.stdout.splitlines()[1:] if result.returncode == 1 else []
+        if memo[key]:
+            conflicts[change["number"]] = memo[key]
+    _conflicts_memo = memo
     return conflicts
 
 

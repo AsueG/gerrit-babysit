@@ -19,12 +19,12 @@ import time
 SELF = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(SELF.parents[1]))
 import ci  # noqa: E402
-import gerrit  # noqa: E402
+import snapshot  # noqa: E402
 import snooze  # noqa: E402
 from config import (CI_STUCK_S, COMMAND, CONFIG, REPO, SKILL_DIR, STALE_AFTER_S, STATUS,  # noqa: E402
                     SWIFTBAR_PLUGIN, t)
 
-DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{gerrit.HOST}/dashboard/self"
+DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{CONFIG['gerrit_host']}/dashboard/self"
 ICON = "sfimage=arrow.triangle.pull"
 OPEN_CLAUDE = SKILL_DIR / "GerritBabysit.app"
 ORCA = shutil.which("orca") or "/opt/homebrew/bin/orca"
@@ -38,30 +38,44 @@ def scope(subject):
     return match.group(1) if match else subject[:30]
 
 
+# snapshot.state → (sf symbol, color); red is exactly snapshot.PROBLEMS.
+STYLES = {
+    "wip": ("pencil", "gray"),
+    "conflict": ("exclamationmark.triangle.fill", "red"),
+    "stale_base": ("arrow.triangle.branch", "red"),
+    "ci_failed": ("xmark.octagon.fill", "red"),
+    "rejected": ("hand.thumbsdown.fill", "red"),
+    "parent_updated": ("square.stack.3d.up", "orange"),
+    "ci_stuck": ("exclamationmark.arrow.triangle.2.circlepath", "orange"),
+    "ready_parent": ("link", "orange"),
+    "ready": ("checkmark.seal.fill", "green"),
+    "ci_running": ("hourglass", "orange"),
+    "ci_passed": ("clock", None),
+}
+
+
+def label_of(state, change):
+    if state == "wip":
+        return "WIP"
+    if state == "ci_failed":
+        return t("bar_ci_failed", labels=", ".join(change["ci_failed"]))
+    if state == "rejected":
+        return f"CR {change['code_review']}"
+    if state == "parent_updated":
+        return t("bar_parent_updated", parent=change["outdated_parent"])
+    if state == "ci_stuck":
+        return t("bar_ci_stuck", hours=CI_STUCK_S // 3600)
+    if state == "ready_parent":
+        return t("bar_ready_parent", parent=change["open_parent"])
+    if state in ("ci_running", "ci_passed"):
+        return t(f"bar_{state}", cr=f"+{change['code_review']}" if change["code_review"] > 0 else "0")
+    return t(f"bar_{state}")
+
+
 def state_of(change):
     """(label, sf symbol, color) — worst problem first."""
-    if change["wip"]:
-        return "WIP", "pencil", "gray"
-    if change["conflict"]:
-        return t("bar_conflict"), "exclamationmark.triangle.fill", "red"
-    if change["ci"] == "stale_base":
-        return t("bar_stale_base"), "arrow.triangle.branch", "red"
-    if change["ci"] == "failed":
-        return t("bar_ci_failed", labels=", ".join(change["ci_failed"])), "xmark.octagon.fill", "red"
-    if change["code_review"] < 0:
-        return f"CR {change['code_review']}", "hand.thumbsdown.fill", "red"
-    if change.get("outdated_parent"):
-        return t("bar_parent_updated", parent=change["outdated_parent"]), "square.stack.3d.up", "orange"
-    if change.get("ci_stuck"):
-        return t("bar_ci_stuck", hours=CI_STUCK_S // 3600), "exclamationmark.arrow.triangle.2.circlepath", "orange"
-    if change["ready"] and change.get("open_parent"):
-        return t("bar_ready_parent", parent=change["open_parent"]), "link", "orange"
-    if change["ready"]:
-        return t("bar_ready"), "checkmark.seal.fill", "green"
-    code_review = f"+{change['code_review']}" if change["code_review"] > 0 else "0"
-    if change["ci"] == "running":
-        return t("bar_ci_running", cr=code_review), "hourglass", "orange"
-    return t("bar_ci_passed", cr=code_review), "clock", None
+    state = snapshot.state(change)
+    return (label_of(state, change), *STYLES[state])
 
 
 def action(name, *params):
@@ -101,17 +115,22 @@ def refresh():
     subprocess.run(["open", "-g", f"swiftbar://refreshplugin?name={SWIFTBAR_PLUGIN}"], capture_output=True)
 
 
+def review(number, patch_set, option, subject, done, failed):
+    """`gerrit review` on the confirmed patch set: Gerrit refuses if a newer one was pushed since the snapshot."""
+    # Imported on use: resolving the SSH user can run git, and the menu redraws every 30 s.
+    import gerrit
+    result = gerrit.ssh("gerrit", "review", *option, f"{number},{patch_set}", timeout=120)
+    if result.returncode == 0:
+        notify(t(done, n=number), subject)
+    else:
+        alert(t(failed, n=number), result.stderr.strip() or result.stdout.strip())
+    refresh()
+
+
 def submit(number, patch_set):
     subject = snapshot_row(number).get("subject", "")
-    if not confirmed(t("bar_submit_confirm", n=number, ps=patch_set), subject, t("bar_submit_button")):
-        return
-    # Pinning the patch set makes Gerrit refuse if a newer one was pushed since the snapshot.
-    result = gerrit.ssh("gerrit", "review", "--submit", f"{number},{patch_set}", timeout=120)
-    if result.returncode == 0:
-        notify(t("bar_submitted", n=number), subject)
-    else:
-        alert(t("bar_submit_failed", n=number), result.stderr.strip() or result.stdout.strip())
-    refresh()
+    if confirmed(t("bar_submit_confirm", n=number, ps=patch_set), subject, t("bar_submit_button")):
+        review(number, patch_set, ["--submit"], subject, "bar_submitted", "bar_submit_failed")
 
 
 def recheck_detail(change):
@@ -132,15 +151,9 @@ def recheck(number, patch_set):
     # The comment goes through Gerrit's SSH command line: only a plain recheck variant.
     if not ci.RECHECK.fullmatch(comment) or str(row.get("patch_set")) != patch_set:
         return
-    if not confirmed(t("bar_recheck_confirm", comment=comment, n=number, ps=patch_set), row.get("subject", ""),
-                     t("bar_recheck_button")):
-        return
-    result = gerrit.ssh("gerrit", "review", "--message", comment, f"{number},{patch_set}", timeout=120)
-    if result.returncode == 0:
-        notify(t("bar_rechecked", n=number), row.get("subject", ""))
-    else:
-        alert(t("bar_recheck_failed", n=number), result.stderr.strip() or result.stdout.strip())
-    refresh()
+    subject = row.get("subject", "")
+    if confirmed(t("bar_recheck_confirm", comment=comment, n=number, ps=patch_set), subject, t("bar_recheck_button")):
+        review(number, patch_set, ["--message", comment], subject, "bar_rechecked", "bar_recheck_failed")
 
 
 def ask_date(number):

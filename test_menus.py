@@ -5,6 +5,7 @@ import io
 import json
 import os
 import pathlib
+import sys
 import tempfile
 import time
 import unittest
@@ -15,6 +16,7 @@ os.environ["GERRIT_BABYSIT_CONFIG"] = str(FIXTURES / "config.json")
 os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-babysit-test-"))
 
 import config  # noqa: E402
+import gerrit  # noqa: E402
 import statusline_segment  # noqa: E402
 
 # The plugin's file name (SwiftBar's refresh interval is in it) is not an importable module name.
@@ -55,6 +57,18 @@ class StatusLineTest(SnapshotTest):
         found = self.segment()
         # Then
         self.assertEqual("⎇ 3 · 1⚠ · 1✓", found)
+
+    def test_counts_agree_with_the_menu_colors(self):
+        # Given
+        changes = [row(1, ready=True, outdated_parent=9), row(2, ready=True), row(3, code_review=-1),
+                   row(4, ci="stale_base")]
+        self.write(changes)
+        # When
+        found = self.segment()
+        colors = [plugin.state_of(c)[2] for c in changes]
+        # Then
+        self.assertEqual(f"⎇ 4 · {colors.count('red')}⚠ · {colors.count('green')}✓", found)
+        self.assertEqual("⎇ 4 · 2⚠ · 1✓", found)
 
     def test_stale_snapshot_shows_a_question_mark(self):
         # Given
@@ -194,7 +208,17 @@ class RecheckTest(SnapshotTest):
             plugin.handle(["recheck", "7", "2"])
         # Then
         ssh = [c.args[0] for c in run.call_args_list if c.args[0][0] == "ssh"]
-        self.assertEqual([[*plugin.gerrit.SSH, "gerrit", "review", "--message", "recheck", "7,2"]], ssh)
+        self.assertEqual([[*gerrit.SSH, "gerrit", "review", "--message", "recheck", "7,2"]], ssh)
+
+    def test_drawing_the_menu_never_loads_the_gerrit_module(self):
+        # Given
+        self.write([row(1, **FLAKY_RED)])
+        # When
+        with mock.patch.dict(sys.modules, {"gerrit": None}), mock.patch.object(plugin, "STATUS", self.status), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            plugin.main()
+        # Then
+        self.assertIn('"recheck"', out.getvalue())
 
 
 class SnoozeMenuTest(SnapshotTest):

@@ -6,7 +6,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+# First: points the config at the fixtures before any module reads it.
+import fakes  # noqa: F401
 import stop_hook
+import watch
 
 BABYSIT, OTHER, HOOK = 100, 200, 150
 WATCHER = f"python3 {stop_hook.WATCH_PY}"
@@ -30,6 +33,15 @@ class StopHookTest(unittest.TestCase):
                 mock.patch("sys.stdout", out):
             stop_hook.main()
         return json.loads(out.getvalue()) if out.getvalue() else None
+
+    def test_reads_the_session_lock_where_the_watcher_writes_it(self):
+        # Given
+        written = watch.SESSION
+        # When
+        read = stop_hook.SESSION
+        # Then
+        self.assertEqual(written, read)
+        self.assertIn(str(read), stop_hook.REASON)
 
     def test_blocks_the_babysit_session_without_a_watcher(self):
         # Given

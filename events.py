@@ -303,6 +303,44 @@ def pending_events(result, now=None):
             yield event
 
 
+def status_rows(result, flakes, worktrees, now):
+    """The snapshot rows read by the SwiftBar plugin and the status line; `worktrees` is {Change-Id: path}."""
+    threads = result.get("threads", {})
+    threads_error = result.get("threads_error")
+    rows = []
+    for change in result["changes"]:
+        number = change["number"]
+        patch_set = change.get("currentPatchSet", {})
+        votes = votes_of(patch_set)
+        code_review = votes.get("Code-Review", [])
+        state = ci_state(change, patch_set, votes)
+        verdict = latest_ci_verdict(change, patch_set) if state == "failed" else None
+        failed_jobs = [{"job": j["job"], "result": j["result"]} for j in ci.failed_jobs(verdict["message"])] if verdict else []
+        outdated = result.get("outdated_parents", {}).get(number)
+        rows.append({
+            "number": number,
+            "patch_set": patch_set.get("number"),
+            "subject": change["subject"],
+            "url": change["url"],
+            "wip": change.get("wip", False),
+            "code_review": min(code_review) if code_review and min(code_review) < 0 else max(code_review, default=0),
+            "ci": state,
+            "ci_failed": failed_ci_labels(votes),
+            "ci_failed_jobs": failed_jobs,
+            "flaky": ci.flaky_counts(flakes, [j["job"] for j in failed_jobs], now),
+            # Every recheck on the patch set, also after the verdict: one may already be running.
+            "rechecks": my_rechecks(change, patch_set, float("inf")),
+            "ci_stuck": is_ci_stuck(change, patch_set, now),
+            "threads": None if threads_error else len(threads.get(number, [])),
+            "conflict": number in result["conflicts"],
+            "open_parent": result["parents"].get(number),
+            "outdated_parent": outdated["parent"] if outdated else None,
+            "ready": is_ready_to_submit(patch_set) and not threads_error and not threads.get(number),
+            "worktree": worktrees.get(change["id"]),
+        })
+    return rows
+
+
 def notification(event):
     n = event.get("change")
     kind = event["kind"]

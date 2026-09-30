@@ -83,6 +83,9 @@ clone free of local edits, so updating is just `git pull`.
 | `events.py` | Pure logic: poll rows in, keyed events and notification texts out |
 | `ci.py` | Zuul failure diagnosis: failing jobs, gradle/lint errors, category, flakiness hints |
 | `config.py` | Settings and FR/EN strings |
+| `snapshot.py` | One classification of the snapshot rows for the SwiftBar menu and the status line |
+| `snooze.py` | Snoozed changes, and the CLI to snooze or wake one |
+| `procs.py` | Process-tree lookup: which Claude session a watcher or hook runs under |
 | `stop_hook.py` | Claude Code Stop hook that keeps the watcher running during a babysit session |
 | `statusline_segment.py` | Status line segment read from the snapshot |
 | `macos/` | LaunchAgent installer, SwiftBar plugin, session launcher |

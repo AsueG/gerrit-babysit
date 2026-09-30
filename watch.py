@@ -13,6 +13,7 @@ import urllib.parse
 import ci
 import events
 import gerrit
+import procs
 import repo
 import snooze
 from config import CACHE, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write
@@ -109,10 +110,9 @@ def poll():
 
 
 def with_int_keys(result):
-    """JSON turns the change-number keys into strings; defaults cover a daemon still running older code."""
-    return {**result, "reviews": result.get("reviews", []), "attention": result.get("attention", []),
-            **{key: {int(k): v for k, v in result.get(key, {}).items()}
-               for key in ("conflicts", "parents", "stale_parents", "outdated_parents", "threads")}}
+    """JSON turns the change-number keys into strings."""
+    return {**result, **{key: {int(k): v for k, v in result[key].items()}
+                         for key in ("conflicts", "parents", "stale_parents", "outdated_parents", "threads")}}
 
 
 class DaemonError(Exception):
@@ -195,42 +195,9 @@ def write_status(result=None, error=None):
         previous = json.loads(STATUS.read_text()) if STATUS.exists() else {}
         atomic_write(STATUS, {**previous, "last_attempt": now, "last_error": error})
         return
-    worktrees = repo.worktrees_by_change_id()
-    threads_error = result.get("threads_error")
-    flakes = load_flaky()
-    rows = []
-    for change in result["changes"]:
-        patch_set = change.get("currentPatchSet", {})
-        votes = events.votes_of(patch_set)
-        code_review = votes.get("Code-Review", [])
-        state = events.ci_state(change, patch_set, votes)
-        verdict = events.latest_ci_verdict(change, patch_set) if state == "failed" else None
-        failed_jobs = [{"job": j["job"], "result": j["result"]} for j in ci.failed_jobs(verdict["message"])] if verdict else []
-        outdated = result.get("outdated_parents", {}).get(change["number"])
-        rows.append({
-            "number": change["number"],
-            "patch_set": patch_set.get("number"),
-            "subject": change["subject"],
-            "url": change["url"],
-            "wip": change.get("wip", False),
-            "code_review": min(code_review) if code_review and min(code_review) < 0 else max(code_review, default=0),
-            "ci": state,
-            "ci_failed": events.failed_ci_labels(votes),
-            "ci_failed_jobs": failed_jobs,
-            "flaky": ci.flaky_counts(flakes, [j["job"] for j in failed_jobs], now),
-            # Every recheck on the patch set, also after the verdict: one may already be running.
-            "rechecks": events.my_rechecks(change, patch_set, float("inf")),
-            "ci_stuck": events.is_ci_stuck(change, patch_set, now),
-            "threads": None if threads_error else len(result.get("threads", {}).get(change["number"], [])),
-            "conflict": change["number"] in result["conflicts"],
-            "open_parent": result["parents"].get(change["number"]),
-            "outdated_parent": outdated["parent"] if outdated else None,
-            "ready": (events.is_ready_to_submit(patch_set) and not threads_error
-                      and not result.get("threads", {}).get(change["number"])),
-            "worktree": worktrees.get(change["id"]),
-        })
-    atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None, "threads_error": threads_error,
-                          "changes": rows})
+    rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(), now)
+    atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None,
+                          "threads_error": result.get("threads_error"), "changes": rows})
 
 
 def snoozed_changes(result, now):
@@ -256,15 +223,9 @@ def remember(seen, keys, result, current, now):
 
 def claude_pid():
     """The Claude session running this watcher, found by walking up the process tree."""
-    pid = os.getppid()
-    while pid > 1:
-        row = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True, text=True).stdout.split(None, 1)
-        if len(row) < 2:
-            return None
-        if pathlib.Path(row[1].strip()).name == "claude":
-            return pid
-        pid = int(row[0])
-    return None
+    table = procs.processes("comm")
+    return next((pid for pid in procs.ancestors(os.getppid(), table)
+                 if pathlib.Path(table[pid][1].strip()).name == "claude"), None)
 
 
 def write_session_lock():
