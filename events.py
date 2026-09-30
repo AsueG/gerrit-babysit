@@ -43,6 +43,12 @@ def is_ready_to_submit(patch_set):
     return 2 in code_review and min(code_review) >= 0 and ci_passed(votes)
 
 
+def unsatisfied_requirements(change):
+    """Names of the submit requirements blocking a REST change row (`o=SUBMIT_REQUIREMENTS`), e.g. `Code-Owners`
+    from the code-owners plugin. A Gerrit too old to report them (< 3.5) leaves the votes to decide alone."""
+    return sorted(r["name"] for r in change.get("submit_requirements", []) if r.get("status") in ("UNSATISFIED", "ERROR"))
+
+
 def ci_passed(votes):
     # Some CIs vote +2 (e.g. a gate pipeline), not only +1.
     return all(max(votes.get(label, [0])) >= 1 and min(votes[label]) >= 0 for label in CI_LABELS)
@@ -207,6 +213,19 @@ def review_wait(change, patch_set, attention, now):
     return (unreviewed, [], dismissed) if unreviewed and not holders else None
 
 
+# Work left halfway first, then what blocks my changes (a red base explains the CI failures after it), what one
+# click unblocks, what others wait from me, then what only waits.
+URGENCY = ("unfinished", "base_red", "merge_conflict", "parent_merged", "pending", "message", "submit_blocked",
+           "ready_to_submit", "parent_updated", "ci_stuck", "review_reply", "review_requested", "review_new_patch_set",
+           "waiting_for_review", "cleanup_candidate")
+
+
+def by_urgency(reported):
+    """Stable: events of one kind keep their order."""
+    rank = {kind: i for i, kind in enumerate(URGENCY)}
+    return sorted(reported, key=lambda event: rank.get(event["kind"], len(URGENCY)))
+
+
 def nudges(reported):
     """One entry per reviewer holding waiting changes: a single reminder for all of them, not one per change."""
     by_reviewer = {}
@@ -235,6 +254,7 @@ def events(result, now=None):
     threads_error = result.get("threads_error")
     attention = set(result.get("attention", []))
     attention_sets = result.get("attention_sets")
+    blockers = result.get("submit_blockers") or {}
     for change in result["changes"]:
         number = change["number"]
         patch_set = change.get("currentPatchSet", {})
@@ -268,9 +288,14 @@ def events(result, now=None):
                 **base, "kind": "merge_conflict", "files": conflicts[number]}
         elif (is_ready_to_submit(patch_set) and number not in result["parents"] and not threads.get(number)
               and not threads_error):
-            # One key per working day: a CL left unsubmitted comes back the next morning.
-            yield f'{number}:ready:{patch_set.get("number")}:{day}', {
-                **base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set)}
+            if blockers.get(number):
+                # The votes are there but Gerrit would refuse the submit: once per patch set and set of blockers.
+                yield f'{number}:blocked:{patch_set.get("number")}:{"+".join(blockers[number])}', {
+                    **base, "kind": "submit_blocked", "requirements": blockers[number]}
+            else:
+                # One key per working day: a CL left unsubmitted comes back the next morning.
+                yield f'{number}:ready:{patch_set.get("number")}:{day}', {
+                    **base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set)}
         wait = None if attention_sets is None else attention_sets.get(number, {"holders": [], "removed": []})
         wait = review_wait(change, patch_set, wait, now)
         if (wait and number not in conflicts and number not in stale and not is_ready_to_submit(patch_set)
@@ -374,6 +399,7 @@ def status_rows(result, flakes, worktrees, now):
     """The snapshot rows read by the SwiftBar plugin and the status line; `worktrees` is {Change-Id: path}."""
     threads = result.get("threads", {})
     threads_error = result.get("threads_error")
+    blockers = result.get("submit_blockers") or {}
     rows = []
     for change in result["changes"]:
         number = change["number"]
@@ -402,7 +428,9 @@ def status_rows(result, flakes, worktrees, now):
             "conflict": number in result["conflicts"],
             "open_parent": result["parents"].get(number),
             "outdated_parent": outdated["parent"] if outdated else None,
-            "ready": is_ready_to_submit(patch_set) and not threads_error and not threads.get(number),
+            "ready": (is_ready_to_submit(patch_set) and not threads_error and not threads.get(number)
+                      and not blockers.get(number)),
+            "submit_blocked": blockers.get(number, []),
             "worktree": worktrees.get(change["id"]),
             "branch": change["branch"],
             "base_red": ci.is_red(result.get("base_health", {}).get(change["branch"])),
@@ -416,6 +444,8 @@ def notification(event, now=None):
     kind = event["kind"]
     if kind == "merge_conflict":
         return t("conflict", n=n), ", ".join(pathlib.Path(f).name for f in event["files"])
+    if kind == "submit_blocked":
+        return t("submit_blocked", n=n), t("submit_blocked_body", requirements=", ".join(event["requirements"]))
     if kind == "ready_to_submit":
         since = event.get("ready_since")
         days = int((now - since) // 86400) if since else 0

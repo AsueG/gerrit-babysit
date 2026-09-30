@@ -41,6 +41,31 @@ class OpenThreadsTest(unittest.TestCase):
         self.assertEqual(1, len(first[1]))
         self.assertEqual(2, rest.call_count)
 
+    def test_requirements_are_only_asked_for_voted_changes_and_again_when_they_move(self):
+        # Given
+        watch._requirements_memo = watch.PollMemo()
+        voted = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
+        row = {"submit_requirements": [{"name": "Code-Owners", "status": "UNSATISFIED"}]}
+        with mock.patch.object(gerrit, "rest_get", return_value=row) as rest:
+            # When
+            first = watch.submit_blockers([change(1, current=voted, lastUpdated=10), change(2, lastUpdated=10)])
+            watch.submit_blockers([change(1, current=voted, lastUpdated=10)])
+            watch.submit_blockers([change(1, current=voted, lastUpdated=11)])
+        # Then
+        self.assertEqual({1: ["Code-Owners"]}, first)
+        self.assertEqual(2, rest.call_count)
+        rest.assert_called_with("/changes/1?o=SUBMIT_REQUIREMENTS")
+
+    def test_unreadable_requirements_are_unknown(self):
+        # Given
+        watch._requirements_memo = watch.PollMemo()
+        voted = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
+        with mock.patch.object(gerrit, "rest_get", side_effect=OSError("HTTP Error 401: Unauthorized")):
+            # When
+            found = watch.submit_blockers([change(1, current=voted)])
+        # Then
+        self.assertIsNone(found)
+
     def test_an_expired_rest_token_does_not_fail_the_poll(self):
         # Given
         ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
@@ -208,7 +233,7 @@ class SettleTest(unittest.TestCase):
 
 
 class SessionRetryTest(unittest.TestCase):
-    def run_main(self, argv, polls):
+    def run_main(self, argv, polls, unfinished=()):
         out = []
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -217,6 +242,7 @@ class SessionRetryTest(unittest.TestCase):
                 mock.patch.object(watch, "write_status"), \
                 mock.patch.object(watch, "daemon_poll", side_effect=polls), \
                 mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
+                mock.patch.object(watch, "unfinished_events", return_value=list(unfinished)), \
                 mock.patch.object(watch, "enrich", side_effect=lambda events, *_: events), \
                 mock.patch.object(watch.time, "sleep") as sleep, \
                 mock.patch("sys.argv", ["watch.py", *argv]), \
@@ -242,7 +268,6 @@ class SessionRetryTest(unittest.TestCase):
         # Then
         self.assertEqual((1, "error"), (code, out[0]["status"]))
 
-
     def test_the_pending_sweep_checks_the_http_password_when_no_change_needs_it(self):
         # Given
         with mock.patch.object(gerrit, "http_error", return_value="HTTP Error 401: Unauthorized") as http_error:
@@ -251,6 +276,43 @@ class SessionRetryTest(unittest.TestCase):
         # Then
         http_error.assert_called_once()
         self.assertEqual((0, "HTTP Error 401: Unauthorized"), (code, out[0]["threads_error"]))
+
+    def test_the_pending_sweep_opens_on_the_work_left_halfway(self):
+        # Given
+        c = change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10)])
+        ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
+        result = poll_result([c, change(2, current=ps)], threads={1: [{"file": "A.kt"}]})
+        unfinished = [("1:unfinished", {"kind": "unfinished", "change": 1, "unpushed": True})]
+        # When
+        code, out, _ = self.run_main(["--pending"], [result], unfinished)
+        # Then
+        self.assertEqual(["unfinished", "pending", "ready_to_submit"], [e["kind"] for e in out[0]["events"]])
+
+
+class UnfinishedEventsTest(unittest.TestCase):
+    def test_local_work_and_drafts_merge_per_change(self):
+        # Given
+        local = {1: {"worktree": "/wt/1", "unpushed": True, "busy": False}}
+        drafts = [change(1), change(5, subject="someone else's")]
+        with mock.patch.object(repo, "unfinished_work", return_value=local), \
+                mock.patch.object(gerrit, "query", return_value=drafts) as query:
+            # When
+            found = dict(watch.unfinished_events([change(1)]))
+        # Then
+        query.assert_called_once_with(watch.DRAFTS_QUERY)
+        self.assertEqual([("/wt/1", True, True), (None, False, True)],
+                         [(e["worktree"], e["unpushed"], e["drafts"]) for e in found.values()])
+        self.assertEqual(["1:unfinished", "5:unfinished"], list(found))
+
+    def test_an_unreachable_gerrit_still_reports_the_local_work(self):
+        # Given
+        local = {1: {"worktree": "/wt/1", "unpushed": False, "busy": True}}
+        with mock.patch.object(repo, "unfinished_work", return_value=local), \
+                mock.patch.object(gerrit, "query", side_effect=OSError("offline")):
+            # When
+            found = dict(watch.unfinished_events([change(1)]))
+        # Then
+        self.assertEqual([(True, False)], [(e["busy"], e["drafts"]) for e in found.values()])
 
 
 class SwiftbarTest(unittest.TestCase):

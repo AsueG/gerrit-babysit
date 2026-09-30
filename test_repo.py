@@ -432,5 +432,39 @@ class WorktreesByChangeIdTest(GitRepoTest):
         self.assertEqual({CHANGE_ID, other}, set(moved))
 
 
+class UnfinishedWorkTest(GitRepoTest):
+    def setUp(self):
+        super().setUp()
+        repo._worktrees_memo.clear()
+
+    def pushed(self, number, change_id, sha):
+        return {"number": number, "id": change_id, "currentPatchSet": {"revision": sha}}
+
+    def test_an_amend_never_pushed_is_unfinished(self):
+        # Given
+        pushed = self.commit("feat", CHANGE_ID)
+        clean = repo.unfinished_work([self.pushed(7, CHANGE_ID, pushed)])
+        self.git("commit", "-q", "--amend", "--allow-empty", "-m", f"feat, fixed\n\nChange-Id: {CHANGE_ID}")
+        repo._worktrees_memo.clear()
+        # When
+        found = repo.unfinished_work([self.pushed(7, CHANGE_ID, pushed)])
+        # Then
+        self.assertEqual({}, clean)
+        self.assertEqual([(7, True, False)], [(n, w["unpushed"], w["busy"]) for n, w in found.items()])
+
+    def test_edits_in_a_stack_are_reported_once_on_its_head(self):
+        # Given
+        (self.repo / "A.kt").write_text("a")
+        self.git("add", "A.kt")
+        lower = self.commit("lower", CHANGE_ID)
+        top_id = "I" + "def1" * 10
+        top = self.commit("top", top_id)
+        (self.repo / "A.kt").write_text("edited")
+        # When
+        found = repo.unfinished_work([self.pushed(7, CHANGE_ID, lower), self.pushed(8, top_id, top)])
+        # Then
+        self.assertEqual([(8, False, True)], [(n, w["unpushed"], w["busy"]) for n, w in found.items()])
+
+
 if __name__ == "__main__":
     unittest.main()

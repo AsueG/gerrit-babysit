@@ -24,6 +24,7 @@ from memo import PollMemo
 QUERY = "owner:self status:open"
 REVIEW_QUERY = "reviewer:self status:open -owner:self"
 ATTENTION_QUERY = "attention:self status:open"
+DRAFTS_QUERY = "has:draft status:open"
 STATE = CACHE / "seen.json"
 DAEMON_STATE = CACHE / "daemon-seen.json"
 DAEMON_POLL = CACHE / "daemon-poll.json"
@@ -75,6 +76,25 @@ def open_threads(changes):
         return {number: memo.get(key, fetched.get, key) for number, key in keys.items()}
 
 
+_requirements_memo = PollMemo()
+
+
+def submit_blockers(changes):
+    """{change number: unsatisfied submit requirements} for the changes the votes call ready, None when REST fails.
+    SSH queries carry no requirement, and the code-owners plugin only shows up there; asked again when the change
+    moves."""
+    keys = {c["number"]: (c["number"], c.get("lastUpdated")) for c in changes
+            if events.is_ready_to_submit(c.get("currentPatchSet", {}))}
+    def fetch(number):
+        return events.unsatisfied_requirements(gerrit.rest_get(f"/changes/{number}?o=SUBMIT_REQUIREMENTS"))
+
+    try:
+        with _requirements_memo.poll() as memo:
+            return {number: memo.get(key, fetch, number) for number, key in keys.items()}
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def parent_statuses(changes):
     """{change number: (parent number, parent status, parent's current patch set)} — `dependsOn` lists merged
     parents too."""
@@ -103,6 +123,21 @@ def outdated_parents(changes, statuses):
     return outdated
 
 
+def unfinished_events(changes):
+    """Work an earlier session left halfway (a crash between the fix and its approval): local commits or edits Gerrit
+    has not seen, and drafts I never published, on my changes or on the ones I review."""
+    local = repo.unfinished_work(changes)
+    try:
+        drafts = {row["number"]: row for row in gerrit.query(DRAFTS_QUERY)}
+    except (subprocess.SubprocessError, OSError, ValueError):
+        drafts = {}
+    mine = {c["number"]: c for c in changes}
+    for number in sorted(local.keys() | drafts.keys()):
+        yield f"{number}:unfinished", {
+            **events.event_base(mine.get(number) or drafts[number]), "kind": "unfinished",
+            **local.get(number, {"worktree": None, "unpushed": False, "busy": False}), "drafts": number in drafts}
+
+
 def threads_or_error(changes):
     """REST relies on the HTTP password, SSH does not: an expired token must not blind the whole watcher."""
     try:
@@ -122,12 +157,13 @@ def base_health(changes):
 def poll():
     # Independent round trips run side by side: the SSH queries share one multiplexed connection, and the REST
     # calls overlap the local git fetch.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         reviews = pool.submit(fetch_reviews)
         attention = pool.submit(fetch_attention)
         attention_sets = pool.submit(my_attention_sets)
         changes = fetch_changes()
         threads_job = pool.submit(threads_or_error, changes)
+        blockers = pool.submit(submit_blockers, changes)
         base_job = pool.submit(base_health, changes)
         statuses = parent_statuses(changes)
         conflicts = repo.merge_conflicts(changes)
@@ -144,13 +180,14 @@ def poll():
             "reviews": reviews.result(),
             "attention": attention.result(),
             "attention_sets": attention_sets.result(),
+            "submit_blockers": blockers.result(),
             "base_health": base_job.result(),
         }
 
 
 def with_int_keys(result):
     """JSON turns the change-number keys into strings."""
-    keys = ("conflicts", "parents", "stale_parents", "outdated_parents", "threads", "attention_sets")
+    keys = ("conflicts", "parents", "stale_parents", "outdated_parents", "threads", "attention_sets", "submit_blockers")
     return {**result, **{key: {int(k): v for k, v in result[key].items()} for key in keys if result.get(key) is not None}}
 
 
@@ -428,6 +465,7 @@ def main():
             # Same poll for the report and the seen set: nothing can slip in between.
             report = enrich(list(awake(enumerate(events.pending_events(result, now)), snoozed).values())
                             + list(cleanup.values()), result.get("base_health"))
+            report = events.by_urgency(list(awake(unfinished_events(result["changes"]), snoozed).values()) + report)
             save_seen(remember(seen, current.keys(), result, current, now))
             threads_error = result.get("threads_error")
             if threads_error is None and not result["changes"]:
@@ -446,7 +484,8 @@ def main():
         settling = {key: current.get(key, event) for key, event in settling.items()} | fresh
         if settling:
             # Enriched before being marked seen: a crash in the extras must not swallow the events.
-            report = enrich(list(settling.values()), result.get("base_health"))
+            # A snooze ending or a morning catch-up can flush many at once: most urgent first.
+            report = events.by_urgency(enrich(list(settling.values()), result.get("base_health")))
             save_seen(remember(seen, settling.keys(), result, current, now))
             print(json.dumps({"status": "events", "events": report, "nudges": events.nudges(report),
                               "threads_error": result.get("threads_error")}, ensure_ascii=False, indent=1))

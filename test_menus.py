@@ -119,6 +119,14 @@ class MenuStateTest(unittest.TestCase):
         # Then
         self.assertEqual(["green", "orange"], found)
 
+    def test_a_blocked_submit_names_what_is_missing(self):
+        # Given
+        blocked = row(code_review=2, ci="passed", submit_blocked=["Code-Owners"])
+        # When
+        found = plugin.state_of(blocked)
+        # Then
+        self.assertEqual((plugin.t("bar_submit_blocked", requirements="Code-Owners"), "lock.fill", "orange"), found)
+
     def test_waiting_states(self):
         # Given
         changes = [row(ci_stuck=True, ci="running"), row(ci="running"), row(ci="passed", code_review=1)]

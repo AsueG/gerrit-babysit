@@ -309,6 +309,56 @@ class EventsTest(unittest.TestCase):
         self.assertEqual([["1:ready:1:2026-09-29"], ["1:ready:1:2026-09-30"]], keys)
         self.assertEqual(123, dict(events.events(result, tuesday))["1:ready:1:2026-09-29"]["ready_since"])
 
+    def test_a_missing_code_owner_turns_ready_into_blocked(self):
+        # Given
+        ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
+        result = {**poll_result([change(current=ps)]), "submit_blockers": {1: ["Code-Owners"]}}
+        # When
+        found = dict(events.events(result, local(2026, 9, 29, 10)))
+        # Then
+        self.assertEqual({"1:blocked:1:Code-Owners"}, found.keys())
+        self.assertEqual(["Code-Owners"], found["1:blocked:1:Code-Owners"]["requirements"])
+
+    def test_unknown_requirements_leave_the_votes_to_decide(self):
+        # Given
+        ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
+        result = {**poll_result([change(current=ps)]), "submit_blockers": None}
+        # When
+        kinds = [e["kind"] for _, e in events.events(result, local(2026, 9, 29, 10))]
+        # Then
+        self.assertEqual(["ready_to_submit"], kinds)
+
+
+class ByUrgencyTest(unittest.TestCase):
+    def test_blockers_before_quick_wins_before_waits_and_same_kinds_keep_their_order(self):
+        # Given
+        reported = [{"kind": k, "change": n} for k, n in (("cleanup_candidate", 1), ("waiting_for_review", 2),
+                                                          ("ready_to_submit", 3), ("merge_conflict", 4),
+                                                          ("ready_to_submit", 5), ("unfinished", 6))]
+        # When
+        found = [e["change"] for e in events.by_urgency(reported)]
+        # Then
+        self.assertEqual([6, 4, 3, 5, 2, 1], found)
+
+
+class UnsatisfiedRequirementsTest(unittest.TestCase):
+    def test_only_unsatisfied_or_broken_requirements_block(self):
+        # Given
+        row = {"submit_requirements": [{"name": "Code-Review", "status": "SATISFIED"},
+                                       {"name": "Code-Owners", "status": "UNSATISFIED"},
+                                       {"name": "No-Wip", "status": "NOT_APPLICABLE"},
+                                       {"name": "Custom", "status": "ERROR"}]}
+        # When
+        found = events.unsatisfied_requirements(row)
+        # Then
+        self.assertEqual(["Code-Owners", "Custom"], found)
+
+    def test_a_gerrit_without_requirements_blocks_nothing(self):
+        # When
+        found = events.unsatisfied_requirements({"_number": 1})
+        # Then
+        self.assertEqual([], found)
+
 
 def local(year, month, day, hour):
     return time.mktime((year, month, day, hour, 0, 0, 0, 0, -1))
@@ -578,6 +628,15 @@ class StatusRowsTest(unittest.TestCase):
         [row] = events.status_rows(result, {}, {}, NOW)
         # Then
         self.assertEqual((None, False, 2), (row["threads"], row["ready"], row["code_review"]))
+
+    def test_a_blocked_submit_is_not_ready(self):
+        # Given
+        ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
+        result = {**poll_result([change(current=ps)]), "submit_blockers": {1: ["Code-Owners"]}}
+        # When
+        [row] = events.status_rows(result, {}, {}, NOW)
+        # Then
+        self.assertEqual((False, ["Code-Owners"]), (row["ready"], row["submit_blocked"]))
 
 
 class NotificationsTest(unittest.TestCase):

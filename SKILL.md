@@ -30,11 +30,23 @@ no vote, no recheck. Everything else (worktree, fix, local amend, tests) happens
    poll**, so nothing slips between the sweep and the watch. Every change of mine that needs something
    gives a `kind: pending` item (`ci`, `code_review`, `threads_awaiting_me`, plus `ci_diagnosis` and
    `base_build` when CI is red). State events follow: `merge_conflict`, `parent_merged`,
-   `parent_updated`, `ci_stuck`, `ready_to_submit`, `waiting_for_review`, `base_red`, `cleanup_candidate`,
+   `parent_updated`, `ci_stuck`, `ready_to_submit`, `submit_blocked`, `waiting_for_review`, `base_red`, `cleanup_candidate`,
    and the `review_*` ones (`review_requested` where I already voted or commented are left out). Handle each
    item with the steps below. `snoozed` = `{number: {until | patch_set | base_green}}` of the changes muted by the user:
    their events are held back (neither reported nor marked seen) and come back when the snooze ends. Do not
    mention them unless asked.
+
+   The sweep opens on `unfinished` items: work an earlier session left halfway (it crashed or ended between
+   the fix and its approval). `worktree` + `unpushed` = a local commit Gerrit has not seen (an amend, a prepared
+   rebase), `busy` = edits or a rebase/merge halfway through, `drafts` = draft comments I never published (on
+   my changes or on reviews). Look at them first (`git -C <worktree> status`, `git log -1`, the drafts in
+   Gerrit), then offer to resume where it stopped (verify, then "4. Present and ask"); never push or
+   publish them on your own.
+
+   **Present the sweep as a briefing**, not a replay: the events come most urgent first (unfinished work, red
+   base, conflicts and rebases, my changes in trouble, submit blocked, ready to submit, reviews waiting on me,
+   waits, cleanup). Keep that order, one short line per change, grouped under those headings, and give the
+   counts at the top. Then handle them in that order.
 2. **Start the watcher** with `Bash` and `run_in_background: true`: `python3 <skill>/watch.py`.
    End the turn. The process exit notification is the wake-up — never poll its output.
 
@@ -68,14 +80,15 @@ After editing `watch.py`, restart it: `launchctl kickstart -k gui/$(id -u)/<laun
 
 The output is `{"status": "events", "events": [...]}`. After the first new event, the watcher waits 90 s
 more and delivers everything that arrived meanwhile in a single wake-up (reply + vote + zuul verdict).
-Each item has a `kind`:
+The events come most urgent first, as in the sweep: when many arrive at once (a snooze ending, the morning
+catch-up), present them as the same briefing. Each item has a `kind`:
 `message` (comment/vote/zuul verdict: `author`, `author_username`, text; a zuul failure also carries
 `ci_diagnosis`, `base_build` and `rechecks` = how many `recheck*` I already posted on this patch set
 before this verdict, and `known_flaky` = `{job: {week, month, last}}` from the local flake memory),
 `merge_conflict` (+ `files`), `parent_merged` (+ `parent`, `old_parent_sha`, `files`, `rebase`),
 `parent_updated` (+ `parent`, `parent_patch_set`, `old_parent_sha`, `new_parent_sha`, `rebase`), `ci_stuck` (+ `idle_since`, `zuul_queue`), `waiting_for_review` (+ `working_days`,
 `reviewers`, `waiting_on`, `dismissed`), `base_red` (no `change`: `branch`, `changes`, see `base_build`
-below), `ready_to_submit` ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
+below), `ready_to_submit` / `submit_blocked` (+ `requirements`) ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
 `review_requested` / `review_new_patch_set` / `review_reply` ("Other people's reviews" section).
 The watcher never gives up on Gerrit being unreachable (VPN off…): it retries with a backoff capped at
 10 min, and the status line shows `?` meanwhile. Only `--pending` returns `status: error` (with `detail`)
@@ -241,6 +254,14 @@ label at +1 without -1, and no unresolved thread waiting for my answer. (Gerrit'
 `OK` on a change voted -1, hence this own computation.) Emitted only once the parent change (`dependsOn`)
 is no longer open, once per patch set and per working day: an unsubmitted change comes back the next
 morning (not on weekends). `ready_since` = timestamp of the +2, worth mentioning ("ready for 3 days").
+
+`submit_blocked` replaces it when the votes are there but Gerrit's submit requirements (REST, Gerrit ≥ 3.5)
+still refuse: `requirements` = the names of the unsatisfied ones, typically `Code-Owners` (code-owners plugin:
+a file lacks an owner's approval). Once per patch set and set of requirements. Say what is missing; for
+`Code-Owners`, list the files without an approving owner and who can approve them (the Gerrit MCP code-owner
+tools, or `/changes/<n>/revisions/current/code_owners.status` in REST), then offer (`AskUserQuestion`) to add
+one as reviewer: public, so only after "yes". No submit offer until `ready_to_submit` comes. Unreadable
+requirements (REST down) leave the votes to decide alone, as before.
 
 1. **Re-check right before**: change still open, same patch set, no unresolved thread, no parent change
    still open. If something blocks, say so instead of offering the submit.

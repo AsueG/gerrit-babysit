@@ -279,6 +279,26 @@ def prepare_rebase(event):
 _worktrees_memo = {}
 
 
+def unfinished_work(changes):
+    """{change number: {worktree, unpushed, busy}} for my open changes whose worktree holds work Gerrit has not
+    seen: a commit never pushed (an amend, a prepared rebase) or edits and an operation halfway through. A worktree
+    holding a stack is reported once, on the change at its HEAD when there is one."""
+    by_worktree = {}
+    for change in changes:
+        path = worktrees_by_change_id().get(change["id"])
+        if path:
+            by_worktree.setdefault(path, []).append(change)
+    found = {}
+    for path, stack in by_worktree.items():
+        head = git("rev-parse", "HEAD", cwd=path).strip()
+        top = next((c for c in stack if change_id_of(head) == c["id"]), None)
+        unpushed = top is not None and head != top.get("currentPatchSet", {}).get("revision")
+        in_progress = busy(path)
+        if unpushed or in_progress:
+            found[(top or stack[0])["number"]] = {"worktree": path, "unpushed": unpushed, "busy": in_progress}
+    return found
+
+
 def worktrees_by_change_id():
     """Change-Id → worktree path; linked worktrees win over the main checkout, whose branch keeps moving.
 

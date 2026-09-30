@@ -47,7 +47,8 @@ STYLES = {
     "parent_updated": ("square.stack.3d.up", "orange"),
     "ci_stuck": ("exclamationmark.arrow.triangle.2.circlepath", "orange"),
     "ready_parent": ("link", "orange"),
-    "ready": ("checkmark.seal.fill", "green"),
+    "submit_blocked": ("lock.fill", "orange"),
+    "ready":("checkmark.seal.fill", "green"),
     "ci_running": ("hourglass", "orange"),
     "ci_passed": ("clock", None),
 }
@@ -67,6 +68,8 @@ def label_of(state, change):
         return t("bar_ci_stuck", hours=CI_STUCK_S // 3600)
     if state == "ready_parent":
         return t("bar_ready_parent", parent=change["open_parent"])
+    if state == "submit_blocked":
+        return t("bar_submit_blocked", requirements=", ".join(change["submit_blocked"]))
     if state in ("ci_running", "ci_passed"):
         return t(f"bar_{state}", cr=f"+{change['code_review']}" if change["code_review"] > 0 else "0")
     return t(f"bar_{state}")
