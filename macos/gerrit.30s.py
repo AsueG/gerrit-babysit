@@ -21,8 +21,7 @@ sys.path.insert(0, str(SELF.parents[1]))
 import ci  # noqa: E402
 import snapshot  # noqa: E402
 import snooze  # noqa: E402
-from config import (CI_STUCK_S, COMMAND, CONFIG, REPO, SKILL_DIR, STALE_AFTER_S, STATUS,  # noqa: E402
-                    SWIFTBAR_PLUGIN, t)
+from config import CI_STUCK_S, COMMAND, CONFIG, REPO, SKILL_DIR, STATUS, SWIFTBAR_PLUGIN, t  # noqa: E402
 
 DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{CONFIG['gerrit_host']}/dashboard/self"
 ICON = "sfimage=arrow.triangle.pull"
@@ -317,13 +316,12 @@ def main():
         print("---")
         print(t("bar_no_snapshot", command=COMMAND))
         return
-    snapshot = json.loads(STATUS.read_text())
+    status = json.loads(STATUS.read_text())
     now = time.time()
-    last_attempt = snapshot.get("last_attempt", snapshot["updated"])
-    error = snapshot.get("last_error")
-    stopped = now - last_attempt > STALE_AFTER_S
+    error = status.get("last_error")
+    stopped = snapshot.is_stopped(status, now)
 
-    changes = snapshot.get("changes", [])
+    changes = status.get("changes", [])
     # Read here rather than from the snapshot: a snooze shows at once, not at the daemon's next poll.
     snoozed = snooze.active({c["number"]: c.get("patch_set") for c in changes}, now)
     rows = sorted(((c, state_of(c)) for c in changes if c["number"] not in snoozed),
@@ -352,7 +350,7 @@ def main():
             if change["number"] in snoozed:
                 print_snoozed(change, snoozed[change["number"]])
     print("---")
-    data_age = age(now - snapshot["updated"]) if snapshot.get("updated") else "?"
+    data_age = age(now - status["updated"]) if status.get("updated") else "?"
     if stopped:
         print(f"{t('bar_stopped', age=data_age)} | color=orange sfimage=pause.circle")
     elif error:

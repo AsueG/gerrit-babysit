@@ -270,5 +270,16 @@ class SnoozeMenuTest(SnapshotTest):
         self.assertEqual("⎇ 0", out.getvalue())
 
 
+class NeverPolledTest(SnapshotTest):
+    def test_a_snapshot_of_failed_polls_only_still_renders(self):
+        # Given
+        self.status.write_text(json.dumps({"last_attempt": time.time(), "last_error": "no route to host"}))
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), contextlib.redirect_stdout(io.StringIO()) as out:
+            plugin.main()
+        # Then
+        self.assertIn("no route to host", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

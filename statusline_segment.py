@@ -5,7 +5,7 @@ import time
 
 import snapshot
 import snooze
-from config import STALE_AFTER_S, STATUS, t
+from config import STATUS, t
 
 
 def main():
@@ -15,9 +15,8 @@ def main():
     changes = status.get("changes", [])
     snoozed = snooze.active({c["number"]: c.get("patch_set") for c in changes})
     states = [snapshot.state(c) for c in changes if not c["wip"] and c["number"] not in snoozed]
-    last_attempt = status.get("last_attempt", status.get("updated", 0))
     segment = f"⎇ {len(states)}"
-    if status.get("last_error") or time.time() - last_attempt > STALE_AFTER_S:
+    if status.get("last_error") or snapshot.is_stopped(status, time.time()):
         segment += " · ?"
     else:
         problems = sum(1 for s in states if s in snapshot.PROBLEMS)

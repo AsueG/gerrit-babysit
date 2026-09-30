@@ -1,9 +1,17 @@
 """One reading of a snapshot row for the SwiftBar menu and the status line, so their counts never disagree.
 
 Kept free of gerrit/events imports: the status line loads it on every refresh."""
+from config import STALE_AFTER_S
+
 PROBLEMS = ("conflict", "stale_base", "ci_failed", "rejected")
 # Even a draft needs these fixed before anyone can review it.
 NEEDS_REBASE = ("conflict", "stale_base")
+
+
+def is_stopped(status, now):
+    """No poll attempt for a while: the watcher is not running. A snapshot written only by failed polls has no
+    `updated`."""
+    return now - (status.get("last_attempt") or status.get("updated") or 0) > STALE_AFTER_S
 
 
 def problem(row):
