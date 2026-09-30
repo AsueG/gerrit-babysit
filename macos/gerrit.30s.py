@@ -157,21 +157,36 @@ def recheck(number, patch_set):
         review(number, patch_set, ["--message", comment], subject, "bar_rechecked", "bar_recheck_failed")
 
 
+# osascript is a background process: without the accessory policy and a floating level the alert opens hidden.
+DATE_PICKER = '''use framework "AppKit"
+use scripting additions
+on run argv
+    set ca to current application
+    set picker to ca's NSDatePicker's alloc()'s initWithFrame:{{0, 0}, {139, 148}}
+    picker's setDatePickerStyle:(ca's NSDatePickerStyleClockAndCalendar)
+    picker's setDatePickerElements:(ca's NSDatePickerElementFlagYearMonthDay)
+    set tomorrow to ca's NSDate's dateWithTimeIntervalSinceNow:86400
+    picker's setMinDate:tomorrow
+    picker's setDateValue:tomorrow
+    set alert to ca's NSAlert's alloc()'s init()
+    alert's setMessageText:(item 1 of argv)
+    alert's addButtonWithTitle:(item 3 of argv)
+    alert's addButtonWithTitle:(item 2 of argv)
+    alert's setAccessoryView:picker
+    set theApp to ca's NSApplication's sharedApplication()
+    theApp's setActivationPolicy:(ca's NSApplicationActivationPolicyAccessory)
+    theApp's activateIgnoringOtherApps:true
+    alert's |window|()'s setLevel:(ca's NSFloatingWindowLevel)
+    if (alert's runModal()) is not (ca's NSAlertFirstButtonReturn) then return ""
+    set fmt to ca's NSDateFormatter's alloc()'s init()
+    fmt's setDateFormat:"yyyy-MM-dd"
+    return (fmt's stringFromDate:(picker's dateValue())) as text
+end run'''
+
+
 def ask_date(number):
-    tomorrow = time.strftime("%Y-%m-%d", time.localtime(snooze.in_days(1)))
-    answer = osascript(
-        'on run argv\n'
-        'text returned of (display dialog (item 1 of argv) default answer (item 2 of argv) '
-        'buttons {item 3 of argv, item 4 of argv} default button 2 cancel button 1 with title "Gerrit")\n'
-        'end run',
-        t("bar_snooze_prompt", n=number), tomorrow, t("bar_cancel"), t("bar_snooze_button"))
-    if answer.returncode != 0:
-        return None
-    try:
-        return snooze.parse_date(answer.stdout)
-    except ValueError:
-        alert(t("bar_snooze_invalid", value=answer.stdout.strip()), "")
-        return None
+    answer = osascript(DATE_PICKER, t("bar_snooze_prompt", n=number), t("bar_cancel"), t("bar_snooze_button"))
+    return snooze.parse_date(answer.stdout) if answer.returncode == 0 and answer.stdout.strip() else None
 
 
 def snooze_change(number, mode, value=None):
