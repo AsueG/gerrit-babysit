@@ -69,7 +69,8 @@ can hand it to your agent: *"install gerrit-babysit following ADAPTING.md"*.
 
 `SKILL.md` stays generic. Put your team's specifics in a git-ignored `LOCAL.md` next to it (or in
 `~/.config/gerrit-babysit/` for the plugin): build
-commands, recheck variants, fix recipes, ownership rules. The skill reads it first. That keeps your
+commands, pre-push checks (dependency guard, lint, screenshots), recheck variants, fix recipes, ownership
+rules. The skill reads it first. That keeps your
 clone free of local edits, so updating is just `git pull`.
 
 ## How it works

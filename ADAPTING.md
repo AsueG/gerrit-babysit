@@ -75,6 +75,8 @@ way as long as `ci_user` and `ci_labels` match it.
 which the skill reads first and which wins over `SKILL.md`. Typical content:
 
 - the exact build, test and screenshot commands, or the skills that hold them;
+- the pre-push checks run before every push offer: dependency guard, lint and screenshot verification
+  commands, per module when they differ;
 - the team's `recheck` variants (e.g. rerun a single pipeline) and when to use each;
 - fix recipes per `ci_diagnosis` category and per lint rule;
 - the name of the target branch if it is not `main`, and files that must never be merged by hand;

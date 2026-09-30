@@ -121,8 +121,8 @@ change's worktree. It is never pushed.
 
 | `status` | Action |
 |---|---|
-| `rebased` | Done locally (`onto`, `previous_head`, `head`, `commits` replayed). Check the Change-Ids, run the tests, show `git diff <previous_head> HEAD --stat`, then ask (**Push** / **Undo**: `git reset --hard <previous_head>` / **Ignore**) |
-| `conflict` | Aborted, worktree untouched. Rerun `command` from `worktree`, resolve `files`, `git rebase --continue`, tests, then ask |
+| `rebased` | Done locally (`onto`, `previous_head`, `head`, `commits` replayed). Check the Change-Ids, run the tests and the pre-push checks (step 3), show `git diff <previous_head> HEAD --stat`, then ask (**Push** / **Undo**: `git reset --hard <previous_head>` / **Ignore**) |
+| `conflict` | Aborted, worktree untouched. Rerun `command` from `worktree`, resolve `files`, `git rebase --continue`, tests and pre-push checks, then ask |
 | `up_to_date` | Already on the new base (rebased by hand): report only |
 | `busy` | Uncommitted edits or an operation in progress: left alone. Report, rebase by hand once it is clean |
 | `diverged` | HEAD no longer contains `old_parent_sha` (rewritten by hand): do not guess, report and ask |
@@ -172,6 +172,15 @@ it: create one (`git worktree add`), then `git review -d <n>` inside.
   `git log -1 --format='%(trailers:key=Change-Id,valueonly)'`.
 - Run at least the unit tests of the touched module, screenshot checks if the UI changes. A failure you
   cannot solve → say so, do not paper over it.
+- **Pre-push checks**, after every rebase or amend and before step 4. They catch locally what would
+  otherwise cost a red CI cycle:
+  - **Deterministic CI checks** of the touched modules: dependency guard, lint, screenshot verification.
+    The commands are the team's, in `LOCAL.md`; skip a check it does not list and say so. A failure
+    fixable locally (regenerated baseline, lint rule, re-recorded screenshots) → fix, amend, rerun.
+  - **Base**: `git fetch origin <branch>`. If the change has an open parent, HEAD must contain its
+    current patch set (else rebase onto it, like `parent_updated`). `git merge-tree --write-tree
+    origin/<branch> HEAD` must exit 0 (else rebase: the push would get Merge Failed). `base_build.result`
+    `FAILURE` → the CI will go red whatever the change: say so in step 4.
 - Write the replies as **Gerrit drafts** (private, so compatible with the absolute rule): a draft comment
   with `in_reply_to` = the thread's `reply_to`, `file`/`line` from the thread, `unresolved` false for
   "Done", true for an open discussion. First list my existing drafts on the change: if there are any,
@@ -180,8 +189,8 @@ it: create one (`git worktree add`), then `git review -d <n>` inside.
 ### 4. Present and ask
 
 Per change: link, what triggered it (author + excerpt), diagnosis, `git diff HEAD@{1} --stat` + the key
-points of the diff, test results, text of the drafts ("Done" for a fixed comment, an argued text
-otherwise; reviewable and editable in the Gerrit UI). Then **one `AskUserQuestion` question per change**
+points of the diff, test and pre-push check results (each check passed / fixed / skipped), text of the
+drafts ("Done" for a fixed comment, an argued text otherwise; reviewable and editable in the Gerrit UI). Then **one `AskUserQuestion` question per change**
 (at most 4 questions per call, 4 options per question):
 
 - **Push + reply** — patch set and replies published in one go
