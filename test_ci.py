@@ -1,4 +1,5 @@
 """Run from this directory: python3 -m unittest"""
+import concurrent.futures
 import json
 import os
 import pathlib
@@ -12,6 +13,11 @@ os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-ba
 
 import ci  # noqa: E402
 ZUUL = json.loads((FIXTURES / "zuul_messages.json").read_text())
+
+
+def diagnose_ci(event, flaky=None, known=None):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        return [future.result() for future in ci.submit_diagnosis(pool, event, {}, flaky, known)]
 
 
 class CiDiagnosisTest(unittest.TestCase):
@@ -73,7 +79,7 @@ class CiDiagnosisTest(unittest.TestCase):
         get = lambda url: next(body for marker, body in answers.items() if marker in url)
         # When
         with mock.patch.object(ci, "http_get", side_effect=get):
-            entry = ci.diagnose_ci(event)[0]
+            entry = diagnose_ci(event)[0]
         # Then
         self.assertEqual(("", "emulator died"), (entry["failure"], entry["log_tail"]))
 
@@ -116,7 +122,7 @@ class CiDiagnosisTest(unittest.TestCase):
             get = lambda url, answers=answers: next(body for marker, body in answers.items() if marker in url)
             # When
             with mock.patch.object(ci, "http_get", side_effect=get):
-                found.append(ci.diagnose_ci(event, known=known)[0])
+                found.append(diagnose_ci(event, known=known)[0])
         # Then
         self.assertEqual([("unknown", [9]), ("unit_tests", None)],
                          [(e["category"], [m["change"] for m in e["resembles"]] if "resembles" in e else None)
@@ -206,7 +212,7 @@ class CiDiagnosisTest(unittest.TestCase):
         get = lambda url: next(body for marker, body in answers.items() if marker in url)
         # When
         with mock.patch.object(ci, "http_get", side_effect=get) as http:
-            diagnosis = ci.diagnose_ci(event)
+            diagnosis = diagnose_ci(event)
         # Then
         self.assertEqual(([2], 1), (diagnosis[0]["others_failing"], diagnosis[0]["job_history"]["builds"]))
         self.assertEqual(1, sum("/builds?" in c.args[0] for c in http.call_args_list))
@@ -220,7 +226,7 @@ class CiDiagnosisTest(unittest.TestCase):
         get = lambda url: next(body for marker, body in answers.items() if marker in url)
         # When
         with mock.patch.object(ci, "http_get", side_effect=get) as http:
-            ci.diagnose_ci(event)
+            diagnose_ci(event)
         # Then
         self.assertIn("/builds?job_name=app%26x&limit=", http.call_args_list[-1].args[0])
 
@@ -266,7 +272,7 @@ class CiDiagnosisTest(unittest.TestCase):
         event = {"change": 1, "message": ZUUL["failed"]["message"]}
         # When
         with mock.patch.object(ci, "http_get", side_effect=OSError("offline")):
-            diagnosis = ci.diagnose_ci(event)
+            diagnosis = diagnose_ci(event)
         # Then
         self.assertTrue(diagnosis)
         self.assertTrue(all(d["diagnosis_error"] == "offline" and d["category"] for d in diagnosis))
@@ -277,7 +283,7 @@ class CiDiagnosisTest(unittest.TestCase):
         often, once = {"app-build": {"week": 1, "month": 2, "last": 1}}, {"app-build": {"week": 1, "month": 1, "last": 1}}
         # When
         with mock.patch.object(ci, "http_get", side_effect=OSError("offline")):
-            found = [ci.diagnose_ci(event, flaky=flaky)[0] for flaky in (often, once)]
+            found = [diagnose_ci(event, flaky=flaky)[0] for flaky in (often, once)]
         # Then
         self.assertEqual(["flaky", "unknown"], [d["category"] for d in found])
         self.assertEqual(often["app-build"], found[0]["flaky_here"])

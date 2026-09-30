@@ -157,7 +157,7 @@ def base_health(changes):
 def poll():
     # Independent round trips run side by side: the SSH queries share one multiplexed connection, and the REST
     # calls overlap the local git fetch.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:
         reviews = pool.submit(fetch_reviews)
         attention = pool.submit(fetch_attention)
         attention_sets = pool.submit(my_attention_sets)
@@ -165,8 +165,9 @@ def poll():
         threads_job = pool.submit(threads_or_error, changes)
         blockers = pool.submit(submit_blockers, changes)
         base_job = pool.submit(base_health, changes)
-        statuses = parent_statuses(changes)
+        statuses_job = pool.submit(parent_statuses, changes)
         conflicts = repo.merge_conflicts(changes)
+        statuses = statuses_job.result()
         stale = repo.stale_parents(changes, statuses)
         threads, threads_error = threads_job.result()
         return {

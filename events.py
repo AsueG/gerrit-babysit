@@ -244,71 +244,89 @@ def ready_since(patch_set):
                 if a["type"] == "Code-Review" and int(a["value"]) == 2), default=None)
 
 
+def threads_of(result, number):
+    """Threads awaiting me on a change of mine; None when REST failed, which is unknown, not none."""
+    return None if result.get("threads_error") else result.get("threads", {}).get(number, [])
+
+
+def is_ready(result, change):
+    """The votes are in and no thread waits on me; parents and submit requirements are left to the caller."""
+    return is_ready_to_submit(change.get("currentPatchSet", {})) and threads_of(result, change["number"]) == []
+
+
 def events(result, now=None):
     now = now or time.time()
     day = work_day(now)
+    for change in result["changes"]:
+        yield from message_events(change, threads_of(result, change["number"]))
+        yield from state_events(change, result, day, now)
+    yield from base_events(result)
+    attention = set(result.get("attention", []))
+    for change in result.get("reviews", []):
+        yield from review_events(change, day, change["number"] in attention)
+
+
+def message_events(change, threads):
+    number = change["number"]
+    patch_set = change.get("currentPatchSet", {})
+    base = event_base(change)
+    for message in change.get("comments", []):
+        if not is_actionable(message):
+            continue
+        author = message["reviewer"].get("username", "")
+        # A late verdict on a patch set already replaced by a push says nothing about the current one.
+        if author == CI_USER and patch_set_of(message) < int(patch_set.get("number") or 0):
+            continue
+        event = message_event(base, message)
+        if author == CI_USER:
+            event["rechecks"] = my_rechecks(change, patch_set, message["timestamp"])
+        else:
+            event["threads_awaiting_me"] = threads
+        yield f'{number}:{message["timestamp"]}:{author}', event
+
+
+def state_events(change, result, day, now):
+    """A stuck CI, then the one thing that blocks the change (or unblocks it), then whether it waits on reviewers."""
+    number = change["number"]
+    patch_set = change.get("currentPatchSet", {})
+    ps = patch_set.get("number")
+    base = event_base(change)
     conflicts = result["conflicts"]
     stale = result.get("stale_parents", {})
     outdated = result.get("outdated_parents", {})
-    threads = result.get("threads", {})
-    threads_error = result.get("threads_error")
-    attention = set(result.get("attention", []))
+    blockers = (result.get("submit_blockers") or {}).get(number)
+    if is_ci_stuck(change, patch_set, now):
+        yield f'{number}:ci_stuck:{ps}', {**base, "kind": "ci_stuck", "idle_since": ci_idle_since(change, patch_set)}
+    if number in stale:
+        # Takes over merge_conflict: the fix is a rebase --onto that drops the old parent, conflicts or not.
+        yield f'{number}:parent_merged:{ps}', {
+            **base, "kind": "parent_merged", **stale[number], "files": conflicts.get(number, [])}
+    elif number in outdated:
+        # Rebasing onto the parent's new patch set comes first: a conflict with the branch may go with it.
+        yield f'{number}:parent_updated:{ps}:{outdated[number]["new_parent_sha"]}', {
+            **base, "kind": "parent_updated", **outdated[number]}
+    elif number in conflicts:
+        yield f'{number}:conflict:{ps}', {**base, "kind": "merge_conflict", "files": conflicts[number]}
+    elif is_ready(result, change) and number not in result["parents"]:
+        if blockers:
+            # The votes are there but Gerrit would refuse the submit: once per patch set and set of blockers.
+            yield f'{number}:blocked:{ps}:{"+".join(blockers)}', {
+                **base, "kind": "submit_blocked", "requirements": blockers}
+        else:
+            # One key per working day: a CL left unsubmitted comes back the next morning.
+            yield f'{number}:ready:{ps}:{day}', {**base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set)}
+
     attention_sets = result.get("attention_sets")
-    blockers = result.get("submit_blockers") or {}
-    for change in result["changes"]:
-        number = change["number"]
-        patch_set = change.get("currentPatchSet", {})
-        base = event_base(change)
-        for message in change.get("comments", []):
-            if not is_actionable(message):
-                continue
-            author = message["reviewer"].get("username", "")
-            # A late verdict on a patch set already replaced by a push says nothing about the current one.
-            if author == CI_USER and patch_set_of(message) < int(patch_set.get("number") or 0):
-                continue
-            event = message_event(base, message)
-            if author == CI_USER:
-                event["rechecks"] = my_rechecks(change, patch_set, message["timestamp"])
-            else:
-                event["threads_awaiting_me"] = None if threads_error else threads.get(number, [])
-            yield f'{number}:{message["timestamp"]}:{author}', event
-        if is_ci_stuck(change, patch_set, now):
-            yield f'{number}:ci_stuck:{patch_set.get("number")}', {
-                **base, "kind": "ci_stuck", "idle_since": ci_idle_since(change, patch_set)}
-        if number in stale:
-            # Takes over merge_conflict: the fix is a rebase --onto that drops the old parent, conflicts or not.
-            yield f'{number}:parent_merged:{patch_set.get("number")}', {
-                **base, "kind": "parent_merged", **stale[number], "files": conflicts.get(number, [])}
-        elif number in outdated:
-            # Rebasing onto the parent's new patch set comes first: a conflict with the branch may go with it.
-            yield f'{number}:parent_updated:{patch_set.get("number")}:{outdated[number]["new_parent_sha"]}', {
-                **base, "kind": "parent_updated", **outdated[number]}
-        elif number in conflicts:
-            yield f'{number}:conflict:{patch_set.get("number")}', {
-                **base, "kind": "merge_conflict", "files": conflicts[number]}
-        elif (is_ready_to_submit(patch_set) and number not in result["parents"] and not threads.get(number)
-              and not threads_error):
-            if blockers.get(number):
-                # The votes are there but Gerrit would refuse the submit: once per patch set and set of blockers.
-                yield f'{number}:blocked:{patch_set.get("number")}:{"+".join(blockers[number])}', {
-                    **base, "kind": "submit_blocked", "requirements": blockers[number]}
-            else:
-                # One key per working day: a CL left unsubmitted comes back the next morning.
-                yield f'{number}:ready:{patch_set.get("number")}:{day}', {
-                    **base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set)}
-        wait = None if attention_sets is None else attention_sets.get(number, {"holders": [], "removed": []})
-        wait = review_wait(change, patch_set, wait, now)
-        if (wait and number not in conflicts and number not in stale and not is_ready_to_submit(patch_set)
-                and ci_state(change, patch_set, votes_of(patch_set)) not in ("failed", "stale_base")):
-            days, waiting_on, dismissed = wait
-            yield f'{number}:unreviewed:{patch_set.get("number")}:{day}', {
-                **base, "kind": "waiting_for_review", "working_days": days, "waiting_on": waiting_on,
-                "dismissed": dismissed,
-                "reviewers": [r.get("name") or r.get("username") for r in change.get("allReviewers", [])
-                              if r.get("username", "") not in NOT_ME]}
-    yield from base_events(result)
-    for change in result.get("reviews", []):
-        yield from review_events(change, day, change["number"] in attention)
+    wait = None if attention_sets is None else attention_sets.get(number, {"holders": [], "removed": []})
+    wait = review_wait(change, patch_set, wait, now)
+    if (wait and number not in conflicts and number not in stale and not is_ready_to_submit(patch_set)
+            and ci_state(change, patch_set, votes_of(patch_set)) not in ("failed", "stale_base")):
+        days, waiting_on, dismissed = wait
+        yield f'{number}:unreviewed:{ps}:{day}', {
+            **base, "kind": "waiting_for_review", "working_days": days, "waiting_on": waiting_on,
+            "dismissed": dismissed,
+            "reviewers": [r.get("name") or r.get("username") for r in change.get("allReviewers", [])
+                          if r.get("username", "") not in NOT_ME]}
 
 
 def base_events(result):
@@ -380,7 +398,7 @@ def pending_events(result, now=None):
         votes = votes_of(patch_set)
         state = ci_state(change, patch_set, votes)
         code_review = min(votes.get("Code-Review", [0]))
-        threads = None if result.get("threads_error") else result.get("threads", {}).get(change["number"], [])
+        threads = threads_of(result, change["number"])
         if not (threads or code_review < 0 or state in ("failed", "stale_base")):
             continue
         event = {**event_base(change), "kind": "pending", "wip": change.get("wip", False), "ci": state,
@@ -397,12 +415,11 @@ def pending_events(result, now=None):
 
 def status_rows(result, flakes, worktrees, now):
     """The snapshot rows read by the SwiftBar plugin and the status line; `worktrees` is {Change-Id: path}."""
-    threads = result.get("threads", {})
-    threads_error = result.get("threads_error")
     blockers = result.get("submit_blockers") or {}
     rows = []
     for change in result["changes"]:
         number = change["number"]
+        threads = threads_of(result, number)
         patch_set = change.get("currentPatchSet", {})
         votes = votes_of(patch_set)
         code_review = votes.get("Code-Review", [])
@@ -424,12 +441,11 @@ def status_rows(result, flakes, worktrees, now):
             # Every recheck on the patch set, also after the verdict: one may already be running.
             "rechecks": my_rechecks(change, patch_set, float("inf")),
             "ci_stuck": is_ci_stuck(change, patch_set, now),
-            "threads": None if threads_error else len(threads.get(number, [])),
+            "threads": None if threads is None else len(threads),
             "conflict": number in result["conflicts"],
             "open_parent": result["parents"].get(number),
             "outdated_parent": outdated["parent"] if outdated else None,
-            "ready": (is_ready_to_submit(patch_set) and not threads_error and not threads.get(number)
-                      and not blockers.get(number)),
+            "ready": is_ready(result, change) and not blockers.get(number),
             "submit_blocked": blockers.get(number, []),
             "worktree": worktrees.get(change["id"]),
             "branch": change["branch"],

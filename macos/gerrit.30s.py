@@ -304,7 +304,7 @@ def print_change(change, label, symbol, color, fresh):
         print("-----")
         print(f"--{t('bar_recheck', detail=recheck_reason)} | {action('recheck', number, change['patch_set'])} "
               "sfimage=arrow.clockwise")
-    if fresh and change["ready"] and not change.get("open_parent") and change.get("patch_set"):
+    if fresh and snapshot.state(change) == "ready" and change.get("patch_set"):
         print("-----")
         print(f"--{t('bar_submit')} | {action('submit', number, change['patch_set'])} sfimage=paperplane.fill")
 

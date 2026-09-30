@@ -6,6 +6,7 @@ import netrc
 import pathlib
 import shlex
 import subprocess
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -51,6 +52,7 @@ def error_detail(error):
 
 
 _rest_auth = None
+_rest_auth_lock = threading.Lock()
 
 
 def http_credentials():
@@ -103,21 +105,29 @@ def http_error():
     return None
 
 
-def rest_get(path, retry=True):
+def rest_auth(rejected=None):
+    """The poll calls REST from several threads: one reads the credentials, the others wait for it. `rejected` is the
+    header a 401 refused, dropped unless another thread already replaced it."""
     global _rest_auth
-    if _rest_auth is None:
-        _rest_auth = base64.b64encode(":".join(http_credentials()).encode()).decode()
-    request = urllib.request.Request(REST + path, headers={"Authorization": f"Basic {_rest_auth}"})
+    with _rest_auth_lock:
+        if rejected is not None and _rest_auth == rejected:
+            _rest_auth = None
+        if _rest_auth is None:
+            _rest_auth = base64.b64encode(":".join(http_credentials()).encode()).decode()
+        return _rest_auth
+
+
+def rest_get(path, retry=True):
+    auth = rest_auth()
+    request = urllib.request.Request(REST + path, headers={"Authorization": f"Basic {auth}"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             # Gerrit prefixes every JSON body with )]}' against XSSI.
             return json.loads(response.read().decode().split("\n", 1)[1])
     except urllib.error.HTTPError as error:
-        if error.code != 401:
+        if error.code != 401 or not retry:
             raise
         # The token may have been rotated since the daemon started: reread it once.
-        _rest_auth = None
-        if not retry:
-            raise
         error.close()
+        rest_auth(rejected=auth)
         return rest_get(path, retry=False)

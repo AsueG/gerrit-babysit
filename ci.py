@@ -235,20 +235,11 @@ def http_get(url):
     return body.decode(errors="replace")
 
 
-def diagnose_ci(event, histories=None, flaky=None, known=None):
-    """Network-bound: only for fresh zuul failures, so the idle loop stays free. The failed jobs are diagnosed side by
-    side, each one being a handful of downloads.
-
-    `histories` is shared across the events of one wake-up, see job_builds(). `flaky` ({job: counts}) is the local
-    flake memory, see flaky_counts(). `known` is the memory of failures diagnosed by hand, see similar_failures()."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        return [future.result() for future in
-                submit_diagnosis(pool, event, {} if histories is None else histories, flaky, known)]
-
-
 def submit_diagnosis(pool, event, histories, flaky=None, known=None):
     """One future per failed job, in the verdict's order: several events can share one pool.
 
+    `histories` is shared across the events of one wake-up, see job_builds(). `flaky` ({job: counts}) is the local
+    flake memory, see flaky_counts(). `known` is the memory of failures diagnosed by hand, see similar_failures().
     No deadlock on a shared pool: a job only waits in job_builds() for a download already running."""
     return [pool.submit(diagnose_job, job, event, histories, flaky or {}, known or {})
             for job in failed_jobs(event["message"])]
