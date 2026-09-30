@@ -77,12 +77,13 @@ before this verdict, and `known_flaky` = `{job: {week, month, last}}` from the l
 `review_requested` / `review_new_patch_set` / `review_reply` ("Other people's reviews" section).
 The watcher never gives up on Gerrit being unreachable (VPN off…): it retries with a backoff capped at
 10 min, and the status line shows `?` meanwhile. Only `--pending` returns `status: error` (with `detail`)
-on the first failure → tell the user, and start the watcher anyway.
+on the first failure → tell the user, run the "Doctor" section, and start the watcher anyway.
 
 `threads_error` (at the root of the output and in `status.json`) = the REST call for comment threads
 failed (HTTP password expired or missing) while SSH works. Polling goes on: `threads_awaiting_me` is then
 `null` (unknown, **not** "no threads"), `ready_to_submit` is held back and the status line shows
-`threads ?`. Tell the user once (renew the HTTP password), without stopping.
+`threads ?`. Tell the user once (renew the HTTP password), without stopping. With no open change of mine,
+`--pending` still checks the HTTP password and reports it the same way, before a change needs it.
 
 Bots are ignored everywhere: the CI user (except its verdicts), the `bot_users` of `config.json` and
 Gerrit itself (messages without a username, e.g. auto-abandon). They never count as the last word of a
@@ -236,13 +237,14 @@ morning (not on weekends). `ready_since` = timestamp of the +2, worth mentioning
 
 ## Cleanup
 
-`cleanup_candidate` = local branch whose tip is **exactly** a pushed patch set of one of my merged changes
-(a local amend made after the merge is not a candidate), with its worktree if it is clean and not locked.
-`protected_branches` and the main checkout's branch are excluded. The watcher is read-only: it deletes
-nothing.
+`cleanup_candidate` = local branch whose tip is **exactly** a pushed patch set of one of my merged or
+abandoned changes (`status` = `merged` / `abandoned`; a local amend made afterwards is not a candidate), with
+its worktree if it is clean and not locked. An abandoned change can still be restored, but its patch sets
+stay on Gerrit (`git review -d <n>` brings it back). `protected_branches` and the main checkout's branch are
+excluded. The watcher is read-only: it deletes nothing.
 
 1. Group all the candidates of the wake-up in **one** `AskUserQuestion` question (`multiSelect: true`,
-   one option per branch: change + subject + worktree path).
+   one option per branch: change + subject + `status` + worktree path).
 2. For each checked candidate, from the main checkout: `git worktree remove <worktree>` (if any), then
    `git branch -D <branch>`. If `git worktree remove` fails (new files meanwhile), do not force: report it.
 3. Unchecked: nothing — the event does not come back until the branch tip changes.
@@ -278,6 +280,18 @@ decided with the user.
 (morning of that day), `--days N` (a weekend lands on Monday) or `--patch-set <current>` (wakes on a newer one);
 `--clear` wakes it, no argument lists them. The SwiftBar menu has the same Snooze submenu and a "Snoozed"
 section. A snoozed change leaves the counts, the status line and the notifications.
+
+## Doctor
+
+"Is babysit OK?", a `status: error`, a `threads_error` or a daemon that seems silent:
+`python3 <skill>/doctor.py`. Read-only; it prints JSON and exits 1 when SSH or HTTP fails:
+`config` (path, host, user, `repo_ok`), `ssh` / `http` (`ok`, `detail`; `http` also has `source` =
+`gerrit_mcp_config` or `netrc`, and fails when the password belongs to another account than `ssh_user`),
+`zuul`, `daemon` (`running`, `last_poll_age_s`, `error`), `state` (each cache file: `bytes`, `entries`,
+`age_s`, `corrupt`) and `prunable`: crashed temp files, prereviews of closed changes or of an old patch set,
+the private `refs/gerrit-babysit/changes|review/<n>` of closed changes, snoozes of closed changes. Summarize
+what is broken and how to fix it. `--prune` deletes what `prunable` lists, local only, so no "yes" needed
+beyond the user's ask; while Gerrit is unreachable it only drops the temp files.
 
 ## Watcher tests
 

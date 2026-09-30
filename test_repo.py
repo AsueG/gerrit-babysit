@@ -311,8 +311,9 @@ class CleanupCandidatesTest(GitRepoTest):
         super().setUp()
         repo._cleanup_memo.clear()
 
-    def run_cleanup(self, merged_revisions, open_ids=frozenset()):
-        rows = [{"id": CHANGE_ID, "number": 7, "subject": "s", "patchSets": [{"revision": r} for r in merged_revisions]}]
+    def run_cleanup(self, merged_revisions, open_ids=frozenset(), status="MERGED"):
+        rows = [{"id": CHANGE_ID, "number": 7, "subject": "s", "status": status,
+                 "patchSets": [{"revision": r} for r in merged_revisions]}]
         with mock.patch.object(gerrit, "query", return_value=rows) as self.query:
             return [e for _, e in repo.cleanup_candidates(open_ids)]
 
@@ -347,7 +348,18 @@ class CleanupCandidatesTest(GitRepoTest):
         # When
         found = self.run_cleanup([pushed])
         # Then
-        self.assertEqual([("feature", 7)], [(e["branch"], e["change"]) for e in found])
+        self.assertEqual([("feature", 7, "merged")], [(e["branch"], e["change"], e["status"]) for e in found])
+
+    def test_branch_at_an_abandoned_patch_set_is_a_candidate(self):
+        # Given
+        self.git("checkout", "-q", "-b", "feature")
+        pushed = self.commit("feat", CHANGE_ID)
+        self.git("checkout", "-q", "main")
+        # When
+        found = self.run_cleanup([pushed], status="ABANDONED")
+        # Then
+        self.assertEqual([("feature", "abandoned")], [(e["branch"], e["status"]) for e in found])
+        self.assertIn("status:abandoned", self.query.call_args.args[0])
 
     def test_local_amend_after_merge_is_kept(self):
         # Given

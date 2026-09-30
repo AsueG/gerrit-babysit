@@ -148,7 +148,8 @@ _change_ids = PollMemo()
 
 
 def cleanup_candidates(open_ids=frozenset()):
-    """Read-only: local branches (and their worktree) whose tip is a pushed patch set of a merged CL of mine.
+    """Read-only: local branches (and their worktree) whose tip is a pushed patch set of a merged or abandoned CL of
+    mine.
 
     Branches of still-open CLs are skipped, so the Gerrit query only reruns when a CL leaves `open_ids` or a
     branch moves. Runs every poll: only the few candidates pay for a `git status` of their worktree."""
@@ -174,24 +175,26 @@ def cleanup_candidates(open_ids=frozenset()):
     key = frozenset(branches.items())
     if key not in _cleanup_memo:
         _cleanup_memo.clear()
-        _cleanup_memo[key] = list(merged_branches(branches))
+        _cleanup_memo[key] = list(closed_branches(branches))
     # Checked on every call, not memoized: a worktree can get dirty without its branch moving.
     return [(k, event) for k, event in _cleanup_memo[key]
             if not event["worktree"] or not git("status", "--porcelain", cwd=event["worktree"]).strip()]
 
 
-def merged_branches(branches):
+def closed_branches(branches):
     ids = " OR ".join(f"change:{cid}" for cid in sorted({cid for _, cid, _ in branches.values()}))
-    merged = {
-        row["id"]: ({ps["revision"] for ps in row.get("patchSets", [])}, row["number"], row["subject"])
-        for row in gerrit.query(f"owner:self status:merged ({ids})", "--patch-sets")
+    closed = {
+        row["id"]: ({ps["revision"] for ps in row.get("patchSets", [])}, row["number"], row["subject"],
+                    row.get("status", "MERGED").lower())
+        for row in gerrit.query(f"owner:self (status:merged OR status:abandoned) ({ids})", "--patch-sets")
     }
     for branch, (sha, change_id, path) in branches.items():
-        revisions, number, subject = merged.get(change_id, (set(), None, None))
-        # Exact pushed SHA only: a local amend made after the merge is not a candidate.
+        revisions, number, subject, status = closed.get(change_id, (set(), None, None, None))
+        # Exact pushed SHA only: a local amend made after the merge or the abandon is not a candidate. An abandoned
+        # change can be restored, but its pushed patch sets stay on Gerrit: deleting the branch loses nothing.
         if sha in revisions:
             yield f"cleanup:{branch}:{sha}", {"kind": "cleanup_candidate", "branch": branch, "worktree": path,
-                                               "change": number, "subject": subject}
+                                               "change": number, "subject": subject, "status": status}
 
 
 def interdiff(event):

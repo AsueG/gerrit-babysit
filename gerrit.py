@@ -94,6 +94,15 @@ def content_merge_of(setting):
     return configured == "TRUE" if configured != "INHERIT" else bool(setting.get("inherited_value"))
 
 
+def http_error():
+    """None when the HTTP password works, else why not: SSH working says nothing about it."""
+    try:
+        rest_get("/accounts/self")
+    except (OSError, ValueError, KeyError) as error:
+        return error_detail(error)
+    return None
+
+
 def rest_get(path, retry=True):
     global _rest_auth
     if _rest_auth is None:

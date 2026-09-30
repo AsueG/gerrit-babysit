@@ -217,7 +217,7 @@ class SessionRetryTest(unittest.TestCase):
                 mock.patch.object(watch, "write_status"), \
                 mock.patch.object(watch, "daemon_poll", side_effect=polls), \
                 mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
-                mock.patch.object(watch, "enrich", side_effect=lambda events: events), \
+                mock.patch.object(watch, "enrich", side_effect=lambda events, *_: events), \
                 mock.patch.object(watch.time, "sleep") as sleep, \
                 mock.patch("sys.argv", ["watch.py", *argv]), \
                 mock.patch("builtins.print", side_effect=out.append):
@@ -241,6 +241,16 @@ class SessionRetryTest(unittest.TestCase):
         code, out, _ = self.run_main(["--pending"], [down])
         # Then
         self.assertEqual((1, "error"), (code, out[0]["status"]))
+
+
+    def test_the_pending_sweep_checks_the_http_password_when_no_change_needs_it(self):
+        # Given
+        with mock.patch.object(gerrit, "http_error", return_value="HTTP Error 401: Unauthorized") as http_error:
+            # When
+            code, out, _ = self.run_main(["--pending"], [poll_result([])])
+        # Then
+        http_error.assert_called_once()
+        self.assertEqual((0, "HTTP Error 401: Unauthorized"), (code, out[0]["threads_error"]))
 
 
 class SwiftbarTest(unittest.TestCase):

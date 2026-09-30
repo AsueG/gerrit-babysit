@@ -93,5 +93,24 @@ class UsesContentMergeTest(unittest.TestCase):
         self.assertEqual(2, rest_get.call_count)
 
 
+class HttpErrorTest(unittest.TestCase):
+    def test_a_working_password_reports_nothing(self):
+        # Given
+        with mock.patch.object(gerrit, "rest_get", return_value={"username": "me"}) as rest_get:
+            # When
+            error = gerrit.http_error()
+        # Then
+        self.assertIsNone(error)
+        rest_get.assert_called_once_with("/accounts/self")
+
+    def test_a_missing_password_says_why(self):
+        # Given
+        with mock.patch.object(gerrit, "rest_get", side_effect=KeyError("no ~/.netrc entry for gerrit")):
+            # When
+            error = gerrit.http_error()
+        # Then
+        self.assertIn("no ~/.netrc entry", error)
+
+
 if __name__ == "__main__":
     unittest.main()

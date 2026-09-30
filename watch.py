@@ -394,7 +394,11 @@ def main():
             report = enrich([e for e in events.pending_events(result, now) if e.get("change") not in snoozed]
                             + list(cleanup.values()))
             save_seen(remember(seen, current.keys(), result, current, now))
-            print(json.dumps({"status": "pending", "events": report, "threads_error": result.get("threads_error"),
+            threads_error = result.get("threads_error")
+            if threads_error is None and not result["changes"]:
+                # No open change, no REST call in the poll: check the HTTP password before a change needs it.
+                threads_error = gerrit.http_error()
+            print(json.dumps({"status": "pending", "events": report, "threads_error": threads_error,
                               "snoozed": snoozed}, ensure_ascii=False, indent=1))
             return 0
 

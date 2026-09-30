@@ -53,6 +53,14 @@ def set_snooze(number, until=None, patch_set=None, now=None):
     atomic_write(SNOOZE, {str(n): e for n, e in sorted(entries.items())})
 
 
+def forget(numbers):
+    """Drops the snoozes of these changes, e.g. closed ones: `active` already ignores them."""
+    entries = load()
+    kept = {n: e for n, e in entries.items() if n not in numbers}
+    if kept != entries:
+        atomic_write(SNOOZE, {str(n): e for n, e in sorted(kept.items())})
+
+
 def wake(number):
     entries = load()
     if entries.pop(int(number), None) is not None:

@@ -72,5 +72,15 @@ class SnoozeTest(unittest.TestCase):
         self.assertEqual({2: {"patch_set": 1}}, snooze.load())
 
 
+    def test_forget_drops_only_the_given_changes(self):
+        # Given
+        snooze.set_snooze(1, patch_set=1)
+        snooze.set_snooze(2, patch_set=4)
+        # When
+        snooze.forget({1, 9})
+        # Then
+        self.assertEqual({2: {"patch_set": 4}}, snooze.load())
+
+
 if __name__ == "__main__":
     unittest.main()
