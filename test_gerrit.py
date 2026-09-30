@@ -1,12 +1,24 @@
 """Run from this directory: python3 -m unittest"""
 import io
 import json
+import shlex
 import unittest
 from unittest import mock
 
 # First: points the config at the fixtures before any module reads it.
 import fakes  # noqa: F401
 import gerrit
+
+
+class QueryTest(unittest.TestCase):
+    def test_the_query_reaches_the_remote_shell_as_one_word(self):
+        # Given
+        text = "message:\"it's done\" status:open"
+        # When
+        with mock.patch.object(gerrit, "ssh", return_value=mock.Mock(stdout="")) as ssh:
+            gerrit.query(text)
+        # Then
+        self.assertEqual([text], shlex.split(ssh.call_args.args[-1]))
 
 
 class RestGetTest(unittest.TestCase):

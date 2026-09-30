@@ -5,7 +5,7 @@ import os
 import pathlib
 import sys
 
-from config import SESSION
+from config import SESSION, read_json
 from procs import descends_from, processes
 
 WATCH_PY = pathlib.Path(__file__).resolve().parent / "watch.py"
@@ -31,7 +31,7 @@ def main():
     # Blocked once already: let the turn end rather than loop if the relaunch keeps failing.
     if hook.get("stop_hook_active") or not SESSION.exists():
         return 0
-    babysit_pid = json.loads(SESSION.read_text()).get("claude_pid")
+    babysit_pid = read_json(SESSION).get("claude_pid")
     table = processes()
     if not babysit_pid or not descends_from(os.getppid(), babysit_pid, table):
         return 0

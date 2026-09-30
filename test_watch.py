@@ -1,4 +1,5 @@
 """Run from this directory: python3 -m unittest"""
+import concurrent.futures
 import contextlib
 import io
 import json
@@ -15,6 +16,12 @@ import events
 import gerrit
 import repo
 import watch
+
+
+def done(value):
+    future = concurrent.futures.Future()
+    future.set_result(value)
+    return future
 
 
 class OpenThreadsTest(unittest.TestCase):
@@ -132,7 +139,7 @@ class EnrichTest(unittest.TestCase):
         # When
         with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
                 mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
-                mock.patch.object(ci, "diagnose_ci", side_effect=lambda event, *_: [event["change"]]), \
+                mock.patch.object(ci, "submit_diagnosis", side_effect=lambda _, event, *__: [done(event["change"])]), \
                 mock.patch.object(ci, "base_build", side_effect=lambda branch: {"branch": branch}) as base_build:
             watch.enrich(failures)
         # Then
@@ -146,7 +153,7 @@ class EnrichTest(unittest.TestCase):
         human = {"kind": "message", "change": 1, "branch": "main", "author_username": "reviewer", "message": "m"}
         patch = {"kind": "review_new_patch_set", "change": 2, "since_ref": "a", "current_ref": "b"}
         # When
-        with mock.patch.object(ci, "diagnose_ci", return_value=["d"]), \
+        with mock.patch.object(ci, "submit_diagnosis", return_value=[done("d")]), \
                 mock.patch.object(ci, "base_build", return_value={"result": "SUCCESS"}), \
                 mock.patch.object(repo, "interdiff", return_value={"stat": "s"}):
             watch.enrich([failure, human, patch])

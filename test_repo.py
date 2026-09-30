@@ -137,9 +137,12 @@ class MergeConflictsTest(GitRepoTest):
         # Given
         self.git("remote", "set-url", "origin", str(self.repo / "missing"))
         c = change(1, current={**patch_set(1), "revision": "0" * 40})
-        # When / Then
-        with self.assertRaises(subprocess.CalledProcessError):
+        # When
+        with mock.patch.object(repo, "git_run", wraps=repo.git_run) as git_run, \
+                self.assertRaises(subprocess.CalledProcessError):
             repo.merge_conflicts([c])
+        # Then: an unreachable remote is not retried once per refspec
+        self.assertEqual(1, sum(call.args[0] == "fetch" for call in git_run.call_args_list))
 
 
 class InterdiffTest(GitRepoTest):

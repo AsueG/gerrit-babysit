@@ -1,4 +1,5 @@
 """Local git work on the repo: fetches into a private namespace, conflict checks, rebases, branch cleanup."""
+import os
 import pathlib
 import re
 import subprocess
@@ -12,9 +13,9 @@ PROTECTED_BRANCHES = set(CONFIG["protected_branches"])
 FETCH_NAMESPACE = "refs/gerrit-babysit"
 
 
-def git_run(*args, cwd=None, timeout=60, input=None):
+def git_run(*args, cwd=None, timeout=60, input=None, env=None):
     return subprocess.run(["git", "-C", str(cwd or REPO), *args], capture_output=True, text=True, timeout=timeout,
-                          input=input)
+                          input=input, env=env)
 
 
 def git(*args, cwd=None):
@@ -30,12 +31,18 @@ def missing_objects(shas):
 
 
 def fetch_refs(refspecs):
-    """One fetch for all; on failure one per refspec, so a single vanished ref does not blind the whole poll."""
+    """One fetch for all; when a ref vanished, one per refspec, so it does not blind the whole poll.
+
+    Any other failure (network, auth) would only repeat itself once per refspec, each paying the same timeout."""
     command = ["fetch", "--quiet", "--no-write-fetch-head", "origin"]
-    result = git_run(*command, *refspecs, timeout=180)
+    # Untranslated stderr: the vanished-ref message is matched below.
+    env = {**os.environ, "LC_ALL": "C"}
+    result = git_run(*command, *refspecs, timeout=180, env=env)
     if result.returncode == 0:
         return
-    results = [git_run(*command, refspec, timeout=180) for refspec in refspecs]
+    if "couldn't find remote ref" not in result.stderr:
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+    results = [git_run(*command, refspec, timeout=180, env=env) for refspec in refspecs]
     if all(r.returncode for r in results):
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 

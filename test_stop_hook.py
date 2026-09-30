@@ -51,6 +51,15 @@ class StopHookTest(unittest.TestCase):
         # Then
         self.assertEqual("block", verdict["decision"])
 
+    def test_a_corrupt_session_lock_lets_the_turn_end(self):
+        # Given
+        self.session.write_text('{"claude_pid": 1')
+        # When
+        with mock.patch("sys.stderr", io.StringIO()):
+            verdict = self.run_hook()
+        # Then
+        self.assertIsNone(verdict)
+
     def test_lets_the_turn_end_while_the_watcher_runs(self):
         # Given
         processes = {300: (HOOK, WATCHER)}

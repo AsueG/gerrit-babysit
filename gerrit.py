@@ -4,6 +4,7 @@ import hashlib
 import json
 import netrc
 import pathlib
+import shlex
 import subprocess
 import urllib.error
 import urllib.parse
@@ -35,7 +36,7 @@ def ssh(*args, timeout=60, check=False):
 
 
 def query(text, *options):
-    out = ssh("gerrit", "query", "--format=JSON", *options, f"'{text}'", check=True).stdout
+    out = ssh("gerrit", "query", "--format=JSON", *options, shlex.quote(text), check=True).stdout
     rows = [json.loads(line) for line in out.splitlines() if line.strip()]
     return [r for r in rows if r.get("type") != "stats"]
 

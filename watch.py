@@ -170,18 +170,18 @@ def ci_verdict(event):
 
 
 def diagnose_failures(failures):
-    """Side by side: a morning flush of red changes downloads its logs at once, and each branch's periodic build is
-    asked once."""
+    """Side by side in one bounded pool: a morning flush of red changes downloads its logs at once without flooding
+    zuul, and each branch's periodic build is asked once."""
     histories = {}
     branches = sorted({event["branch"] for event, _ in failures}) if ci.PERIODIC_BUILD else []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        diagnoses = pool.map(lambda failure: ci.diagnose_ci({"change": failure[0]["change"], "message": failure[1]},
-                                                            histories, failure[0].get("known_flaky")), failures)
-        base_builds = dict(zip(branches, pool.map(ci.base_build, branches)))
-        for (event, _), diagnosis in zip(failures, diagnoses):
-            event["ci_diagnosis"] = diagnosis
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        diagnoses = [ci.submit_diagnosis(pool, {"change": event["change"], "message": verdict}, histories,
+                                         event.get("known_flaky")) for event, verdict in failures]
+        base_builds = {branch: pool.submit(ci.base_build, branch) for branch in branches}
+        for (event, _), futures in zip(failures, diagnoses):
+            event["ci_diagnosis"] = [future.result() for future in futures]
             if ci.PERIODIC_BUILD:
-                event["base_build"] = base_builds[event["branch"]]
+                event["base_build"] = base_builds[event["branch"]].result()
 
 
 def rebase(event):

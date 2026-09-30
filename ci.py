@@ -188,11 +188,15 @@ def diagnose_ci(event, histories=None, flaky=None):
 
     `histories` is shared across the events of one wake-up, see job_builds(). `flaky` ({job: counts}) is the local
     flake memory, see flaky_counts()."""
-    histories = {} if histories is None else histories
-    flaky = flaky or {}
-    jobs = failed_jobs(event["message"])
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        return list(pool.map(lambda job: diagnose_job(job, event, histories, flaky), jobs))
+        return [future.result() for future in submit_diagnosis(pool, event, {} if histories is None else histories, flaky)]
+
+
+def submit_diagnosis(pool, event, histories, flaky=None):
+    """One future per failed job, in the verdict's order: several events can share one pool.
+
+    No deadlock on a shared pool: a job only waits in job_builds() for a download already running."""
+    return [pool.submit(diagnose_job, job, event, histories, flaky or {}) for job in failed_jobs(event["message"])]
 
 
 _histories_lock = threading.Lock()
