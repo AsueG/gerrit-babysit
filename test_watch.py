@@ -457,7 +457,32 @@ class SnoozeFilterTest(unittest.TestCase):
         self.assertEqual({}, json.loads(state.read_text()))
 
 
+class MyAttentionSetsTest(unittest.TestCase):
+    def test_my_changes_attention_sets_by_number_and_none_without_rest(self):
+        # Given
+        alice = {"account": {"username": "alice", "name": "Alice"}, "last_update": "2026-09-29 08:00:00.000000000"}
+        rows = [{"_number": 7, "attention_set": {"1": alice}}]
+        # When
+        with mock.patch.object(gerrit, "rest_get", return_value=rows) as rest:
+            found = watch.my_attention_sets()
+        with mock.patch.object(gerrit, "rest_get", side_effect=OSError("HTTP Error 401: Unauthorized")):
+            failed = watch.my_attention_sets()
+        # Then
+        rest.assert_called_once_with("/changes/?q=owner%3Aself%20status%3Aopen&o=DETAILED_ACCOUNTS")
+        self.assertEqual(({7: {"holders": [{"username": "alice", "name": "Alice", "since": 1790668800.0, "reason": ""}],
+                               "removed": []}}, None), (found, failed))
+
+
 class WithIntKeysTest(unittest.TestCase):
+    def test_attention_sets_come_back_with_int_keys_and_none_stays_none(self):
+        # Given
+        polls = [{**poll_result(), "attention_sets": {7: {"holders": [], "removed": []}}},
+                 {**poll_result(), "attention_sets": None}]
+        # When
+        found = [watch.with_int_keys(json.loads(json.dumps(p))) for p in polls]
+        # Then
+        self.assertEqual(polls, found)
+
     def test_change_numbers_come_back_as_ints(self):
         # Given
         poll = {**poll_result(conflicts={1: ["A.kt"]}, parents={2: 3}), "outdated_parents": {}, "attention": [4]}

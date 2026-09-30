@@ -3,6 +3,7 @@ import datetime
 import pathlib
 import re
 import time
+import urllib.parse
 
 import ci
 from config import CI_STUCK_S, CONFIG
@@ -169,6 +170,56 @@ def unreviewed_days(change, patch_set, now):
     return days if days >= UNREVIEWED_WORKING_DAYS else None
 
 
+def attention_entries(attention_set):
+    """REST's `attention_set` / `removed_from_attention_set` ({account id: AttentionSetInfo}) as a list."""
+    return [{"username": info["account"].get("username", ""),
+             "name": info["account"].get("name") or info["account"].get("username", ""),
+             "since": gerrit_time(info["last_update"]), "reason": info.get("reason", "")}
+            for info in (attention_set or {}).values()]
+
+
+def gerrit_time(text):
+    """REST timestamps are UTC, "2026-09-29 10:00:00.000000000"."""
+    return datetime.datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
+def review_wait(change, patch_set, attention, now):
+    """(working days, waiting_on, dismissed) when the change waits on reviewers, else None.
+
+    With the attention set (`attention` = {"holders", "removed"}), a reviewer holding it counts from the moment
+    Gerrit handed it over, even after a first round; one who left it without a word saw the change and passed.
+    Without it (None), only a patch set nobody reviewed counts, and both lists are None."""
+    unreviewed = unreviewed_days(change, patch_set, now)
+    if attention is None:
+        return (unreviewed, None, None) if unreviewed else None
+    if change.get("wip") or any(h["username"] == USER for h in attention["holders"]):
+        return None
+    uploaded = patch_set.get("createdOn", now)
+    holders = [{"name": h["name"], "username": h["username"], "working_days": working_days_since(h["since"], now)}
+               for h in attention["holders"] if h["username"] not in NOT_ME]
+    spoke = {m["reviewer"].get("username", "") for m in change.get("comments", []) if m["timestamp"] >= uploaded}
+    dismissed = [{"name": r["name"], "username": r["username"], "reason": r["reason"]} for r in attention["removed"]
+                 if r["since"] >= uploaded and r["username"] not in NOT_ME | spoke | {h["username"] for h in holders}]
+    held = max((h["working_days"] for h in holders), default=0)
+    if held >= UNREVIEWED_WORKING_DAYS:
+        return held, holders, dismissed
+    # Held for a short while: the reviewer just got it, too soon to chase.
+    return (unreviewed, [], dismissed) if unreviewed and not holders else None
+
+
+def nudges(reported):
+    """One entry per reviewer holding waiting changes: a single reminder for all of them, not one per change."""
+    by_reviewer = {}
+    waiting = [event for event in reported if event["kind"] == "waiting_for_review"]
+    for event in waiting:
+        for holder in event.get("waiting_on") or []:
+            entry = by_reviewer.setdefault(holder["username"], {"reviewer": holder["name"], "username": holder["username"],
+                                                                "changes": [], "working_days": 0})
+            entry["changes"].append(event["change"])
+            entry["working_days"] = max(entry["working_days"], holder["working_days"])
+    return sorted(by_reviewer.values(), key=lambda e: (-len(e["changes"]), e["reviewer"]))
+
+
 def ready_since(patch_set):
     return max((int(a.get("grantedOn", 0)) for a in patch_set.get("approvals", [])
                 if a["type"] == "Code-Review" and int(a["value"]) == 2), default=None)
@@ -183,6 +234,7 @@ def events(result, now=None):
     threads = result.get("threads", {})
     threads_error = result.get("threads_error")
     attention = set(result.get("attention", []))
+    attention_sets = result.get("attention_sets")
     for change in result["changes"]:
         number = change["number"]
         patch_set = change.get("currentPatchSet", {})
@@ -219,11 +271,14 @@ def events(result, now=None):
             # One key per working day: a CL left unsubmitted comes back the next morning.
             yield f'{number}:ready:{patch_set.get("number")}:{day}', {
                 **base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set)}
-        days = unreviewed_days(change, patch_set, now)
-        if (days and number not in conflicts and number not in stale
+        wait = None if attention_sets is None else attention_sets.get(number, {"holders": [], "removed": []})
+        wait = review_wait(change, patch_set, wait, now)
+        if (wait and number not in conflicts and number not in stale and not is_ready_to_submit(patch_set)
                 and ci_state(change, patch_set, votes_of(patch_set)) not in ("failed", "stale_base")):
+            days, waiting_on, dismissed = wait
             yield f'{number}:unreviewed:{patch_set.get("number")}:{day}', {
-                **base, "kind": "waiting_for_review", "working_days": days,
+                **base, "kind": "waiting_for_review", "working_days": days, "waiting_on": waiting_on,
+                "dismissed": dismissed,
                 "reviewers": [r.get("name") or r.get("username") for r in change.get("allReviewers", [])
                               if r.get("username", "") not in NOT_ME]}
     for change in result.get("reviews", []):
@@ -359,6 +414,9 @@ def notification(event, now=None):
         return t("rebase", n=n), t("rebase_body", parent=event["parent"], subject=event["subject"])
     if kind == "parent_updated":
         return t("parent_updated", n=n, parent=event["parent"]), event["subject"]
+    if kind == "waiting_for_review" and event.get("waiting_on"):
+        names = ", ".join(h["name"] for h in event["waiting_on"])
+        return t("waiting_on", n=n, names=names, days=event["working_days"]), event["subject"]
     if kind == "waiting_for_review":
         return t("unreviewed", n=n, days=event["working_days"]), event["subject"]
     if kind == "message":
@@ -372,10 +430,22 @@ def notification(event, now=None):
     return None
 
 
+def waiting_on_url(username):
+    return f"https://{HOST}/q/" + urllib.parse.quote(f"owner:self status:open attention:{username}")
+
+
 def notifications(fresh, now=None):
-    """(title, body, href): a click opens the change in Gerrit, or my dashboard for a summary."""
-    contents = [(*content, event.get("url") or DASHBOARD) for event in fresh
-                if (content := notification(event, now))]
+    """(title, body, href): a click opens the change in Gerrit, or my dashboard for a summary.
+
+    A reviewer holding several waiting changes gets one line for all of them, opening that list in Gerrit."""
+    fresh = list(fresh)
+    grouped = [n for n in nudges(fresh) if len(n["changes"]) > 1]
+    covered = {number for n in grouped for number in n["changes"]}
+    contents = [(t("waiting_on_many", count=len(n["changes"]), name=n["reviewer"]), " · ".join(map(str, n["changes"])),
+                 waiting_on_url(n["username"])) for n in grouped]
+    contents += [(*content, event.get("url") or DASHBOARD) for event in fresh
+                 if not (event["kind"] == "waiting_for_review" and event.get("change") in covered)
+                 and (content := notification(event, now))]
     if len(contents) <= DIGEST_OVER:
         return contents
     return [(t("digest", count=len(contents)), " · ".join(title for title, _, _ in contents)[:200], DASHBOARD)]

@@ -60,7 +60,8 @@ one macOS notification per new event, with its own state (`daemon-seen.json`) an
 session watcher reuses it instead of querying Gerrit and fetching again (only the cleanup query stays in
 the session). No notifications outside working hours (`work_hours`, Mon–Fri): events stay unseen and
 notify at the start of the next working day. Past 3 notifications in one poll (typically that morning
-catch-up), a single summary replaces them. The daemon fixes nothing: clicking opens the change in Gerrit.
+catch-up), a single summary replaces them. Changes waiting on the same reviewer notify once ("3 CLs waiting on
+Alice", opening their `attention:` query in Gerrit). The daemon fixes nothing: clicking opens the change in Gerrit.
 After editing `watch.py`, restart it: `launchctl kickstart -k gui/$(id -u)/<launchd_label>`.
 
 ## On each wake-up
@@ -73,7 +74,7 @@ Each item has a `kind`:
 before this verdict, and `known_flaky` = `{job: {week, month, last}}` from the local flake memory),
 `merge_conflict` (+ `files`), `parent_merged` (+ `parent`, `old_parent_sha`, `files`, `rebase`),
 `parent_updated` (+ `parent`, `parent_patch_set`, `old_parent_sha`, `new_parent_sha`, `rebase`), `ci_stuck` (+ `idle_since`, `zuul_queue`), `waiting_for_review` (+ `working_days`,
-`reviewers`), `ready_to_submit` ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
+`reviewers`, `waiting_on`, `dismissed`), `ready_to_submit` ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
 `review_requested` / `review_new_patch_set` / `review_reply` ("Other people's reviews" section).
 The watcher never gives up on Gerrit being unreachable (VPN off…): it retries with a backoff capped at
 10 min, and the status line shows `?` meanwhile. Only `--pending` returns `status: error` (with `detail`)
@@ -84,6 +85,9 @@ failed (HTTP password expired or missing) while SSH works. Polling goes on: `thr
 `null` (unknown, **not** "no threads"), `ready_to_submit` is held back and the status line shows
 `threads ?`. Tell the user once (renew the HTTP password), without stopping. With no open change of mine,
 `--pending` still checks the HTTP password and reports it the same way, before a change needs it.
+
+`nudges` (at the root of both outputs) = the reported `waiting_for_review` grouped by the reviewer holding
+them: `[{reviewer, username, changes, working_days}]`, most loaded first.
 
 Bots are ignored everywhere: the CI user (except its verdicts), the `bot_users` of `config.json` and
 Gerrit itself (messages without a username, e.g. auto-abandon). They never count as the last word of a
@@ -110,7 +114,7 @@ otherwise the next events are lost.
 | `parent_merged` | The parent merged under another SHA (rebase on submit): the change will not merge as is, no need to wait for Merge Failed. The rebase is already prepared locally: read `rebase` below |
 | `parent_updated` | The open parent got a new patch set and my change still sits on the old one. Same handling as `parent_merged` via `rebase`; emitted once per new parent revision |
 | `ci_stuck` | CI "running" but nothing from zuul (no verdict, no "Starting") for 2 h on the current patch set, once per patch set. Read `zuul_queue`: a list of `{pipeline, enqueued_at, remaining_s, jobs_waiting, jobs_running}` = the change is queued, report only, **no** recheck. `[]` = zuul lost the change → offer (`AskUserQuestion`) a `recheck`, public so only after "yes". `{"error": …}` = open `zuul_status_url` by hand |
-| `waiting_for_review` | Current non-WIP patch set, CI not red, no comment nor vote from a reviewer for `working_days` ≥ 2 working days (reminded every working day). If `reviewers` is empty or they are away: suggest reviewers. Offer (`AskUserQuestion`) **Add reviewers** / **Nudge** (draft message to publish) / **Nothing**. The first two are public, so only after "yes" |
+| `waiting_for_review` | Non-WIP patch set, CI red neither, not ready to submit, reminded every working day. Read from Gerrit's attention set of my change (REST): `waiting_on` = `[{name, username, working_days}]`, the reviewers holding it for ≥ 2 working days, even after a first round of comments — they are the ones to nudge. Never emitted while I am in the attention set myself (the ball is mine). `waiting_on: []` = nobody holds it and nobody reviewed the patch set for `working_days` ≥ 2: `dismissed` = `[{name, username, reason}]` lists who left the attention set since the upload without a word (saw it and passed) → suggest other reviewers rather than nudging them. When the REST call fails, both are `null` and only the old count remains (no comment nor vote from a reviewer for ≥ 2 working days). If `reviewers` is empty or they are away: suggest reviewers. Offer (`AskUserQuestion`) **Add reviewers** / **Nudge** / **Nothing**. Nudge per reviewer, not per change: when `nudges` gives a reviewer several changes, draft **one** message listing them all (to send wherever the user wants, e.g. chat) instead of a comment on each. The first two are public, so only after "yes" |
 | Failed zuul job | Start from `ci_diagnosis` (one item per failed job: `category`, `failure` = Gradle's "What went wrong" block, `lint_errors`, `file_comments`, `others_failing`, `job_history`, `log_url`). Per-category detail below. On `diagnosis_error`: read `<log_url>/job-output.txt` by hand (`curl -L --compressed`) |
 | Clear, local inline comment | Fix it |
 | Question, design disagreement, ambiguous request, out of the change's scope | **Do not touch the code** — draft a reply |

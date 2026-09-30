@@ -46,6 +46,18 @@ def fetch_attention():
     return sorted(row["number"] for row in gerrit.query(ATTENTION_QUERY))
 
 
+def my_attention_sets():
+    """{change number: {"holders", "removed"}} for my changes, None when REST fails. SSH queries carry no attention
+    set; without it, waiting_for_review falls back to counting days."""
+    try:
+        rows = gerrit.rest_get(f"/changes/?q={urllib.parse.quote(QUERY)}&o=DETAILED_ACCOUNTS")
+    except (OSError, ValueError, KeyError):
+        return None
+    return {row["_number"]: {"holders": events.attention_entries(row.get("attention_set")),
+                             "removed": events.attention_entries(row.get("removed_from_attention_set"))}
+            for row in rows}
+
+
 _threads_memo = PollMemo()
 
 
@@ -101,9 +113,10 @@ def threads_or_error(changes):
 def poll():
     # Independent round trips run side by side: the SSH queries share one multiplexed connection, and the REST
     # calls overlap the local git fetch.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         reviews = pool.submit(fetch_reviews)
         attention = pool.submit(fetch_attention)
+        attention_sets = pool.submit(my_attention_sets)
         changes = fetch_changes()
         threads_job = pool.submit(threads_or_error, changes)
         statuses = parent_statuses(changes)
@@ -120,13 +133,14 @@ def poll():
             "threads_error": threads_error,
             "reviews": reviews.result(),
             "attention": attention.result(),
+            "attention_sets": attention_sets.result(),
         }
 
 
 def with_int_keys(result):
     """JSON turns the change-number keys into strings."""
-    return {**result, **{key: {int(k): v for k, v in result[key].items()}
-                         for key in ("conflicts", "parents", "stale_parents", "outdated_parents", "threads")}}
+    keys = ("conflicts", "parents", "stale_parents", "outdated_parents", "threads", "attention_sets")
+    return {**result, **{key: {int(k): v for k, v in result[key].items()} for key in keys if result.get(key) is not None}}
 
 
 class DaemonError(Exception):
@@ -398,8 +412,8 @@ def main():
             if threads_error is None and not result["changes"]:
                 # No open change, no REST call in the poll: check the HTTP password before a change needs it.
                 threads_error = gerrit.http_error()
-            print(json.dumps({"status": "pending", "events": report, "threads_error": threads_error,
-                              "snoozed": snoozed}, ensure_ascii=False, indent=1))
+            print(json.dumps({"status": "pending", "events": report, "nudges": events.nudges(report),
+                              "threads_error": threads_error, "snoozed": snoozed}, ensure_ascii=False, indent=1))
             return 0
 
         fresh = {key: current[key] for key in current.keys() - seen.keys()}
@@ -413,7 +427,7 @@ def main():
             # Enriched before being marked seen: a crash in the extras must not swallow the events.
             report = enrich(list(settling.values()))
             save_seen(remember(seen, settling.keys(), result, current, now))
-            print(json.dumps({"status": "events", "events": report,
+            print(json.dumps({"status": "events", "events": report, "nudges": events.nudges(report),
                               "threads_error": result.get("threads_error")}, ensure_ascii=False, indent=1))
             return 0
         time.sleep(args.interval)

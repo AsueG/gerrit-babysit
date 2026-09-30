@@ -488,6 +488,76 @@ class BotsTest(unittest.TestCase):
         self.assertEqual([["Rev"]], [e["reviewers"] for e in found])
 
 
+def holder(username, since, reason="Reviewer was added"):
+    return {"username": username, "name": username.title(), "since": since, "reason": reason}
+
+
+class AttentionSetTest(unittest.TestCase):
+    friday, tuesday = local(2026, 9, 25, 17), local(2026, 9, 29, 10)
+
+    def waiting(self, c, holders=(), removed=()):
+        result = {**poll_result([c]), "attention_sets": {1: {"holders": list(holders), "removed": list(removed)}}}
+        return [e for _, e in events.events(result, self.tuesday) if e["kind"] == "waiting_for_review"]
+
+    def test_rest_attention_set_becomes_entries(self):
+        # Given
+        rest = {"1000": {"account": {"_account_id": 1000, "username": "alice", "name": "Alice"},
+                         "last_update": "2026-09-29 08:00:00.000000000", "reason": "Reviewer was added"}}
+        # When
+        found = events.attention_entries(rest)
+        # Then
+        self.assertEqual([holder("alice", 1790668800.0)], found)
+
+    def test_a_reviewer_holding_it_after_a_first_round_is_waited_on(self):
+        # Given
+        c = change(current=patch_set(2, approval("Code-Review", 1, "bob"), *GREEN_CI, created=self.friday),
+                   comments=[message("bob", "Patch Set 2: Code-Review+1", timestamp=self.friday + 60)])
+        # When
+        [event] = self.waiting(c, holders=[holder("alice", self.friday)])
+        # Then
+        self.assertEqual((2, [{"name": "Alice", "username": "alice", "working_days": 2}], []),
+                         (event["working_days"], event["waiting_on"], event["dismissed"]))
+
+    def test_nothing_is_waited_on_while_the_ball_is_mine_or_just_handed_over(self):
+        # Given
+        c = change(current=patch_set(1, *GREEN_CI, created=self.friday))
+        # When
+        found = [self.waiting(c, holders=[holder("alice", self.friday), holder(gerrit.USER, self.friday)]),
+                 self.waiting(c, holders=[holder("alice", self.tuesday - 3600)])]
+        # Then
+        self.assertEqual([[], []], found)
+
+    def test_a_reviewer_who_left_it_without_a_word_saw_it_and_passed(self):
+        # Given
+        c = change(current=patch_set(1, *GREEN_CI, created=self.friday))
+        removed = [holder("alice", self.friday + 600, "removed by alice"), holder("bob", self.friday - 600)]
+        # When
+        [event] = self.waiting(c, removed=removed)
+        # Then
+        self.assertEqual(([], [{"name": "Alice", "username": "alice", "reason": "removed by alice"}]),
+                         (event["waiting_on"], event["dismissed"]))
+
+    def test_without_the_attention_set_only_the_day_count_is_left(self):
+        # Given
+        c = change(current=patch_set(1, *GREEN_CI, created=self.friday))
+        # When
+        [event] = [e for _, e in events.events(poll_result([c]), self.tuesday) if e["kind"] == "waiting_for_review"]
+        # Then
+        self.assertEqual((2, None, None), (event["working_days"], event["waiting_on"], event["dismissed"]))
+
+    def test_nudges_are_grouped_by_reviewer(self):
+        # Given
+        alice, bob = ({"name": n.title(), "username": n, "working_days": d} for n, d in (("alice", 3), ("bob", 2)))
+        waiting = [{"kind": "waiting_for_review", "change": 1, "waiting_on": [alice]},
+                   {"kind": "waiting_for_review", "change": 2, "waiting_on": [{**alice, "working_days": 5}, bob]},
+                   {"kind": "waiting_for_review", "change": 3, "waiting_on": None}, {"kind": "merge_conflict", "change": 4}]
+        # When
+        found = events.nudges(waiting)
+        # Then
+        self.assertEqual([{"reviewer": "Alice", "username": "alice", "changes": [1, 2], "working_days": 5},
+                          {"reviewer": "Bob", "username": "bob", "changes": [2], "working_days": 2}], found)
+
+
 class StatusRowsTest(unittest.TestCase):
     def test_open_threads_keep_an_approved_change_from_being_ready(self):
         # Given
@@ -539,6 +609,27 @@ class NotificationsTest(unittest.TestCase):
         found = events.notification(event)
         # Then
         self.assertEqual(("1 unreviewed for 3 working days", "s"), found)
+
+    def test_waiting_on_a_reviewer(self):
+        # Given
+        event = {"kind": "waiting_for_review", "change": 1, "working_days": 3, "subject": "s",
+                 "waiting_on": [{"name": "Alice", "username": "alice", "working_days": 3}]}
+        # When
+        found = events.notification(event)
+        # Then
+        self.assertEqual(("1 waiting on Alice for 3 working days", "s"), found)
+
+    def test_changes_waiting_on_the_same_reviewer_notify_once(self):
+        # Given
+        alice = [{"name": "Alice", "username": "alice", "working_days": 2}]
+        fresh = [{"kind": "waiting_for_review", "change": n, "working_days": 2, "subject": "s", "waiting_on": alice,
+                  "url": f"https://review/{n}"} for n in (1, 2, 3)] + [self.event(4)]
+        # When
+        found = events.notifications(fresh)
+        # Then
+        self.assertEqual([("3 CLs waiting on Alice", "1 · 2 · 3",
+                           "https://gerrit.example.com/q/owner%3Aself%20status%3Aopen%20attention%3Aalice"),
+                          ("4 has conflicts", "A.kt", "https://review/4")], found)
 
 
 if __name__ == "__main__":
