@@ -39,16 +39,20 @@ class MergeConflictsTest(GitRepoTest):
     def setUp(self):
         super().setUp()
         self.git("remote", "add", "origin", str(self.repo))
+        self.content_merge = True
+        patcher = mock.patch.object(gerrit, "uses_content_merge", lambda project: self.content_merge)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def conflicting_change(self, number, branch):
-        (self.repo / "A.kt").write_text("base\n")
+    def conflicting_change(self, number, branch, base="base\n", theirs="theirs\n", mine="mine\n"):
+        (self.repo / "A.kt").write_text(base)
         self.git("add", "A.kt")
         self.git("commit", "-q", "-m", "base")
         self.git("branch", "-f", branch)
-        (self.repo / "A.kt").write_text("theirs\n")
+        (self.repo / "A.kt").write_text(theirs)
         self.git("commit", "-q", "-am", "theirs")
         self.git("checkout", "-q", "--detach", branch)
-        (self.repo / "A.kt").write_text("mine\n")
+        (self.repo / "A.kt").write_text(mine)
         self.git("commit", "-q", "-am", "mine")
         ref = f"refs/changes/0{number}/{number}/1"
         self.git("update-ref", ref, "HEAD")
@@ -67,8 +71,33 @@ class MergeConflictsTest(GitRepoTest):
         conflicts = repo.merge_conflicts([c])
         # Then
         self.assertEqual({1: ["A.kt"]}, conflicts)
-        self.assertEqual([(self.git("rev-parse", "release"), c["currentPatchSet"]["revision"])],
+        self.assertEqual([(self.git("rev-parse", "release"), c["currentPatchSet"]["revision"], True)],
                          list(repo._conflicts_memo))
+
+    def test_without_content_merge_edits_far_apart_in_one_file_conflict(self):
+        # Given
+        lines = [f"line {i}\n" for i in range(20)]
+        base, theirs, mine = "".join(lines), "".join(["top\n", *lines[1:]]), "".join([*lines[:-1], "bottom\n"])
+        c = self.conflicting_change(1, "release", base, theirs, mine)
+        # When
+        verdicts = []
+        for self.content_merge in (True, False):
+            verdicts.append(repo.merge_conflicts([c]))
+        # Then
+        self.assertEqual([{}, {1: ["A.kt"]}], verdicts)
+
+    def test_without_content_merge_the_same_edit_on_both_sides_is_clean(self):
+        # Given
+        self.content_merge = False
+        c = self.conflicting_change(1, "release", theirs="same\n", mine="same\n")
+        (self.repo / "B.kt").write_text("theirs only\n")
+        self.git("add", "B.kt")
+        self.git("commit", "-q", "-m", "theirs only")
+        self.git("branch", "-f", "release", "main")
+        # When
+        conflicts = repo.merge_conflicts([c])
+        # Then
+        self.assertEqual({}, conflicts)
 
     def test_a_vanished_branch_does_not_hide_other_conflicts(self):
         # Given

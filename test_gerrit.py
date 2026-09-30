@@ -47,5 +47,39 @@ class RestGetTest(unittest.TestCase):
         self.assertEqual(2, urlopen.call_count)
 
 
+class UsesContentMergeTest(unittest.TestCase):
+    def setUp(self):
+        self.addCleanup(gerrit._content_merge.clear)
+
+    def test_reads_the_project_setting_once(self):
+        # Given
+        config = {"use_content_merge": {"configured_value": "FALSE", "inherited_value": False}}
+        # When
+        with mock.patch.object(gerrit, "rest_get", return_value=config) as rest_get:
+            answers = [gerrit.uses_content_merge("android/app") for _ in range(2)]
+        # Then
+        self.assertEqual([False, False], answers)
+        rest_get.assert_called_once_with("/projects/android%2Fapp/config")
+
+    def test_false_booleans_missing_from_the_json_read_as_false(self):
+        # Given
+        settings = [{"configured_value": "TRUE"}, {"configured_value": "INHERIT"},
+                    {"configured_value": "INHERIT", "inherited_value": True}, {"configured_value": "FALSE"}, None]
+        # When
+        answers = [gerrit.content_merge_of(setting) for setting in settings]
+        # Then
+        self.assertEqual([True, False, True, False, True], answers)
+
+    def test_an_unreadable_setting_counts_as_on_and_is_asked_again(self):
+        # Given
+        failures = [KeyError("no ~/.netrc entry"), OSError("offline")]
+        # When
+        with mock.patch.object(gerrit, "rest_get", side_effect=failures) as rest_get:
+            answers = [gerrit.uses_content_merge("app") for _ in range(2)]
+        # Then
+        self.assertEqual([True, True], answers)
+        self.assertEqual(2, rest_get.call_count)
+
+
 if __name__ == "__main__":
     unittest.main()

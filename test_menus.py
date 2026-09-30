@@ -102,6 +102,14 @@ class MenuStateTest(unittest.TestCase):
         self.assertEqual(["pencil", "exclamationmark.triangle.fill", "arrow.triangle.branch", "hand.thumbsdown.fill"],
                          symbols)
 
+    def test_a_draft_stays_gray_but_names_its_problem(self):
+        # Given
+        changes = [row(wip=True, conflict=True, ci="failed"), row(wip=True, ci="passed")]
+        # When
+        found = [plugin.state_of(c) for c in changes]
+        # Then
+        self.assertEqual([(f"WIP · {plugin.t('bar_conflict')}", "pencil", "gray"), ("WIP", "pencil", "gray")], found)
+
     def test_ready_is_green_only_without_an_open_parent(self):
         # Given
         ready, blocked = row(ready=True), row(ready=True, open_parent=9)
@@ -151,11 +159,12 @@ class InvestigateTest(SnapshotTest):
 
     def test_offered_only_for_changes_in_trouble(self):
         # Given
-        changes = [row(ci="failed"), row(threads=2), row(ci="running"), row(wip=True, ci="failed")]
+        changes = [row(ci="failed"), row(threads=2), row(ci="running"), row(wip=True, ci="failed"),
+                   row(wip=True, conflict=True), row(wip=True, ci="stale_base")]
         # When
         offered = ['"investigate"' in self.menu(c) for c in changes]
         # Then
-        self.assertEqual([True, True, False, False], offered)
+        self.assertEqual([True, True, False, False, True, True], offered)
 
     def test_opens_claude_in_the_worktree_with_the_state_in_the_prompt(self):
         # Given

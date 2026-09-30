@@ -68,6 +68,31 @@ def http_credentials():
     return entry[0], entry[2]
 
 
+_content_merge = {}
+
+
+def uses_content_merge(project):
+    """Off, Gerrit calls a conflict any file both sides changed, however far apart the edits are.
+
+    Asked once per project; unreadable (no HTTP password, network) counts as on, git's own behavior, and is asked
+    again on the next poll."""
+    if project not in _content_merge:
+        try:
+            config = rest_get(f"/projects/{urllib.parse.quote(project, safe='')}/config")
+        except (OSError, ValueError, KeyError):
+            return True
+        _content_merge[project] = content_merge_of(config.get("use_content_merge"))
+    return _content_merge[project]
+
+
+def content_merge_of(setting):
+    """Gerrit drops false booleans from its JSON, so a missing `value` or `inherited_value` means false."""
+    if setting is None:
+        return True
+    configured = setting.get("configured_value", "INHERIT")
+    return configured == "TRUE" if configured != "INHERIT" else bool(setting.get("inherited_value"))
+
+
 def rest_get(path, retry=True):
     global _rest_auth
     if _rest_auth is None:

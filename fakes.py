@@ -38,7 +38,7 @@ def message(author, text, timestamp=1):
 
 
 def change(number=1, current=None, comments=(), **extra):
-    return {"number": number, "id": f"I{number}", "subject": f"subject {number}", "branch": "main",
+    return {"number": number, "id": f"I{number}", "subject": f"subject {number}", "project": "app", "branch": "main",
             "url": f"https://review/{number}", "status": "NEW", "currentPatchSet": current or patch_set(),
             "comments": list(comments), **extra}
 

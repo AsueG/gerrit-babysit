@@ -61,20 +61,41 @@ def merge_conflicts(changes):
         target = git("rev-parse", "--verify", "--quiet", f"{FETCH_NAMESPACE}/{change['branch']}").strip()
         if not target:
             continue
-        key = (target, patch_set["revision"])
+        content_merge = gerrit.uses_content_merge(change["project"])
+        key = (target, patch_set["revision"], content_merge)
         if key in _conflicts_memo:
             memo[key] = _conflicts_memo[key]
         else:
-            # A 3-way merge of the whole patch set onto the branch tip: conflicts iff Gerrit's rebase-on-submit would.
-            result = git_run("merge-tree", "--write-tree", "--name-only", "--no-messages", target, patch_set["revision"])
-            if result.returncode not in (0, 1):
+            files = (merged_with_content if content_merge else changed_on_both_sides)(target, patch_set["revision"])
+            if files is None:
                 # Patch set not fetched (its ref failed): unknown, not clean, so retry on the next poll.
                 continue
-            memo[key] = result.stdout.splitlines()[1:] if result.returncode == 1 else []
+            memo[key] = files
         if memo[key]:
             conflicts[change["number"]] = memo[key]
     _conflicts_memo = memo
     return conflicts
+
+
+def merged_with_content(target, revision):
+    """A 3-way merge of the whole patch set onto the branch tip: conflicts iff Gerrit's rebase-on-submit would."""
+    result = git_run("merge-tree", "--write-tree", "--name-only", "--no-messages", target, revision)
+    if result.returncode not in (0, 1):
+        return None
+    return result.stdout.splitlines()[1:] if result.returncode == 1 else []
+
+
+def changed_on_both_sides(target, revision):
+    """Gerrit's merge with content merge off: a path both sides changed, each its own way, is a conflict."""
+    base = git_run("merge-base", target, revision)
+    if base.returncode:
+        return None
+    diffs = [git_run("diff", "--no-renames", "--name-only", a, b)
+             for a, b in ((base.stdout.strip(), target), (base.stdout.strip(), revision), (target, revision))]
+    if any(d.returncode for d in diffs):
+        return None
+    theirs, mine, different = (set(d.stdout.splitlines()) for d in diffs)
+    return sorted(theirs & mine & different)
 
 
 def stale_parents(changes, statuses):

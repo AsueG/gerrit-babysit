@@ -2,12 +2,12 @@
 
 Kept free of gerrit/events imports: the status line loads it on every refresh."""
 PROBLEMS = ("conflict", "stale_base", "ci_failed", "rejected")
+# Even a draft needs these fixed before anyone can review it.
+NEEDS_REBASE = ("conflict", "stale_base")
 
 
-def state(row):
-    """The worst thing about a change first; a change counts as ready only when nothing is left to do but submit."""
-    if row["wip"]:
-        return "wip"
+def problem(row):
+    """The worst of PROBLEMS, WIP or not."""
     if row["conflict"]:
         return "conflict"
     if row["ci"] == "stale_base":
@@ -16,6 +16,16 @@ def state(row):
         return "ci_failed"
     if row["code_review"] < 0:
         return "rejected"
+    return None
+
+
+def state(row):
+    """The worst thing about a change first; a change counts as ready only when nothing is left to do but submit."""
+    if row["wip"]:
+        return "wip"
+    found = problem(row)
+    if found:
+        return found
     if row.get("outdated_parent"):
         return "parent_updated"
     if row.get("ci_stuck"):

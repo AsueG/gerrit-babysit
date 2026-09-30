@@ -56,7 +56,8 @@ STYLES = {
 
 def label_of(state, change):
     if state == "wip":
-        return "WIP"
+        problem = snapshot.problem(change)
+        return f"WIP · {label_of(problem, change)}" if problem else "WIP"
     if state == "ci_failed":
         return t("bar_ci_failed", labels=", ".join(change["ci_failed"]))
     if state == "rejected":
@@ -215,7 +216,9 @@ def open_worktree(number):
 
 
 def needs_investigation(change):
-    return not change["wip"] and (state_of(change)[2] == "red" or bool(change.get("threads")))
+    if change["wip"]:
+        return snapshot.problem(change) in snapshot.NEEDS_REBASE
+    return state_of(change)[2] == "red" or bool(change.get("threads"))
 
 
 def investigate(number):
