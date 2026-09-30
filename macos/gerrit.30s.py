@@ -19,16 +19,14 @@ import time
 SELF = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(SELF.parents[1]))
 import ci  # noqa: E402
+import gerrit  # noqa: E402
 import snooze  # noqa: E402
 from config import (CI_STUCK_S, COMMAND, CONFIG, REPO, SKILL_DIR, STALE_AFTER_S, STATUS,  # noqa: E402
-                    SWIFTBAR_PLUGIN, gerrit_user, t)
+                    SWIFTBAR_PLUGIN, t)
 
-HOST = CONFIG["gerrit_host"]
-DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{HOST}/dashboard/self"
+DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{gerrit.HOST}/dashboard/self"
 ICON = "sfimage=arrow.triangle.pull"
 OPEN_CLAUDE = SKILL_DIR / "GerritBabysit.app"
-SSH = ["ssh", "-p", str(CONFIG["ssh_port"]), "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
-       f"{gerrit_user()}@{HOST}"]
 ORCA = shutil.which("orca") or "/opt/homebrew/bin/orca"
 CLAUDE = shutil.which("claude") or str(pathlib.Path.home() / ".local/bin/claude")
 # Worst first: the menu lists problems before anything else.
@@ -108,16 +106,12 @@ def submit(number, patch_set):
     if not confirmed(t("bar_submit_confirm", n=number, ps=patch_set), subject, t("bar_submit_button")):
         return
     # Pinning the patch set makes Gerrit refuse if a newer one was pushed since the snapshot.
-    result = subprocess.run([*SSH, "gerrit", "review", "--submit", f"{number},{patch_set}"],
-                            capture_output=True, text=True, timeout=120)
+    result = gerrit.ssh("gerrit", "review", "--submit", f"{number},{patch_set}", timeout=120)
     if result.returncode == 0:
         notify(t("bar_submitted", n=number), subject)
     else:
         alert(t("bar_submit_failed", n=number), result.stderr.strip() or result.stdout.strip())
     refresh()
-
-
-RECHECK = re.compile(r"recheck(?:-[\w-]+)?")
 
 
 def recheck_detail(change):
@@ -136,13 +130,12 @@ def recheck(number, patch_set):
     comment = CONFIG["recheck_comment"]
     row = snapshot_row(number)
     # The comment goes through Gerrit's SSH command line: only a plain recheck variant.
-    if not RECHECK.fullmatch(comment) or str(row.get("patch_set")) != patch_set:
+    if not ci.RECHECK.fullmatch(comment) or str(row.get("patch_set")) != patch_set:
         return
     if not confirmed(t("bar_recheck_confirm", comment=comment, n=number, ps=patch_set), row.get("subject", ""),
                      t("bar_recheck_button")):
         return
-    result = subprocess.run([*SSH, "gerrit", "review", "--message", comment, f"{number},{patch_set}"],
-                            capture_output=True, text=True, timeout=120)
+    result = gerrit.ssh("gerrit", "review", "--message", comment, f"{number},{patch_set}", timeout=120)
     if result.returncode == 0:
         notify(t("bar_rechecked", n=number), row.get("subject", ""))
     else:
@@ -228,22 +221,14 @@ def copy(text):
     notify(t("bar_copied"), text)
 
 
+ACTIONS = {"submit": submit, "worktree": open_worktree, "investigate": investigate, "copy": copy,
+           "recheck": recheck, "snooze": snooze_change, "wake": wake}
+
+
 def handle(args):
     name, *params = args
-    if name == "submit":
-        submit(*params)
-    elif name == "worktree":
-        open_worktree(*params)
-    elif name == "investigate":
-        investigate(*params)
-    elif name == "copy":
-        copy(*params)
-    elif name == "recheck":
-        recheck(*params)
-    elif name == "snooze":
-        snooze_change(*params)
-    elif name == "wake":
-        wake(*params)
+    if name in ACTIONS:
+        ACTIONS[name](*params)
 
 
 def age(seconds):

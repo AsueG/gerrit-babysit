@@ -1,0 +1,340 @@
+"""Pure logic: a poll's rows in, keyed events and notification texts out. No network, no git."""
+import datetime
+import pathlib
+import re
+import time
+
+import ci
+from config import CI_STUCK_S, CONFIG, t
+from gerrit import BOT_USERS, CI_USER, HOST, NOT_ME, USER
+
+CI_LABELS = tuple(CONFIG["ci_labels"])
+# Group additions put dozens of people on a change: not a personal review request.
+MAX_REVIEWERS = CONFIG["max_reviewers"]
+MAX_THREADS = 20
+WORK_HOURS = tuple(CONFIG["work_hours"])
+UNREVIEWED_WORKING_DAYS = 2
+# Past this many notifications in one poll (typically the morning flush), a single summary replaces them.
+DIGEST_OVER = 3
+DASHBOARD = f"https://{HOST}/dashboard/self"
+
+CI_NEGATIVE_VOTE = re.compile(rf"\b(?:{'|'.join(CI_LABELS)})-[12]\b")
+POSITIVE_VOTES_ONLY = re.compile(r"^Patch Set \d+:(?: [\w-]+\+[12])+$")
+
+
+def is_actionable(message):
+    author = message.get("reviewer", {}).get("username", "")
+    if author == USER or (author in BOT_USERS and author != CI_USER):
+        return False
+    header, _, body = message.get("message", "").partition("\n")
+    if author == CI_USER:
+        # Only the header line carries zuul's votes ("Patch Set 5: Build-1"); job names and URLs below can contain "-1".
+        return bool(CI_NEGATIVE_VOTE.search(header))
+    # A bare +1/+2 needs nothing; a +2 that unblocks the CL comes back as ready_to_submit.
+    return not (POSITIVE_VOTES_ONLY.match(header.strip()) and not body.strip())
+
+
+def is_ready_to_submit(patch_set):
+    # submitRecords can report OK on a change voted -1 (seen on Gerrit 3.x), so read the votes instead.
+    votes = votes_of(patch_set)
+    code_review = votes.get("Code-Review", [])
+    return 2 in code_review and min(code_review) >= 0 and ci_passed(votes)
+
+
+def ci_passed(votes):
+    # Some CIs vote +2 (e.g. a gate pipeline), not only +1.
+    return all(max(votes.get(label, [0])) >= 1 and min(votes[label]) >= 0 for label in CI_LABELS)
+
+
+def votes_of(patch_set):
+    votes = {}
+    for approval in patch_set.get("approvals", []):
+        votes.setdefault(approval["type"], []).append(int(approval["value"]))
+    return votes
+
+
+def failed_ci_labels(votes):
+    return [label for label in CI_LABELS if min(votes.get(label, [0])) < 0]
+
+
+def ci_state(change, patch_set, votes):
+    if failed_ci_labels(votes):
+        return "stale_base" if is_merge_failed(change, patch_set) else "failed"
+    if ci_passed(votes):
+        return "passed"
+    return "running"
+
+
+def patch_set_messages(change, patch_set, author):
+    prefix = f"Patch Set {patch_set.get('number')}:"
+    return [m for m in change.get("comments", [])
+            if m["reviewer"].get("username") == author and m["message"].startswith(prefix)]
+
+
+def latest_ci_verdict(change, patch_set):
+    return max(patch_set_messages(change, patch_set, CI_USER), key=lambda m: m["timestamp"], default=None)
+
+
+def ci_idle_since(change, patch_set):
+    """Zuul's last sign of life on this patch set (a recheck's "Starting" counts), else the upload."""
+    return max((m["timestamp"] for m in patch_set_messages(change, patch_set, CI_USER)),
+               default=patch_set.get("createdOn", 0))
+
+
+def is_ci_stuck(change, patch_set, now):
+    return (ci_state(change, patch_set, votes_of(patch_set)) == "running"
+            and now - ci_idle_since(change, patch_set) > CI_STUCK_S)
+
+
+def is_merge_failed(change, patch_set):
+    """Zuul's latest verdict on this patch set is 'Merge Failed.': no job ran, the base is stale."""
+    verdict = latest_ci_verdict(change, patch_set)
+    return verdict is not None and "Merge Failed." in verdict["message"]
+
+
+def my_rechecks(change, patch_set, before):
+    """How many times I already asked zuul to rerun this patch set before the given verdict."""
+    return sum(1 for m in patch_set_messages(change, patch_set, USER)
+               if m["timestamp"] < before and ci.RECHECK.fullmatch(m["message"].partition("\n")[2].strip()))
+
+
+def event_base(change):
+    return {
+        "change": change["number"],
+        "subject": change["subject"],
+        "branch": change["branch"],
+        "change_id": change["id"],
+        "url": change["url"],
+        "patch_set": change.get("currentPatchSet", {}).get("number"),
+    }
+
+
+def message_event(base, message, kind="message"):
+    return {
+        **base,
+        "kind": kind,
+        "author": message["reviewer"].get("name", ""),
+        "author_username": message["reviewer"].get("username", ""),
+        "message": message["message"][:1500],
+    }
+
+
+def awaiting_threads(comments_by_file):
+    """Unresolved threads whose last word is not mine, from REST `/comments`; `reply_to` is the draft's in_reply_to."""
+    by_id = {c["id"]: {**c, "file": file} for file, comments in comments_by_file.items() for c in comments}
+
+    def root(comment):
+        while comment.get("in_reply_to") in by_id:
+            comment = by_id[comment["in_reply_to"]]
+        return comment["id"]
+
+    threads = {}
+    for comment in sorted(by_id.values(), key=lambda c: c["updated"]):
+        threads.setdefault(root(comment), []).append(comment)
+    awaiting = [{"patch_set": thread[0].get("patch_set"), "file": thread[0]["file"], "line": thread[0].get("line"),
+                 "author": thread[-1]["author"].get("name", ""), "reply_to": thread[-1]["id"],
+                 "messages": [f'{m["author"].get("username", "")}: {m["message"][:800]}' for m in thread[-3:]]}
+                for thread in threads.values()
+                if thread[-1].get("unresolved") and thread[-1]["author"].get("username", "") not in NOT_ME]
+    return awaiting[-MAX_THREADS:]
+
+
+def work_day(now):
+    """Reminder bucket: flips at the start of each working day, so nothing re-fires at night or on weekends."""
+    day = datetime.date.fromtimestamp(now - WORK_HOURS[0] * 3600)
+    return (day - datetime.timedelta(days=max(0, day.weekday() - 4))).isoformat()
+
+
+def is_quiet(now):
+    local = time.localtime(now)
+    return local.tm_wday >= 5 or not WORK_HOURS[0] <= local.tm_hour < WORK_HOURS[1]
+
+
+def working_days_since(start, now):
+    first, last = datetime.date.fromtimestamp(start), datetime.date.fromtimestamp(now)
+    return sum(1 for n in range(1, (last - first).days + 1)
+               if (first + datetime.timedelta(days=n)).weekday() < 5)
+
+
+def unreviewed_days(change, patch_set, now):
+    """Working days the current patch set has waited without a word or vote from a reviewer; None if not waiting."""
+    if change.get("wip") or votes_of(patch_set).get("Code-Review"):
+        return None
+    uploaded = patch_set.get("createdOn", now)
+    if any(m["timestamp"] >= uploaded and m["reviewer"].get("username", "") not in NOT_ME
+           for m in change.get("comments", [])):
+        return None
+    days = working_days_since(uploaded, now)
+    return days if days >= UNREVIEWED_WORKING_DAYS else None
+
+
+def ready_since(patch_set):
+    return max((int(a.get("grantedOn", 0)) for a in patch_set.get("approvals", [])
+                if a["type"] == "Code-Review" and int(a["value"]) == 2), default=None)
+
+
+def events(result, now=None):
+    now = now or time.time()
+    day = work_day(now)
+    conflicts = result["conflicts"]
+    stale = result.get("stale_parents", {})
+    outdated = result.get("outdated_parents", {})
+    threads = result.get("threads", {})
+    threads_error = result.get("threads_error")
+    attention = set(result.get("attention", []))
+    for change in result["changes"]:
+        number = change["number"]
+        patch_set = change.get("currentPatchSet", {})
+        base = event_base(change)
+        for message in change.get("comments", []):
+            if not is_actionable(message):
+                continue
+            author = message["reviewer"].get("username", "")
+            # A late verdict on a patch set already replaced by a push says nothing about the current one.
+            if author == CI_USER and patch_set_of(message) < int(patch_set.get("number") or 0):
+                continue
+            event = message_event(base, message)
+            if author == CI_USER:
+                event["rechecks"] = my_rechecks(change, patch_set, message["timestamp"])
+            else:
+                event["threads_awaiting_me"] = None if threads_error else threads.get(number, [])
+            yield f'{number}:{message["timestamp"]}:{author}', event
+        if is_ci_stuck(change, patch_set, now):
+            yield f'{number}:ci_stuck:{patch_set.get("number")}', {
+                **base, "kind": "ci_stuck", "idle_since": ci_idle_since(change, patch_set)}
+        if number in stale:
+            # Takes over merge_conflict: the fix is a rebase --onto that drops the old parent, conflicts or not.
+            yield f'{number}:parent_merged:{patch_set.get("number")}', {
+                **base, "kind": "parent_merged", **stale[number], "files": conflicts.get(number, [])}
+        elif number in outdated:
+            # Rebasing onto the parent's new patch set comes first: a conflict with the branch may go with it.
+            yield f'{number}:parent_updated:{patch_set.get("number")}:{outdated[number]["new_parent_sha"]}', {
+                **base, "kind": "parent_updated", **outdated[number]}
+        elif number in conflicts:
+            yield f'{number}:conflict:{patch_set.get("number")}', {
+                **base, "kind": "merge_conflict", "files": conflicts[number]}
+        elif (is_ready_to_submit(patch_set) and number not in result["parents"] and not threads.get(number)
+              and not threads_error):
+            # One key per working day: a CL left unsubmitted comes back the next morning.
+            yield f'{number}:ready:{patch_set.get("number")}:{day}', {
+                **base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set)}
+        days = unreviewed_days(change, patch_set, now)
+        if (days and number not in conflicts and number not in stale
+                and ci_state(change, patch_set, votes_of(patch_set)) not in ("failed", "stale_base")):
+            yield f'{number}:unreviewed:{patch_set.get("number")}:{day}', {
+                **base, "kind": "waiting_for_review", "working_days": days,
+                "reviewers": [r.get("name") or r.get("username") for r in change.get("allReviewers", [])
+                              if r.get("username", "") not in NOT_ME]}
+    for change in result.get("reviews", []):
+        yield from review_events(change, day, change["number"] in attention)
+
+
+def patch_set_of(message):
+    match = re.match(r"(?:Patch Set|Uploaded patch set) (\d+)", message.get("message", ""))
+    return int(match.group(1)) if match else 0
+
+
+def is_new_patch_set_notice(message):
+    """Upload/rebase notices duplicate review_new_patch_set; anything else from the owner is a reply."""
+    text = message.get("message", "")
+    return text.startswith("Uploaded patch set") or " was rebased" in text.split("\n\n", 1)[0]
+
+
+def review_events(change, day, needs_my_attention=False):
+    """Changes I review: signal only, never fixed — they are someone else's code.
+
+    Gerrit's attention set names me when another reviewer answers one of my threads, so their replies count too."""
+    number = change["number"]
+    base = {**event_base(change), "owner": change.get("owner", {}).get("name", "")}
+    owner = change.get("owner", {}).get("username")
+    current = change.get("currentPatchSet", {}).get("number", 0)
+    comments = change.get("comments", [])
+    mine = [m for m in comments if m["reviewer"].get("username") == USER]
+    my_votes = [(int(ps["number"]), int(a["value"]))
+                for ps in change.get("patchSets", []) for a in ps.get("approvals", [])
+                if a["by"].get("username") == USER and a["type"] == "Code-Review"]
+    humans = [r for r in change.get("allReviewers", []) if r.get("username", "") not in {owner, *BOT_USERS}]
+
+    last_seen_ps = max([ps for ps, _ in my_votes] + [patch_set_of(m) for m in mine], default=0)
+    if not change.get("wip") and len(humans) <= MAX_REVIEWERS:
+        # Untouched requests come back each working day; once I took part, it is not a request anymore.
+        key = f"{number}:review_requested" if last_seen_ps else f"{number}:review_requested:{day}"
+        yield key, {**base, "kind": "review_requested", "reviewers": len(humans), "participated": bool(last_seen_ps),
+                    "current_ref": change.get("currentPatchSet", {}).get("ref")}
+
+    # A vote Gerrit copied onto the current patch set (trivial rebase) means nothing needs re-reviewing.
+    if last_seen_ps and last_seen_ps < current and not any(ps == current for ps, _ in my_votes):
+        last_vote = max(my_votes, default=None)
+        refs = {int(ps["number"]): ps.get("ref") for ps in change.get("patchSets", [])}
+        yield f"{number}:review_ps:{current}", {
+            **base, "kind": "review_new_patch_set", "since_patch_set": last_seen_ps,
+            "since_ref": refs.get(last_seen_ps), "current_ref": refs.get(int(current)),
+            "my_last_vote": {"patch_set": last_vote[0], "value": last_vote[1]} if last_vote else None}
+
+    if not mine:
+        return
+    my_last = max(m["timestamp"] for m in mine)
+    for message in comments:
+        author = message["reviewer"].get("username")
+        replied = author == owner or (needs_my_attention and (author or "") not in NOT_ME)
+        if message["timestamp"] > my_last and replied and not is_new_patch_set_notice(message):
+            yield f'{number}:review_reply:{message["timestamp"]}', message_event(base, message, "review_reply")
+
+
+def pending_events(result, now=None):
+    """Start-up sweep: what needs me right now, instead of replaying every past message."""
+    for change in result["changes"]:
+        patch_set = change.get("currentPatchSet", {})
+        votes = votes_of(patch_set)
+        state = ci_state(change, patch_set, votes)
+        code_review = min(votes.get("Code-Review", [0]))
+        threads = None if result.get("threads_error") else result.get("threads", {}).get(change["number"], [])
+        if not (threads or code_review < 0 or state in ("failed", "stale_base")):
+            continue
+        event = {**event_base(change), "kind": "pending", "wip": change.get("wip", False), "ci": state,
+                 "code_review": code_review, "threads_awaiting_me": threads}
+        verdict = latest_ci_verdict(change, patch_set) if state == "failed" else None
+        if verdict:
+            event["ci_verdict"] = verdict["message"][:1500]
+            event["rechecks"] = my_rechecks(change, patch_set, verdict["timestamp"])
+        yield event
+    for _, event in events(result, now):
+        if event["kind"] != "message" and not event.get("participated"):
+            yield event
+
+
+def notification(event):
+    n = event.get("change")
+    kind = event["kind"]
+    if kind == "merge_conflict":
+        return t("conflict", n=n), ", ".join(pathlib.Path(f).name for f in event["files"])
+    if kind == "ready_to_submit":
+        since = event.get("ready_since")
+        days = int((time.time() - since) // 86400) if since else 0
+        return t("ready", n=n) + (t("ready_for", days=days) if days else ""), event["subject"]
+    if kind == "ci_stuck":
+        hours = int((time.time() - event["idle_since"]) // 3600)
+        return t("ci_stuck", n=n), t("ci_stuck_body", hours=hours, subject=event["subject"])
+    if kind == "parent_merged":
+        return t("rebase", n=n), t("rebase_body", parent=event["parent"], subject=event["subject"])
+    if kind == "parent_updated":
+        return t("parent_updated", n=n, parent=event["parent"]), event["subject"]
+    if kind == "waiting_for_review":
+        return t("unreviewed", n=n, days=event["working_days"]), event["subject"]
+    if kind == "message":
+        return f"{n} · {event['author']}", event["message"].split("\n\n", 1)[-1][:200]
+    if kind == "review_requested":
+        return t("review_requested", owner=event["owner"]), f"{n} · {event['subject']}"
+    if kind == "review_new_patch_set":
+        return t("new_patch_set", n=n, ps=event["patch_set"]), f"{event['owner']} · {event['subject']}"
+    if kind == "review_reply":
+        return t("replied", n=n, author=event["author"]), event["message"].split("\n\n", 1)[-1][:200]
+    return None
+
+
+def notifications(fresh):
+    """(title, body, href): a click opens the change in Gerrit, or my dashboard for a summary."""
+    contents = [(*content, event.get("url") or DASHBOARD) for event in fresh if (content := notification(event))]
+    if len(contents) <= DIGEST_OVER:
+        return contents
+    return [(t("digest", count=len(contents)), " · ".join(title for title, _, _ in contents)[:200], DASHBOARD)]

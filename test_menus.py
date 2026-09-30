@@ -194,7 +194,7 @@ class RecheckTest(SnapshotTest):
             plugin.handle(["recheck", "7", "2"])
         # Then
         ssh = [c.args[0] for c in run.call_args_list if c.args[0][0] == "ssh"]
-        self.assertEqual([[*plugin.SSH, "gerrit", "review", "--message", "recheck", "7,2"]], ssh)
+        self.assertEqual([[*plugin.gerrit.SSH, "gerrit", "review", "--message", "recheck", "7,2"]], ssh)
 
 
 class SnoozeMenuTest(SnapshotTest):

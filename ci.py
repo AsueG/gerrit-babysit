@@ -22,6 +22,7 @@ FLAKY_MIN = 2
 WEEK_S = 7 * 86400
 MONTH_S = 30 * 86400
 NOT_FAILED = ("SUCCESS", "CANCELED", "SKIPPED")
+RECHECK = re.compile(r"recheck(?:-[\w-]+)?")
 
 
 ZUUL_JOB_LINE = re.compile(r"^- (\S+) (https://\S+/build/(\w+)) : (\w+)", re.MULTILINE)

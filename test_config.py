@@ -11,6 +11,7 @@ os.environ["GERRIT_BABYSIT_CONFIG"] = str(FIXTURES / "config.json")
 os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-babysit-test-"))
 
 import config  # noqa: E402
+import gerrit  # noqa: E402
 import watch  # noqa: E402
 
 
@@ -86,11 +87,11 @@ class ConfigTest(unittest.TestCase):
         mcp = self.dir / "gerrit_config.json"
         mcp.write_text(json.dumps({"gerrit_hosts": [
             {"external_url": "https://other.example/", "authentication": {"username": "x", "auth_token": "y"}},
-            {"external_url": f"https://{watch.HOST}/", "authentication": {"username": "u", "auth_token": "p"}},
+            {"external_url": f"https://{gerrit.HOST}/", "authentication": {"username": "u", "auth_token": "p"}},
         ]}))
         # When
-        with mock.patch.dict(watch.CONFIG, {"gerrit_mcp_config": str(mcp)}):
-            credentials = watch.http_credentials()
+        with mock.patch.dict(gerrit.CONFIG, {"gerrit_mcp_config": str(mcp)}):
+            credentials = gerrit.http_credentials()
         # Then
         self.assertEqual(("u", "p"), credentials)
 
@@ -100,17 +101,17 @@ class ConfigTest(unittest.TestCase):
         mcp.write_text(json.dumps({"gerrit_hosts": [
             {"external_url": "https://other.example/", "authentication": {"username": "x", "auth_token": "y"}}]}))
         # When / Then
-        with mock.patch.dict(watch.CONFIG, {"gerrit_mcp_config": str(mcp)}), self.assertRaises(KeyError):
-            watch.http_credentials()
+        with mock.patch.dict(gerrit.CONFIG, {"gerrit_mcp_config": str(mcp)}), self.assertRaises(KeyError):
+            gerrit.http_credentials()
 
     def test_http_credentials_fall_back_to_netrc(self):
         # Given
-        (self.dir / ".netrc").write_text(f"machine {watch.HOST} login u password p\n")
+        (self.dir / ".netrc").write_text(f"machine {gerrit.HOST} login u password p\n")
         (self.dir / ".netrc").chmod(0o600)
         # When
         with mock.patch.dict(os.environ, {"HOME": str(self.dir)}), \
-                mock.patch.dict(watch.CONFIG, {"gerrit_mcp_config": None}):
-            credentials = watch.http_credentials()
+                mock.patch.dict(gerrit.CONFIG, {"gerrit_mcp_config": None}):
+            credentials = gerrit.http_credentials()
         # Then
         self.assertEqual(("u", "p"), credentials)
 

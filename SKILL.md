@@ -272,7 +272,7 @@ section. A snoozed change leaves the counts, the status line and the notificatio
 
 ## Watcher tests
 
-After any change to `watch.py`, `ci.py`, `config.py`, `snooze.py`, `stop_hook.py`, `statusline_segment.py` or
+After any change to `watch.py`, `gerrit.py`, `repo.py`, `events.py`, `ci.py`, `config.py`, `snooze.py`, `stop_hook.py`, `statusline_segment.py` or
 `macos/gerrit.30s.py`: `cd <skill> && python3 -m unittest`
 (stdlib only, anonymized Gerrit/zuul fixtures in `fixtures/`), then restart the LaunchAgent if installed.
 
