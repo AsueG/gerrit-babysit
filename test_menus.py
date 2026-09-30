@@ -17,6 +17,7 @@ os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-ba
 
 import config  # noqa: E402
 import gerrit  # noqa: E402
+import i18n  # noqa: E402
 import statusline_segment  # noqa: E402
 
 # The plugin's file name (SwiftBar's refresh interval is in it) is not an importable module name.
@@ -82,7 +83,7 @@ class StatusLineTest(SnapshotTest):
         # Given
         self.write([row(1)])
         # When
-        with mock.patch.object(config, "_language", None), mock.patch.object(config, "system_language") as lookup:
+        with mock.patch.object(i18n, "_language", None), mock.patch.object(i18n, "system_language") as lookup:
             self.segment()
         # Then
         lookup.assert_not_called()

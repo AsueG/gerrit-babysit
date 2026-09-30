@@ -4,6 +4,7 @@ import concurrent.futures
 import gzip
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -185,13 +186,34 @@ def diagnose_ci(event, histories=None, flaky=None):
     """Network-bound: only for fresh zuul failures, so the idle loop stays free. The failed jobs are diagnosed side by
     side, each one being a handful of downloads.
 
-    `histories` ({job: builds}) is shared across the events of one wake-up: a job red on several changes is
-    fetched once. `flaky` ({job: counts}) is the local flake memory, see flaky_counts()."""
+    `histories` is shared across the events of one wake-up, see job_builds(). `flaky` ({job: counts}) is the local
+    flake memory, see flaky_counts()."""
     histories = {} if histories is None else histories
     flaky = flaky or {}
     jobs = failed_jobs(event["message"])
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         return list(pool.map(lambda job: diagnose_job(job, event, histories, flaky), jobs))
+
+
+_histories_lock = threading.Lock()
+
+
+def job_builds(job, histories):
+    """The job's last builds; `histories` ({job: future}) is shared by threads, so a job red on several changes is
+    fetched once while the others wait for it. One call covers both signals: 200 builds of a job span well over the
+    ±3 h flaky window."""
+    with _histories_lock:
+        owner = job not in histories
+        if owner:
+            histories[job] = concurrent.futures.Future()
+    if owner:
+        try:
+            histories[job].set_result(json.loads(
+                http_get(f"{ZUUL_API}/builds?" + urllib.parse.urlencode({"job_name": job, "limit": JOB_HISTORY_LIMIT}))))
+        except BaseException as error:
+            histories[job].set_exception(error)
+            raise
+    return histories[job].result()
 
 
 def diagnose_job(job, event, histories, flaky):
@@ -208,12 +230,7 @@ def diagnose_job(job, event, histories, flaky):
         comments = fetch_file_comments(log_url)
         if comments:
             entry["file_comments"] = comments
-        # One call covers both: 200 builds of a job span well over the ±3 h flaky window.
-        if job["job"] not in histories:
-            histories[job["job"]] = json.loads(
-                http_get(f"{ZUUL_API}/builds?"
-                         + urllib.parse.urlencode({"job_name": job["job"], "limit": JOB_HISTORY_LIMIT})))
-        history = histories[job["job"]]
+        history = job_builds(job["job"], histories)
         around = iso_to_epoch(build["end_time"]) if build.get("end_time") else time.time()
         entry["others_failing"] = others_failing(history, job["job"], event["change"], around)
         entry["job_history"] = job_history(history)

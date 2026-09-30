@@ -19,7 +19,7 @@ import watch
 
 class OpenThreadsTest(unittest.TestCase):
     def setUp(self):
-        watch._threads_memo = {}
+        watch._threads_memo = watch.PollMemo()
 
     def test_rest_is_only_called_when_the_change_moves(self):
         # Given
@@ -124,6 +124,21 @@ class EnrichTest(unittest.TestCase):
             watch.enrich(events)
         # Then
         self.assertEqual(len(jobs), sum("/builds?" in c.args[0] for c in http.call_args_list))
+
+    def test_the_periodic_build_is_asked_once_per_branch(self):
+        # Given
+        failures = [{"kind": "message", "change": n, "branch": branch, "author_username": "zuul", "message": "m"}
+                    for n, branch in ((1, "main"), (2, "main"), (3, "release"))]
+        # When
+        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
+                mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
+                mock.patch.object(ci, "diagnose_ci", side_effect=lambda event, *_: [event["change"]]), \
+                mock.patch.object(ci, "base_build", side_effect=lambda branch: {"branch": branch}) as base_build:
+            watch.enrich(failures)
+        # Then
+        self.assertEqual([("main",), ("release",)], sorted(c.args for c in base_build.call_args_list))
+        self.assertEqual([([1], "main"), ([2], "main"), ([3], "release")],
+                         [(f["ci_diagnosis"], f["base_build"]["branch"]) for f in failures])
 
     def test_only_ci_failures_and_new_patch_sets_get_extras(self):
         # Given

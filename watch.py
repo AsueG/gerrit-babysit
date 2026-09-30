@@ -18,6 +18,7 @@ import procs
 import repo
 import snooze
 from config import CACHE, SESSION, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write, read_json
+from memo import PollMemo
 
 QUERY = "owner:self status:open"
 REVIEW_QUERY = "reviewer:self status:open -owner:self"
@@ -45,19 +46,20 @@ def fetch_attention():
     return sorted(row["number"] for row in gerrit.query(ATTENTION_QUERY))
 
 
-_threads_memo = {}
+_threads_memo = PollMemo()
 
 
 def open_threads(changes):
     """{change number: threads awaiting me}; the REST call only reruns when the change moves."""
-    global _threads_memo
     keys = {c["number"]: (c["number"], c.get("lastUpdated")) for c in changes}
-    missing = [key for key in keys.values() if key not in _threads_memo]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        fetched = dict(zip(missing, pool.map(
-            lambda key: events.awaiting_threads(gerrit.rest_get(f"/changes/{key[0]}/comments")), missing)))
-    _threads_memo = {key: _threads_memo[key] if key in _threads_memo else fetched[key] for key in keys.values()}
-    return {number: _threads_memo[key] for number, key in keys.items()}
+    with _threads_memo.poll() as memo:
+        missing = [key for key in keys.values() if key not in memo]
+        fetched = {}
+        if missing:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                fetched = dict(zip(missing, pool.map(
+                    lambda key: events.awaiting_threads(gerrit.rest_get(f"/changes/{key[0]}/comments")), missing)))
+        return {number: memo.get(key, fetched.get, key) for number, key in keys.items()}
 
 
 def parent_statuses(changes):
@@ -133,10 +135,8 @@ class DaemonError(Exception):
 
 def daemon_poll():
     """The daemon's latest poll when it is alive, so a session never hits Gerrit or the fetch refs a second time."""
-    if not DAEMON_POLL.exists():
-        return None
-    heartbeat = json.loads(DAEMON_POLL.read_text())
-    if time.time() - heartbeat["attempt"] > STALE_AFTER_S:
+    heartbeat = read_json(DAEMON_POLL)
+    if time.time() - heartbeat.get("attempt", 0) > STALE_AFTER_S:
         return None
     if heartbeat["error"]:
         raise DaemonError(heartbeat["error"])
@@ -147,11 +147,6 @@ def write_daemon_poll(result=None, error=None):
     previous = read_json(DAEMON_POLL)
     atomic_write(DAEMON_POLL, {"attempt": time.time(), "error": error,
                                "poll": result if error is None else previous.get("poll")})
-
-
-def prereview(event):
-    path = CACHE / "prereview" / f"{event['change']}-{event['patch_set']}.md"
-    return {"path": str(path), "done": path.exists()}
 
 
 def load_flaky():
@@ -168,33 +163,67 @@ def record_flaky(result, now=None):
         atomic_write(FLAKY, dict(sorted(kept.items())))
 
 
+def ci_verdict(event):
+    if event.get("ci_verdict"):
+        return event["ci_verdict"]
+    return event.get("message") if event.get("author_username") == gerrit.CI_USER else None
+
+
+def diagnose_failures(failures):
+    """Side by side: a morning flush of red changes downloads its logs at once, and each branch's periodic build is
+    asked once."""
+    histories = {}
+    branches = sorted({event["branch"] for event, _ in failures}) if ci.PERIODIC_BUILD else []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        diagnoses = pool.map(lambda failure: ci.diagnose_ci({"change": failure[0]["change"], "message": failure[1]},
+                                                            histories, failure[0].get("known_flaky")), failures)
+        base_builds = dict(zip(branches, pool.map(ci.base_build, branches)))
+        for (event, _), diagnosis in zip(failures, diagnoses):
+            event["ci_diagnosis"] = diagnosis
+            if ci.PERIODIC_BUILD:
+                event["base_build"] = base_builds[event["branch"]]
+
+
+def rebase(event):
+    try:
+        return {"rebase": repo.prepare_rebase(event)}
+    except (subprocess.SubprocessError, OSError) as error:
+        return {"rebase": {"status": "error", "detail": gerrit.error_detail(error)}}
+
+
+def interdiff(event):
+    return {"interdiff": repo.interdiff(event)} if event.get("since_ref") and event.get("current_ref") else {}
+
+
+def zuul_queue(event):
+    return {"zuul_queue": ci.zuul_queue(event["change"], event["patch_set"])} if ci.ZUUL_API else {}
+
+
+def prereview(event):
+    if event.get("participated"):
+        return {}
+    path = CACHE / "prereview" / f"{event['change']}-{event['patch_set']}.md"
+    return {"prereview": {"path": str(path), "done": path.exists()}}
+
+
+# Run one event after the other: they work on the local repo, where concurrent git commands fight over locks.
+EXTRAS = {"parent_merged": rebase, "parent_updated": rebase, "review_new_patch_set": interdiff,
+          "ci_stuck": zuul_queue, "review_requested": prereview}
+
+
 def enrich(reported):
     """Network-bound extras, only for events about to be reported, so the idle loop stays free."""
-    histories = {}
+    failures = [(event, verdict) for event in reported if (verdict := ci_verdict(event))]
     flakes = load_flaky()
+    for event, verdict in failures:
+        flaky = ci.flaky_counts(flakes, [j["job"] for j in ci.failed_jobs(verdict)])
+        if flaky:
+            event["known_flaky"] = flaky
+    if failures and ci.ZUUL_API:
+        diagnose_failures(failures)
     for event in reported:
-        verdict = event.get("ci_verdict") or (event.get("message") if event.get("author_username") == gerrit.CI_USER
-                                              else None)
-        if verdict:
-            flaky = ci.flaky_counts(flakes, [j["job"] for j in ci.failed_jobs(verdict)])
-            if flaky:
-                event["known_flaky"] = flaky
-        if verdict and ci.ZUUL_API:
-            event["ci_diagnosis"] = ci.diagnose_ci({"change": event["change"], "message": verdict}, histories,
-                                                   event.get("known_flaky"))
-            if ci.PERIODIC_BUILD:
-                event["base_build"] = ci.base_build(event["branch"])
-        if event["kind"] in ("parent_merged", "parent_updated"):
-            try:
-                event["rebase"] = repo.prepare_rebase(event)
-            except (subprocess.SubprocessError, OSError) as error:
-                event["rebase"] = {"status": "error", "detail": gerrit.error_detail(error)}
-        if event["kind"] == "review_new_patch_set" and event.get("since_ref") and event.get("current_ref"):
-            event["interdiff"] = repo.interdiff(event)
-        if event["kind"] == "ci_stuck" and ci.ZUUL_API:
-            event["zuul_queue"] = ci.zuul_queue(event["change"], event["patch_set"])
-        if event["kind"] == "review_requested" and not event.get("participated"):
-            event["prereview"] = prereview(event)
+        if event["kind"] in EXTRAS:
+            event.update(EXTRAS[event["kind"]](event))
     return reported
 
 

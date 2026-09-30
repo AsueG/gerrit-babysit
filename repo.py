@@ -5,6 +5,7 @@ import subprocess
 
 import gerrit
 from config import CONFIG, REPO
+from memo import PollMemo
 
 PROTECTED_BRANCHES = set(CONFIG["protected_branches"])
 # Private namespace: never moves a ref another session relies on (branches, FETCH_HEAD).
@@ -46,14 +47,11 @@ def branch_tips(branches):
     return {branch: sha for branch, sha in tips.items() if sha}
 
 
-_conflicts_memo = {}
+_conflicts_memo = PollMemo()
 
 
 def merge_conflicts(changes):
-    """{change number: conflicting files} — `is:mergeable` is often disabled server-side, so merge locally.
-
-    The memo only keeps this poll's (branch tip, patch set) pairs: every push to the branch would grow it forever."""
-    global _conflicts_memo
+    """{change number: conflicting files} — `is:mergeable` is often disabled server-side, so merge locally."""
     candidates = [(c, c["currentPatchSet"]) for c in changes if c.get("currentPatchSet", {}).get("revision")]
     if not candidates:
         return {}
@@ -64,24 +62,18 @@ def merge_conflicts(changes):
     fetch_refs(sorted(refspecs))
 
     tips = branch_tips({c["branch"] for c, _ in candidates})
-    conflicts, memo = {}, {}
-    for change, patch_set in candidates:
-        target = tips.get(change["branch"])
-        if not target:
-            continue
-        content_merge = gerrit.uses_content_merge(change["project"])
-        key = (target, patch_set["revision"], content_merge)
-        if key in _conflicts_memo:
-            memo[key] = _conflicts_memo[key]
-        else:
-            files = (merged_with_content if content_merge else changed_on_both_sides)(target, patch_set["revision"])
-            if files is None:
-                # Patch set not fetched (its ref failed): unknown, not clean, so retry on the next poll.
+    conflicts = {}
+    with _conflicts_memo.poll() as memo:
+        for change, patch_set in candidates:
+            target = tips.get(change["branch"])
+            if not target:
                 continue
-            memo[key] = files
-        if memo[key]:
-            conflicts[change["number"]] = memo[key]
-    _conflicts_memo = memo
+            content_merge = gerrit.uses_content_merge(change["project"])
+            merge = merged_with_content if content_merge else changed_on_both_sides
+            # None when the patch set is not fetched (its ref failed): unknown, not clean.
+            files = memo.get((target, patch_set["revision"], content_merge), merge, target, patch_set["revision"])
+            if files:
+                conflicts[change["number"]] = files
     return conflicts
 
 
@@ -106,15 +98,19 @@ def changed_on_both_sides(target, revision):
     return sorted(theirs & mine & different)
 
 
-_ancestry_memo = {}
+_ancestry_memo = PollMemo()
+
+
+def is_ancestor(base, target):
+    """None when the base is not fetched yet: unknown, asked again on the next poll."""
+    result = git_run("merge-base", "--is-ancestor", base, target).returncode
+    return {0: True, 1: False}.get(result)
 
 
 def stale_parents(changes, statuses):
     """{change number: {parent, old_parent_sha}} when the parent merged under another SHA (rebase on submit).
 
-    Must run after merge_conflicts(), which fetches the patch sets and branch tips it relies on. Like its memo, this
-    one only keeps this poll's (base, branch tip) pairs."""
-    global _ancestry_memo
+    Must run after merge_conflicts(), which fetches the patch sets and branch tips it relies on."""
     merged = []
     for change in changes:
         parent, status, _ = statuses.get(change["number"], (None, None, None))
@@ -122,23 +118,12 @@ def stale_parents(changes, statuses):
         if status == "MERGED" and base:
             merged.append((change, parent, base))
     tips = branch_tips({change["branch"] for change, _, _ in merged})
-    stale, memo = {}, {}
-    for change, parent, base in merged:
-        target = tips.get(change["branch"])
-        if not target:
-            continue
-        key = (base, target)
-        if key in _ancestry_memo:
-            memo[key] = _ancestry_memo[key]
-        else:
-            result = git_run("merge-base", "--is-ancestor", base, target).returncode
-            if result not in (0, 1):
-                # Base not fetched yet: unknown, asked again on the next poll.
-                continue
-            memo[key] = result == 1
-        if memo[key]:
-            stale[change["number"]] = {"parent": parent, "old_parent_sha": base}
-    _ancestry_memo = memo
+    stale = {}
+    with _ancestry_memo.poll() as memo:
+        for change, parent, base in merged:
+            target = tips.get(change["branch"])
+            if target and memo.get((base, target), is_ancestor, base, target) is False:
+                stale[change["number"]] = {"parent": parent, "old_parent_sha": base}
     return stale
 
 
@@ -152,7 +137,7 @@ def change_id_of(sha):
 
 
 _cleanup_memo = {}
-_change_ids = {}
+_change_ids = PollMemo()
 
 
 def cleanup_candidates(open_ids=frozenset()):
@@ -160,7 +145,6 @@ def cleanup_candidates(open_ids=frozenset()):
 
     Branches of still-open CLs are skipped, so the Gerrit query only reruns when a CL leaves `open_ids` or a
     branch moves. Runs every poll: only the few candidates pay for a `git status` of their worktree."""
-    global _change_ids
     blocks = [dict(line.partition(" ")[::2] for line in block.splitlines())
               for block in git("worktree", "list", "--porcelain").split("\n\n") if block.strip()]
     main_branch = blocks[0].get("branch", "").removeprefix("refs/heads/") if blocks else ""
@@ -168,13 +152,14 @@ def cleanup_candidates(open_ids=frozenset()):
 
     tips = dict(line.split(" ") for line in
                 git("for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads").splitlines())
-    _change_ids = {sha: _change_ids[sha] if sha in _change_ids else change_id_of(sha) for sha in set(tips.values())}
+    with _change_ids.poll() as memo:
+        change_ids = {sha: memo.get(sha, change_id_of, sha) for sha in set(tips.values())}
     branches = {}
     for branch, sha in tips.items():
         worktree = worktree_of.get(branch)
         if branch in PROTECTED_BRANCHES or branch == main_branch or (worktree and "locked" in worktree):
             continue
-        change_id = _change_ids[sha]
+        change_id = change_ids[sha]
         if change_id and change_id not in open_ids:
             branches[branch] = (sha, change_id, worktree["worktree"] if worktree else None)
     if not branches:

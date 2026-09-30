@@ -6,7 +6,6 @@
 # <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 # <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
-import json
 import pathlib
 import re
 import shlex
@@ -21,7 +20,8 @@ sys.path.insert(0, str(SELF.parents[1]))
 import ci  # noqa: E402
 import snapshot  # noqa: E402
 import snooze  # noqa: E402
-from config import CI_STUCK_S, COMMAND, CONFIG, REPO, SKILL_DIR, STATUS, SWIFTBAR_PLUGIN, t  # noqa: E402
+from config import CI_STUCK_S, COMMAND, CONFIG, REPO, SKILL_DIR, STATUS, SWIFTBAR_PLUGIN, read_json  # noqa: E402
+from i18n import t  # noqa: E402
 
 DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{CONFIG['gerrit_host']}/dashboard/self"
 ICON = "sfimage=arrow.triangle.pull"
@@ -93,7 +93,7 @@ def notify(title, body):
 
 
 def snapshot_row(number):
-    changes = json.loads(STATUS.read_text()).get("changes", [])
+    changes = read_json(STATUS).get("changes", [])
     return next((c for c in changes if str(c["number"]) == number), {})
 
 
@@ -316,7 +316,7 @@ def main():
         print("---")
         print(t("bar_no_snapshot", command=COMMAND))
         return
-    status = json.loads(STATUS.read_text())
+    status = read_json(STATUS)
     now = time.time()
     error = status.get("last_error")
     stopped = snapshot.is_stopped(status, now)

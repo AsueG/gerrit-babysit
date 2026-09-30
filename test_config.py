@@ -20,13 +20,24 @@ class ConfigTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.dir = pathlib.Path(tmp.name)
 
-    def test_every_language_has_every_string(self):
+    def test_a_corrupt_state_file_reads_as_missing(self):
         # Given
-        english = config.MESSAGES["en"].keys()
+        (self.dir / "seen.json").write_text('{"1:10:rev')
         # When
-        gaps = {language: english ^ messages.keys() for language, messages in config.MESSAGES.items()}
+        with mock.patch("sys.stderr"):
+            found = config.read_json(self.dir / "seen.json")
         # Then
-        self.assertEqual({language: set() for language in config.MESSAGES}, gaps)
+        self.assertEqual({}, found)
+
+    def test_a_failed_write_keeps_the_old_file_and_no_temp_file(self):
+        # Given
+        config.atomic_write(self.dir / "seen.json", {"a": 1})
+        # When
+        with self.assertRaises(TypeError):
+            config.atomic_write(self.dir / "seen.json", {"a": object()})
+        # Then
+        self.assertEqual((["seen.json"], {"a": 1}),
+                         (sorted(p.name for p in self.dir.iterdir()), config.read_json(self.dir / "seen.json")))
 
     def test_the_env_variable_wins_over_the_skill_folder(self):
         # Given
@@ -68,26 +79,6 @@ class ConfigTest(unittest.TestCase):
             repo = config.default_repo()
         # Then
         self.assertEqual(self.dir / "project", repo)
-
-    def test_macos_language_is_read_from_apple_languages(self):
-        # Given
-        output = '(\n    "fr-FR",\n    "en-FR"\n)\n'
-        # When
-        with mock.patch.object(config.subprocess, "run", return_value=mock.Mock(stdout=output)):
-            language = config.system_language()
-        # Then
-        self.assertEqual("fr", language)
-
-    def test_unknown_languages_fall_back_to_english(self):
-        # Given
-        languages = ["de", "fr"]
-        # When
-        found = []
-        for language in languages:
-            with mock.patch.object(config, "_language", language):
-                found.append(config.t("conflict", n=1))
-        # Then
-        self.assertEqual(["1 has conflicts", "1 en conflit"], found)
 
     def test_http_credentials_come_from_the_gerrit_mcp_config(self):
         # Given

@@ -13,7 +13,7 @@ import repo
 class StaleParentsTest(GitRepoTest):
     def setUp(self):
         super().setUp()
-        repo._ancestry_memo = {}
+        repo._ancestry_memo = repo.PollMemo()
 
     def test_parent_landed_under_another_sha(self):
         # Given
@@ -88,7 +88,7 @@ class MergeConflictsTest(GitRepoTest):
         # Then
         self.assertEqual({1: ["A.kt"]}, conflicts)
         self.assertEqual([(self.git("rev-parse", "release"), c["currentPatchSet"]["revision"], True)],
-                         list(repo._conflicts_memo))
+                         list(repo._conflicts_memo.kept))
 
     def test_without_content_merge_edits_far_apart_in_one_file_conflict(self):
         # Given

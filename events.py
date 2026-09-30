@@ -5,7 +5,8 @@ import re
 import time
 
 import ci
-from config import CI_STUCK_S, CONFIG, t
+from config import CI_STUCK_S, CONFIG
+from i18n import t
 from gerrit import BOT_USERS, CI_USER, HOST, NOT_ME, USER
 
 CI_LABELS = tuple(CONFIG["ci_labels"])
