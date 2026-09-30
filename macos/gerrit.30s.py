@@ -9,6 +9,7 @@
 import json
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -17,8 +18,8 @@ import time
 # Installed as a symlink into the SwiftBar plugin folder: resolve it to find the skill.
 SELF = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(SELF.parents[1]))
-from config import (CI_STUCK_S, COMMAND, CONFIG, SKILL_DIR, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN,  # noqa: E402
-                    gerrit_user, t)
+from config import (CI_STUCK_S, COMMAND, CONFIG, REPO, SKILL_DIR, STALE_AFTER_S, STATUS,  # noqa: E402
+                    SWIFTBAR_PLUGIN, gerrit_user, t)
 
 HOST = CONFIG["gerrit_host"]
 DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{HOST}/dashboard/self"
@@ -27,6 +28,7 @@ OPEN_CLAUDE = SKILL_DIR / "GerritBabysit.app"
 SSH = ["ssh", "-p", str(CONFIG["ssh_port"]), "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
        f"{gerrit_user()}@{HOST}"]
 ORCA = shutil.which("orca") or "/opt/homebrew/bin/orca"
+CLAUDE = shutil.which("claude") or str(pathlib.Path.home() / ".local/bin/claude")
 # Worst first: the menu lists problems before anything else.
 ORDER = {"red": 0, "green": 1, "orange": 2, None: 3, "gray": 4}
 
@@ -100,17 +102,43 @@ def submit(number, patch_set):
     subprocess.run(["open", "-g", f"swiftbar://refreshplugin?name={SWIFTBAR_PLUGIN}"], capture_output=True)
 
 
-def open_worktree(number):
-    path = snapshot_row(number).get("worktree")
-    if not path:
-        return
+def open_terminal(path, title, command=None):
     if pathlib.Path(ORCA).is_file():
         subprocess.run(["open", "-a", "Orca"], capture_output=True)
-        created = subprocess.run([ORCA, "terminal", "create", "--worktree", f"path:{path}", "--title", f"CL {number}",
-                                  "--focus"], capture_output=True, timeout=30)
+        extra = ["--command", command] if command else []
+        created = subprocess.run([ORCA, "terminal", "create", "--worktree", f"path:{path}", "--title", title,
+                                  *extra, "--focus"], capture_output=True, timeout=30)
         if created.returncode == 0:
             return
-    subprocess.run(["open", "-a", "Terminal", path], capture_output=True)
+    if not command:
+        subprocess.run(["open", "-a", "Terminal", path], capture_output=True)
+        return
+    # Path and command go in as argv, never spliced into the script.
+    osascript('on run argv\n'
+              'tell application "Terminal" to do script "cd " & quoted form of item 1 of argv & " && " & item 2 of argv\n'
+              'tell application "Terminal" to activate\n'
+              'end run', str(path), command)
+
+
+def open_worktree(number):
+    path = snapshot_row(number).get("worktree")
+    if path:
+        open_terminal(path, f"CL {number}")
+
+
+def needs_investigation(change):
+    return not change["wip"] and (state_of(change)[2] == "red" or bool(change.get("threads")))
+
+
+def investigate(number):
+    change = snapshot_row(number)
+    if not change:
+        return
+    label = state_of(change)[0]
+    if change.get("threads"):
+        label += t("bar_threads", count=change["threads"])
+    prompt = t("bar_investigate_prompt", n=number, url=change["url"], subject=change["subject"], state=label)
+    open_terminal(change.get("worktree") or REPO, f"CL {number}", shlex.join([CLAUDE, prompt]))
 
 
 def copy(text):
@@ -124,6 +152,8 @@ def handle(args):
         submit(*params)
     elif name == "worktree":
         open_worktree(*params)
+    elif name == "investigate":
+        investigate(*params)
     elif name == "copy":
         copy(*params)
 
@@ -144,6 +174,8 @@ def print_change(change, label, symbol, color, fresh):
     print(f"--{change['subject'].replace('|', '¦')} | disabled=true")
     print("-----")
     print(f"--{t('bar_open_gerrit')} | href={url} sfimage=safari")
+    if needs_investigation(change):
+        print(f"--{t('bar_investigate')} | {action('investigate', number)} sfimage=sparkle.magnifyingglass")
     if change.get("worktree"):
         print(f"--{t('bar_open_worktree')} | {action('worktree', number)} sfimage=terminal")
     print(f"--{t('bar_copy')} | {action('copy', number)} sfimage=doc.on.doc")

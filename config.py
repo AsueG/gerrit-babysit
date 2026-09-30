@@ -112,6 +112,10 @@ MESSAGES = {
         "bar_ci_passed": "CR {cr} · CI ✓",
         "bar_threads": " · {count} thread(s) to handle",
         "bar_open_gerrit": "Open in Gerrit",
+        "bar_investigate": "Investigate with Claude",
+        "bar_investigate_prompt": "Change {n} ({url}) — \"{subject}\" — is in state: {state}. Investigate why "
+                                  "(CI logs, reviewer comments, conflict), explain the cause and propose a fix. "
+                                  "Do not push or post anything on Gerrit without asking me.",
         "bar_open_worktree": "Open the worktree in a terminal",
         "bar_copy": "Copy the change number",
         "bar_parent_open": "Parent {parent} still open",
@@ -155,6 +159,10 @@ MESSAGES = {
         "bar_ci_passed": "CR {cr} · CI ✓",
         "bar_threads": " · {count} fil(s) à traiter",
         "bar_open_gerrit": "Ouvrir sur Gerrit",
+        "bar_investigate": "Investiguer avec Claude",
+        "bar_investigate_prompt": "La CL {n} ({url}) — « {subject} » — est en état : {state}. Investigue pourquoi "
+                                  "(logs CI, commentaires des reviewers, conflit), explique la cause et propose un "
+                                  "correctif. Ne pousse rien et ne poste rien sur Gerrit sans me demander.",
         "bar_open_worktree": "Ouvrir le worktree dans un terminal",
         "bar_copy": "Copier le n° de CL",
         "bar_parent_open": "Parente {parent} encore ouverte",

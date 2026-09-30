@@ -127,5 +127,36 @@ class OpenWorktreeTest(SnapshotTest):
         self.assertNotIn("odd", out.getvalue())
 
 
+class InvestigateTest(SnapshotTest):
+    def menu(self, change):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            plugin.print_change(change, "label", "clock", None, fresh=True)
+        return out.getvalue()
+
+    def test_offered_only_for_changes_in_trouble(self):
+        # Given
+        changes = [row(ci="failed"), row(threads=2), row(ci="running"), row(wip=True, ci="failed")]
+        # When
+        offered = ['"investigate"' in self.menu(c) for c in changes]
+        # Then
+        self.assertEqual([True, True, False, False], offered)
+
+    def test_opens_claude_in_the_worktree_with_the_state_in_the_prompt(self):
+        # Given
+        self.write([row(7, ci="failed", ci_failed=["Quality"], worktree='/tmp/odd "name"')])
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "ORCA", "/nonexistent"), \
+                mock.patch.object(plugin, "osascript") as osascript:
+            plugin.handle(["investigate", "7"])
+            plugin.handle(["investigate", "8"])
+        # Then
+        osascript.assert_called_once()
+        path, command = osascript.call_args.args[1:]
+        self.assertEqual('/tmp/odd "name"', path)
+        self.assertIn("7", command)
+        self.assertIn("Quality", command)
+
+
 if __name__ == "__main__":
     unittest.main()
