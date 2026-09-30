@@ -6,13 +6,13 @@ import json
 import sys
 import time
 
-from config import CACHE, CONFIG, atomic_write
+from config import CACHE, CONFIG, atomic_write, read_json
 
 SNOOZE = CACHE / "snooze.json"
 
 
 def load():
-    return {int(k): v for k, v in json.loads(SNOOZE.read_text()).items()} if SNOOZE.exists() else {}
+    return {int(k): v for k, v in read_json(SNOOZE).items()}
 
 
 def is_active(entry, patch_set, now):

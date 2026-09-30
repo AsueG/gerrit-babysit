@@ -341,17 +341,18 @@ def status_rows(result, flakes, worktrees, now):
     return rows
 
 
-def notification(event):
+def notification(event, now=None):
+    now = now or time.time()
     n = event.get("change")
     kind = event["kind"]
     if kind == "merge_conflict":
         return t("conflict", n=n), ", ".join(pathlib.Path(f).name for f in event["files"])
     if kind == "ready_to_submit":
         since = event.get("ready_since")
-        days = int((time.time() - since) // 86400) if since else 0
+        days = int((now - since) // 86400) if since else 0
         return t("ready", n=n) + (t("ready_for", days=days) if days else ""), event["subject"]
     if kind == "ci_stuck":
-        hours = int((time.time() - event["idle_since"]) // 3600)
+        hours = int((now - event["idle_since"]) // 3600)
         return t("ci_stuck", n=n), t("ci_stuck_body", hours=hours, subject=event["subject"])
     if kind == "parent_merged":
         return t("rebase", n=n), t("rebase_body", parent=event["parent"], subject=event["subject"])
@@ -370,9 +371,10 @@ def notification(event):
     return None
 
 
-def notifications(fresh):
+def notifications(fresh, now=None):
     """(title, body, href): a click opens the change in Gerrit, or my dashboard for a summary."""
-    contents = [(*content, event.get("url") or DASHBOARD) for event in fresh if (content := notification(event))]
+    contents = [(*content, event.get("url") or DASHBOARD) for event in fresh
+                if (content := notification(event, now))]
     if len(contents) <= DIGEST_OVER:
         return contents
     return [(t("digest", count=len(contents)), " · ".join(title for title, _, _ in contents)[:200], DASHBOARD)]

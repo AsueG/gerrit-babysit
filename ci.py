@@ -1,5 +1,6 @@
 """Zuul failure diagnosis: what broke, where, and whether it looks flaky. Network-bound, only for fresh failures."""
 import calendar
+import concurrent.futures
 import gzip
 import json
 import re
@@ -181,47 +182,51 @@ def http_get(url):
 
 
 def diagnose_ci(event, histories=None, flaky=None):
-    """Network-bound: only for fresh zuul failures, so the idle loop stays free.
+    """Network-bound: only for fresh zuul failures, so the idle loop stays free. The failed jobs are diagnosed side by
+    side, each one being a handful of downloads.
 
     `histories` ({job: builds}) is shared across the events of one wake-up: a job red on several changes is
     fetched once. `flaky` ({job: counts}) is the local flake memory, see flaky_counts()."""
     histories = {} if histories is None else histories
     flaky = flaky or {}
-    diagnosis = []
-    for job in failed_jobs(event["message"]):
-        entry = {"job": job["job"], "result": job["result"], "url": job["url"]}
-        try:
-            build = json.loads(http_get(f"{ZUUL_API}/build/{job['uuid']}"))
-            log_url = build["log_url"].rstrip("/")
-            entry["log_url"] = log_url
-            entry["failure"] = gradle_failure(http_get(f"{log_url}/job-output.txt"))
-            sarif = next((a["url"] for a in build.get("artifacts", []) if a["name"].endswith("lint.sarif")), None)
-            errors = lint_errors(json.loads(http_get(sarif))) if sarif else []
-            if errors:
-                entry["lint_errors"] = errors
-            comments = fetch_file_comments(log_url)
-            if comments:
-                entry["file_comments"] = comments
-            # One call covers both: 200 builds of a job span well over the ±3 h flaky window.
-            if job["job"] not in histories:
-                histories[job["job"]] = json.loads(
-                    http_get(f"{ZUUL_API}/builds?"
-                             + urllib.parse.urlencode({"job_name": job["job"], "limit": JOB_HISTORY_LIMIT})))
-            history = histories[job["job"]]
-            around = iso_to_epoch(build["end_time"]) if build.get("end_time") else time.time()
-            entry["others_failing"] = others_failing(history, job["job"], event["change"], around)
-            entry["job_history"] = job_history(history)
-        except (OSError, ValueError, KeyError) as error:
-            entry["diagnosis_error"] = str(error)
-        entry["category"] = categorize(job["job"], event["message"], job["result"], entry.get("failure", ""),
-                                       entry.get("lint_errors") or entry.get("file_comments") or ())
-        if job["job"] in flaky:
-            entry["flaky_here"] = flaky[job["job"]]
-            # A known cause (compile, lint…) wins: only an unexplained failure is put down to flakiness.
-            if entry["category"] in ("infra", "unknown") and flaky[job["job"]]["month"] >= FLAKY_MIN:
-                entry["category"] = "flaky"
-        diagnosis.append(entry)
-    return diagnosis
+    jobs = failed_jobs(event["message"])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        return list(pool.map(lambda job: diagnose_job(job, event, histories, flaky), jobs))
+
+
+def diagnose_job(job, event, histories, flaky):
+    entry = {"job": job["job"], "result": job["result"], "url": job["url"]}
+    try:
+        build = json.loads(http_get(f"{ZUUL_API}/build/{job['uuid']}"))
+        log_url = build["log_url"].rstrip("/")
+        entry["log_url"] = log_url
+        entry["failure"] = gradle_failure(http_get(f"{log_url}/job-output.txt"))
+        sarif = next((a["url"] for a in build.get("artifacts", []) if a["name"].endswith("lint.sarif")), None)
+        errors = lint_errors(json.loads(http_get(sarif))) if sarif else []
+        if errors:
+            entry["lint_errors"] = errors
+        comments = fetch_file_comments(log_url)
+        if comments:
+            entry["file_comments"] = comments
+        # One call covers both: 200 builds of a job span well over the ±3 h flaky window.
+        if job["job"] not in histories:
+            histories[job["job"]] = json.loads(
+                http_get(f"{ZUUL_API}/builds?"
+                         + urllib.parse.urlencode({"job_name": job["job"], "limit": JOB_HISTORY_LIMIT})))
+        history = histories[job["job"]]
+        around = iso_to_epoch(build["end_time"]) if build.get("end_time") else time.time()
+        entry["others_failing"] = others_failing(history, job["job"], event["change"], around)
+        entry["job_history"] = job_history(history)
+    except (OSError, ValueError, KeyError) as error:
+        entry["diagnosis_error"] = str(error)
+    entry["category"] = categorize(job["job"], event["message"], job["result"], entry.get("failure", ""),
+                                   entry.get("lint_errors") or entry.get("file_comments") or ())
+    if job["job"] in flaky:
+        entry["flaky_here"] = flaky[job["job"]]
+        # A known cause (compile, lint…) wins: only an unexplained failure is put down to flakiness.
+        if entry["category"] in ("infra", "unknown") and flaky[job["job"]]["month"] >= FLAKY_MIN:
+            entry["category"] = "flaky"
+    return entry
 
 
 def base_build(branch):

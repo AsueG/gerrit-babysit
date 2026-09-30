@@ -39,6 +39,13 @@ def fetch_refs(refspecs):
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
 
+def branch_tips(branches):
+    """{branch: tip SHA} of the branches fetched into the namespace; the others are left out."""
+    tips = {branch: git("rev-parse", "--verify", "--quiet", f"{FETCH_NAMESPACE}/{branch}").strip()
+            for branch in branches}
+    return {branch: sha for branch, sha in tips.items() if sha}
+
+
 _conflicts_memo = {}
 
 
@@ -56,9 +63,10 @@ def merge_conflicts(changes):
                  for c, ps in candidates if ps["revision"] in missing}
     fetch_refs(sorted(refspecs))
 
+    tips = branch_tips({c["branch"] for c, _ in candidates})
     conflicts, memo = {}, {}
     for change, patch_set in candidates:
-        target = git("rev-parse", "--verify", "--quiet", f"{FETCH_NAMESPACE}/{change['branch']}").strip()
+        target = tips.get(change["branch"])
         if not target:
             continue
         content_merge = gerrit.uses_content_merge(change["project"])
@@ -98,19 +106,39 @@ def changed_on_both_sides(target, revision):
     return sorted(theirs & mine & different)
 
 
+_ancestry_memo = {}
+
+
 def stale_parents(changes, statuses):
     """{change number: {parent, old_parent_sha}} when the parent merged under another SHA (rebase on submit).
 
-    Must run after merge_conflicts(), which fetches the patch sets and branch tips it relies on."""
-    stale = {}
+    Must run after merge_conflicts(), which fetches the patch sets and branch tips it relies on. Like its memo, this
+    one only keeps this poll's (base, branch tip) pairs."""
+    global _ancestry_memo
+    merged = []
     for change in changes:
         parent, status, _ = statuses.get(change["number"], (None, None, None))
         base = change.get("currentPatchSet", {}).get("parents", [None])[0]
-        if status != "MERGED" or not base:
+        if status == "MERGED" and base:
+            merged.append((change, parent, base))
+    tips = branch_tips({change["branch"] for change, _, _ in merged})
+    stale, memo = {}, {}
+    for change, parent, base in merged:
+        target = tips.get(change["branch"])
+        if not target:
             continue
-        target = f"{FETCH_NAMESPACE}/{change['branch']}"
-        if git_run("merge-base", "--is-ancestor", base, target).returncode == 1:
+        key = (base, target)
+        if key in _ancestry_memo:
+            memo[key] = _ancestry_memo[key]
+        else:
+            result = git_run("merge-base", "--is-ancestor", base, target).returncode
+            if result not in (0, 1):
+                # Base not fetched yet: unknown, asked again on the next poll.
+                continue
+            memo[key] = result == 1
+        if memo[key]:
             stale[change["number"]] = {"parent": parent, "old_parent_sha": base}
+    _ancestry_memo = memo
     return stale
 
 

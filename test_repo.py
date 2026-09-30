@@ -11,6 +11,10 @@ import repo
 
 
 class StaleParentsTest(GitRepoTest):
+    def setUp(self):
+        super().setUp()
+        repo._ancestry_memo = {}
+
     def test_parent_landed_under_another_sha(self):
         # Given
         self.git("checkout", "-q", "-b", "stack")
@@ -33,6 +37,18 @@ class StaleParentsTest(GitRepoTest):
         results = [repo.stale_parents([c], {1: (99, status, {})}) for status in ("MERGED", "NEW")]
         # Then
         self.assertEqual([{}, {}], results)
+
+    def test_the_ancestry_check_only_reruns_when_the_branch_moves(self):
+        # Given
+        parent = self.commit("parent")
+        self.git("update-ref", f"{repo.FETCH_NAMESPACE}/main", "main")
+        c = change(current=patch_set(1, parents=(parent,)))
+        repo.stale_parents([c], {1: (99, "MERGED", {})})
+        # When
+        with mock.patch.object(repo, "git_run", wraps=repo.git_run) as git_run:
+            repo.stale_parents([c], {1: (99, "MERGED", {})})
+        # Then
+        self.assertEqual([], [call for call in git_run.call_args_list if call.args[0] == "merge-base"])
 
 
 class MergeConflictsTest(GitRepoTest):

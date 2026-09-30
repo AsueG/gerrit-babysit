@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Block until one of my open Gerrit changes gets a new actionable event, print it as JSON, exit."""
 import argparse
+import concurrent.futures
 import json
 import os
 import pathlib
@@ -16,7 +17,7 @@ import gerrit
 import procs
 import repo
 import snooze
-from config import CACHE, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write
+from config import CACHE, SESSION, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write, read_json
 
 QUERY = "owner:self status:open"
 REVIEW_QUERY = "reviewer:self status:open -owner:self"
@@ -24,7 +25,6 @@ ATTENTION_QUERY = "attention:self status:open"
 STATE = CACHE / "seen.json"
 DAEMON_STATE = CACHE / "daemon-seen.json"
 DAEMON_POLL = CACHE / "daemon-poll.json"
-SESSION = CACHE / "session.json"
 FLAKY = CACHE / "flaky.json"
 FLAKY_RETENTION_S = 90 * 86400
 # Longer than the daemon's interval, so the session sees at least one newer poll before reporting.
@@ -52,9 +52,11 @@ def open_threads(changes):
     """{change number: threads awaiting me}; the REST call only reruns when the change moves."""
     global _threads_memo
     keys = {c["number"]: (c["number"], c.get("lastUpdated")) for c in changes}
-    _threads_memo = {key: _threads_memo[key] if key in _threads_memo
-                     else events.awaiting_threads(gerrit.rest_get(f"/changes/{number}/comments"))
-                     for number, key in keys.items()}
+    missing = [key for key in keys.values() if key not in _threads_memo]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        fetched = dict(zip(missing, pool.map(
+            lambda key: events.awaiting_threads(gerrit.rest_get(f"/changes/{key[0]}/comments")), missing)))
+    _threads_memo = {key: _threads_memo[key] if key in _threads_memo else fetched[key] for key in keys.values()}
     return {number: _threads_memo[key] for number, key in keys.items()}
 
 
@@ -86,27 +88,37 @@ def outdated_parents(changes, statuses):
     return outdated
 
 
-def poll():
-    changes = fetch_changes()
-    statuses = parent_statuses(changes)
-    conflicts = repo.merge_conflicts(changes)
-    # REST relies on the HTTP password, SSH does not: an expired token must not blind the whole watcher.
-    threads, threads_error = {}, None
+def threads_or_error(changes):
+    """REST relies on the HTTP password, SSH does not: an expired token must not blind the whole watcher."""
     try:
-        threads = open_threads(changes)
+        return open_threads(changes), None
     except (OSError, ValueError, KeyError) as error:
-        threads_error = gerrit.error_detail(error)
-    return {
-        "changes": changes,
-        "conflicts": conflicts,
-        "parents": {n: parent for n, (parent, status, _) in statuses.items() if status == "NEW"},
-        "stale_parents": repo.stale_parents(changes, statuses),
-        "outdated_parents": outdated_parents(changes, statuses),
-        "threads": threads,
-        "threads_error": threads_error,
-        "reviews": fetch_reviews(),
-        "attention": fetch_attention(),
-    }
+        return {}, gerrit.error_detail(error)
+
+
+def poll():
+    # Independent round trips run side by side: the SSH queries share one multiplexed connection, and the REST
+    # calls overlap the local git fetch.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        reviews = pool.submit(fetch_reviews)
+        attention = pool.submit(fetch_attention)
+        changes = fetch_changes()
+        threads_job = pool.submit(threads_or_error, changes)
+        statuses = parent_statuses(changes)
+        conflicts = repo.merge_conflicts(changes)
+        stale = repo.stale_parents(changes, statuses)
+        threads, threads_error = threads_job.result()
+        return {
+            "changes": changes,
+            "conflicts": conflicts,
+            "parents": {n: parent for n, (parent, status, _) in statuses.items() if status == "NEW"},
+            "stale_parents": stale,
+            "outdated_parents": outdated_parents(changes, statuses),
+            "threads": threads,
+            "threads_error": threads_error,
+            "reviews": reviews.result(),
+            "attention": attention.result(),
+        }
 
 
 def with_int_keys(result):
@@ -132,7 +144,7 @@ def daemon_poll():
 
 
 def write_daemon_poll(result=None, error=None):
-    previous = json.loads(DAEMON_POLL.read_text()) if DAEMON_POLL.exists() else {}
+    previous = read_json(DAEMON_POLL)
     atomic_write(DAEMON_POLL, {"attempt": time.time(), "error": error,
                                "poll": result if error is None else previous.get("poll")})
 
@@ -143,7 +155,7 @@ def prereview(event):
 
 
 def load_flaky():
-    return json.loads(FLAKY.read_text()) if FLAKY.exists() else {}
+    return read_json(FLAKY)
 
 
 def record_flaky(result, now=None):
@@ -192,7 +204,7 @@ def write_status(result=None, error=None):
     On error the last good rows are kept and `updated` stays at the last success."""
     now = time.time()
     if error is not None:
-        previous = json.loads(STATUS.read_text()) if STATUS.exists() else {}
+        previous = read_json(STATUS)
         atomic_write(STATUS, {**previous, "last_attempt": now, "last_error": error})
         return
     rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(), now)
@@ -237,8 +249,7 @@ def write_session_lock():
 
 def load_seen(state=None):
     """{event key: last time its change was alive}."""
-    state = state or STATE
-    return json.loads(state.read_text()) if state.exists() else {}
+    return read_json(state or STATE)
 
 
 def save_seen(seen, state=None):
@@ -302,7 +313,7 @@ def daemon_round(result, first_run):
     seen = load_seen(DAEMON_STATE)
     quiet = events.is_quiet(now)
     if not first_run and not quiet:
-        for title, body, href in events.notifications(current[key] for key in sorted(current.keys() - seen.keys())):
+        for title, body, href in events.notifications((current[key] for key in sorted(current.keys() - seen.keys())), now):
             swiftbar("notify", plugin=SWIFTBAR_PLUGIN, title=title, body=body, href=href)
     # Held back at night and on weekends: still unseen, they notify at the start of the next working day.
     marked = () if quiet and not first_run else current.keys()

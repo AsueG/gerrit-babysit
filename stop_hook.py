@@ -5,10 +5,9 @@ import os
 import pathlib
 import sys
 
-from config import CACHE
+from config import SESSION
 from procs import descends_from, processes
 
-SESSION = CACHE / "session.json"
 WATCH_PY = pathlib.Path(__file__).resolve().parent / "watch.py"
 REASON = (f"The gerrit-babysit watcher is no longer running in this session. Relaunch `python3 {WATCH_PY}` "
           "with run_in_background before ending the turn. If watching should stop (stop requested), "

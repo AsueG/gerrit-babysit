@@ -12,6 +12,8 @@ SKILL_DIR = pathlib.Path(__file__).resolve().parent
 USER_DIR = pathlib.Path.home() / ".config" / "gerrit-babysit"
 CACHE = pathlib.Path(os.environ.get("GERRIT_BABYSIT_CACHE") or pathlib.Path.home() / ".cache" / "gerrit-babysit")
 STATUS = CACHE / "status.json"
+# Read by macos/open-babysit.sh and the Stop hook: the Claude session the watcher runs in.
+SESSION = CACHE / "session.json"
 # A daemon loop can take interval + fetch timeout + ssh timeout before it writes again.
 STALE_AFTER_S = 360
 CI_STUCK_S = 2 * 3600
@@ -46,6 +48,10 @@ def atomic_write(path, payload):
     with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as tmp:
         tmp.write(json.dumps(payload, ensure_ascii=False))
     pathlib.Path(tmp.name).replace(path)
+
+
+def read_json(path):
+    return json.loads(path.read_text()) if path.exists() else {}
 
 
 def config_path():
