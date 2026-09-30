@@ -29,10 +29,12 @@ no vote, no recheck. Everything else (worktree, fix, local amend, tests) happens
    `{"status": "pending", "events": [...]}` and marks the whole current state as seen **from the same
    poll**, so nothing slips between the sweep and the watch. Every change of mine that needs something
    gives a `kind: pending` item (`ci`, `code_review`, `threads_awaiting_me`, plus `ci_diagnosis` and
-   `base_build` when CI is red). State events follow: `merge_conflict`, `parent_merged`, `ci_stuck`,
-   `ready_to_submit`, `waiting_for_review`, `cleanup_candidate`, and the `review_*` ones
-   (`review_requested` where I already voted or commented are left out). Handle each item with the steps
-   below.
+   `base_build` when CI is red). State events follow: `merge_conflict`, `parent_merged`,
+   `parent_updated`, `ci_stuck`, `ready_to_submit`, `waiting_for_review`, `cleanup_candidate`, and the
+   `review_*` ones (`review_requested` where I already voted or commented are left out). Handle each item
+   with the steps below. `snoozed` = `{number: {until | patch_set}}` of the changes muted by the user:
+   their events are held back (neither reported nor marked seen) and come back when the snooze ends. Do not
+   mention them unless asked.
 2. **Start the watcher** with `Bash` and `run_in_background: true`: `python3 <skill>/watch.py`.
    End the turn. The process exit notification is the wake-up — never poll its output.
 
@@ -68,8 +70,9 @@ more and delivers everything that arrived meanwhile in a single wake-up (reply +
 Each item has a `kind`:
 `message` (comment/vote/zuul verdict: `author`, `author_username`, text; a zuul failure also carries
 `ci_diagnosis`, `base_build` and `rechecks` = how many `recheck*` I already posted on this patch set
-before this verdict), `merge_conflict` (+ `files`), `parent_merged` (+ `parent`, `old_parent_sha`,
-`files`), `ci_stuck` (+ `idle_since`, `zuul_queue`), `waiting_for_review` (+ `working_days`,
+before this verdict, and `known_flaky` = `{job: {week, month, last}}` from the local flake memory),
+`merge_conflict` (+ `files`), `parent_merged` (+ `parent`, `old_parent_sha`, `files`, `rebase`),
+`parent_updated` (+ `parent`, `parent_patch_set`, `old_parent_sha`, `new_parent_sha`, `rebase`), `ci_stuck` (+ `idle_since`, `zuul_queue`), `waiting_for_review` (+ `working_days`,
 `reviewers`), `ready_to_submit` ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
 `review_requested` / `review_new_patch_set` / `review_reply` ("Other people's reviews" section).
 The watcher never gives up on Gerrit being unreachable (VPN off…): it retries with a backoff capped at
@@ -103,7 +106,8 @@ otherwise the next events are lost.
 |---|---|
 | zuul `Merge Failed` (every CI label -1 at the same second) | Stale base, no job ran → local rebase on `origin/<branch>` |
 | `merge_conflict` | The target branch moved and the patch set no longer applies (Gerrit would say "Merge Conflict" without posting anything). The watcher runs a local `git merge-tree` against the branch tip (private refs `refs/gerrit-babysit/*`). Emitted once per patch set → rebase on `origin/<branch>`, resolve `files`, run tests, then ask before pushing |
-| `parent_merged` | The parent merged under another SHA (rebase on submit): the change will not merge as is, no need to wait for Merge Failed. `git rebase --onto origin/<branch> <old_parent_sha>` from the worktree, resolve `files` if any, check the Change-Ids, run tests, then ask before pushing |
+| `parent_merged` | The parent merged under another SHA (rebase on submit): the change will not merge as is, no need to wait for Merge Failed. The rebase is already prepared locally: read `rebase` below |
+| `parent_updated` | The open parent got a new patch set and my change still sits on the old one. Same handling as `parent_merged` via `rebase`; emitted once per new parent revision |
 | `ci_stuck` | CI "running" but nothing from zuul (no verdict, no "Starting") for 2 h on the current patch set, once per patch set. Read `zuul_queue`: a list of `{pipeline, enqueued_at, remaining_s, jobs_waiting, jobs_running}` = the change is queued, report only, **no** recheck. `[]` = zuul lost the change → offer (`AskUserQuestion`) a `recheck`, public so only after "yes". `{"error": …}` = open `zuul_status_url` by hand |
 | `waiting_for_review` | Current non-WIP patch set, CI not red, no comment nor vote from a reviewer for `working_days` ≥ 2 working days (reminded every working day). If `reviewers` is empty or they are away: suggest reviewers. Offer (`AskUserQuestion`) **Add reviewers** / **Nudge** (draft message to publish) / **Nothing**. The first two are public, so only after "yes" |
 | Failed zuul job | Start from `ci_diagnosis` (one item per failed job: `category`, `failure` = Gradle's "What went wrong" block, `lint_errors`, `file_comments`, `others_failing`, `job_history`, `log_url`). Per-category detail below. On `diagnosis_error`: read `<log_url>/job-output.txt` by hand (`curl -L --compressed`) |
@@ -112,10 +116,25 @@ otherwise the next events are lost.
 | Bare -1/-2 vote without a comment | Report, nothing to do |
 | +2 while CI has not finished | Report; `ready_to_submit` will come once everything is green |
 
+**`rebase`** (session watcher only; the daemon touches no worktree) = what the watcher already did in the
+change's worktree. It is never pushed.
+
+| `status` | Action |
+|---|---|
+| `rebased` | Done locally (`onto`, `previous_head`, `head`, `commits` replayed). Check the Change-Ids, run the tests, show `git diff <previous_head> HEAD --stat`, then ask (**Push** / **Undo**: `git reset --hard <previous_head>` / **Ignore**) |
+| `conflict` | Aborted, worktree untouched. Rerun `command` from `worktree`, resolve `files`, `git rebase --continue`, tests, then ask |
+| `up_to_date` | Already on the new base (rebased by hand): report only |
+| `busy` | Uncommitted edits or an operation in progress: left alone. Report, rebase by hand once it is clean |
+| `diverged` | HEAD no longer contains `old_parent_sha` (rewritten by hand): do not guess, report and ask |
+| `no_worktree` | No worktree holds the change: create one (step 2), then `git rebase --onto <new base> <old_parent_sha>` |
+| `error` | `detail`: rebase by hand |
+
 **`ci_diagnosis` categories** — `others_failing` lists the other changes where the same job failed within
 ±3 h. `job_history` sums up the job's ~200 latest builds across all changes: `failure_rate`, `retried` =
 patch sets rerun after a failure and `retried_green` = those that went green. A high rate or green reruns
-support the flaky hypothesis. `file_comments` = the job's robot comments (`zuul-file-comments.json`),
+support the flaky hypothesis. `flaky_here` = `{week, month, last}` from the local flake memory
+(`~/.cache/gerrit-babysit/flaky.json`, 90 days: a job that failed then went green on the **same** patch set
+of one of my changes or reviews). `file_comments` = the job's robot comments (`zuul-file-comments.json`),
 Error/Fatal levels only: `file`, `line`, `rule`, `message`; the message often has a `**Fix:**` line, follow
 it first. The `screenshots` category (only when `screenshot_regression_marker` is set) applies only to the
 job whose path is on the marker line: other failed jobs keep their own category.
@@ -137,6 +156,7 @@ hint.
 | `lint` | Fix each `rule`; unknown rule: read the message, fix if it is clear |
 | `compile` / `unit_tests` | Reproduce the Gradle task named in `failure` locally, fix. If the failing file is not in the change, the target branch probably moved → rebase |
 | `infra` (POST_FAILURE, TIMED_OUT…) or `failure` unrelated to the change + non-empty `others_failing` | Flaky or red base, no code change. Offer (`AskUserQuestion`) to post `recheck` (or the team's variant from `LOCAL.md`) — public, so only after "yes" |
+| `flaky` | An `infra`/`unknown` failure of a job that flaked ≥ 2 times this month (`flaky_here`). Say so ("flaky 4× this week") and offer the `recheck` — public, so only after "yes". The SwiftBar menu offers the same one-click recheck (with a confirmation dialog) |
 | `unknown` | Open `log_url` and diagnose by hand |
 
 ### 2. Move into the change's worktree
@@ -243,9 +263,16 @@ Present: link, owner, what changed (`interdiff.stat`; open a file's diff only to
 `review_reply` the threads concerned. Optionally offer a detailed review; what follows (vote, reply) is
 decided with the user.
 
+## Snooze
+
+"Snooze 12345 until Monday / until the next patch set": `python3 <skill>/snooze.py <n> --until YYYY-MM-DD`
+(morning of that day), `--days N` (a weekend lands on Monday) or `--patch-set <current>` (wakes on a newer one);
+`--clear` wakes it, no argument lists them. The SwiftBar menu has the same Snooze submenu and a "Snoozed"
+section. A snoozed change leaves the counts, the status line and the notifications.
+
 ## Watcher tests
 
-After any change to `watch.py`, `ci.py`, `config.py`, `stop_hook.py`, `statusline_segment.py` or
+After any change to `watch.py`, `ci.py`, `config.py`, `snooze.py`, `stop_hook.py`, `statusline_segment.py` or
 `macos/gerrit.30s.py`: `cd <skill> && python3 -m unittest`
 (stdlib only, anonymized Gerrit/zuul fixtures in `fixtures/`), then restart the LaunchAgent if installed.
 

@@ -16,16 +16,53 @@ FLAKY_WINDOW_S = 3 * 3600
 PERIODIC_BUILD = CONFIG["periodic_build"]
 SCREENSHOT_MARKER = CONFIG["screenshot_regression_marker"]
 JOB_HISTORY_LIMIT = 200
+CI_USER = CONFIG["ci_user"]
+# Local flakes (failed, then green on the same patch set) over 30 days that make a failure look flaky.
+FLAKY_MIN = 2
+WEEK_S = 7 * 86400
+MONTH_S = 30 * 86400
+NOT_FAILED = ("SUCCESS", "CANCELED", "SKIPPED")
 
 
 ZUUL_JOB_LINE = re.compile(r"^- (\S+) (https://\S+/build/(\w+)) : (\w+)", re.MULTILINE)
 LOG_PREFIX = re.compile(r"^\S+ \S+ \| \w+ \| ?")
+VERDICT_PATCH_SET = re.compile(r"^Patch Set (\d+):")
 
 
 def failed_jobs(message):
     return [{"job": job, "url": url, "uuid": uuid, "result": result}
-            for job, url, uuid, result in ZUUL_JOB_LINE.findall(message)
-            if result not in ("SUCCESS", "CANCELED", "SKIPPED")]
+            for job, url, uuid, result in ZUUL_JOB_LINE.findall(message) if result not in NOT_FAILED]
+
+
+def flaky_runs(change):
+    """(key, record) per job that failed, then went green on the same patch set: nothing was pushed in between."""
+    verdicts = {}
+    for message in sorted(change.get("comments", []), key=lambda m: m["timestamp"]):
+        match = VERDICT_PATCH_SET.match(message.get("message", ""))
+        if match and message["reviewer"].get("username") == CI_USER:
+            verdicts.setdefault(int(match.group(1)), []).append(message)
+    for patch_set, messages in verdicts.items():
+        failed = {}
+        for message in messages:
+            for job, _, _, result in ZUUL_JOB_LINE.findall(message["message"]):
+                if result == "SUCCESS" and job in failed:
+                    failed_at, failed_result = failed.pop(job)
+                    yield (f"{change['number']}:{patch_set}:{job}:{message['timestamp']}",
+                           {"job": job, "change": change["number"], "patch_set": patch_set, "result": failed_result,
+                            "failed_at": failed_at, "passed_at": message["timestamp"]})
+                elif result not in NOT_FAILED:
+                    failed[job] = (message["timestamp"], result)
+
+
+def flaky_counts(records, jobs, now=None):
+    """{job: {week, month, last}} for the given jobs that flaked here in the last 30 days."""
+    now = now or time.time()
+    counts = {}
+    for job in jobs:
+        stamps = [r["passed_at"] for r in records.values() if r["job"] == job and now - r["passed_at"] < MONTH_S]
+        if stamps:
+            counts[job] = {"week": sum(now - s < WEEK_S for s in stamps), "month": len(stamps), "last": max(stamps)}
+    return counts
 
 
 def gradle_failure(log):
@@ -142,12 +179,13 @@ def http_get(url):
     return body.decode(errors="replace")
 
 
-def diagnose_ci(event, histories=None):
+def diagnose_ci(event, histories=None, flaky=None):
     """Network-bound: only for fresh zuul failures, so the idle loop stays free.
 
     `histories` ({job: builds}) is shared across the events of one wake-up: a job red on several changes is
-    fetched once."""
+    fetched once. `flaky` ({job: counts}) is the local flake memory, see flaky_counts()."""
     histories = {} if histories is None else histories
+    flaky = flaky or {}
     diagnosis = []
     for job in failed_jobs(event["message"]):
         entry = {"job": job["job"], "result": job["result"], "url": job["url"]}
@@ -176,6 +214,11 @@ def diagnose_ci(event, histories=None):
             entry["diagnosis_error"] = str(error)
         entry["category"] = categorize(job["job"], event["message"], job["result"], entry.get("failure", ""),
                                        entry.get("lint_errors") or entry.get("file_comments") or ())
+        if job["job"] in flaky:
+            entry["flaky_here"] = flaky[job["job"]]
+            # A known cause (compile, lint…) wins: only an unexplained failure is put down to flakiness.
+            if entry["category"] in ("infra", "unknown") and flaky[job["job"]]["month"] >= FLAKY_MIN:
+                entry["category"] = "flaky"
         diagnosis.append(entry)
     return diagnosis
 

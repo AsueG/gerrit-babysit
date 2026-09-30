@@ -2,11 +2,13 @@
 import json
 import os
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 os.environ["GERRIT_BABYSIT_CONFIG"] = str(FIXTURES / "config.json")
+os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-babysit-test-"))
 
 import ci  # noqa: E402
 ZUUL = json.loads((FIXTURES / "zuul_messages.json").read_text())
@@ -190,6 +192,52 @@ class CiDiagnosisTest(unittest.TestCase):
         # Then
         self.assertTrue(diagnosis)
         self.assertTrue(all(d["diagnosis_error"] == "offline" and d["category"] for d in diagnosis))
+
+    def test_an_unexplained_failure_of_a_job_that_flaked_here_is_flaky(self):
+        # Given
+        event = {"change": 1, "message": ZUUL["failed"]["message"]}
+        often, once = {"app-build": {"week": 1, "month": 2, "last": 1}}, {"app-build": {"week": 1, "month": 1, "last": 1}}
+        # When
+        with mock.patch.object(ci, "http_get", side_effect=OSError("offline")):
+            found = [ci.diagnose_ci(event, flaky=flaky)[0] for flaky in (often, once)]
+        # Then
+        self.assertEqual(["flaky", "unknown"], [d["category"] for d in found])
+        self.assertEqual(often["app-build"], found[0]["flaky_here"])
+
+
+def verdict(ps, timestamp, **jobs):
+    lines = "\n".join(f"- {job} https://zuul/build/{job}{timestamp} : {result}" for job, result in jobs.items())
+    return {"reviewer": {"username": "zuul"}, "timestamp": timestamp, "message": f"Patch Set {ps}: Build-1\n\n{lines}"}
+
+
+class FlakyRunsTest(unittest.TestCase):
+    def test_a_job_red_then_green_on_the_same_patch_set_flaked(self):
+        # Given
+        comments = [verdict(1, 20, unit="SUCCESS", lint="SUCCESS"), verdict(1, 10, unit="FAILURE", lint="SUCCESS")]
+        # When
+        found = dict(ci.flaky_runs({"number": 7, "comments": comments}))
+        # Then
+        self.assertEqual({"7:1:unit:20": {"job": "unit", "change": 7, "patch_set": 1, "result": "FAILURE",
+                                          "failed_at": 10, "passed_at": 20}}, found)
+
+    def test_green_on_a_new_patch_set_was_a_fix_not_a_flake(self):
+        # Given
+        comments = [verdict(1, 10, unit="FAILURE"), verdict(2, 20, unit="SUCCESS"),
+                    {"reviewer": {"username": "someone"}, "timestamp": 30, "message": "Patch Set 2:\n\n- unit x : SUCCESS"}]
+        # When
+        found = list(ci.flaky_runs({"number": 7, "comments": comments}))
+        # Then
+        self.assertEqual([], found)
+
+    def test_counts_over_the_week_and_the_month(self):
+        # Given
+        now = 100 * 86400
+        records = {str(i): {"job": job, "passed_at": now - days * 86400}
+                   for i, (job, days) in enumerate([("unit", 1), ("unit", 10), ("unit", 40), ("lint", 1)])}
+        # When
+        counts = ci.flaky_counts(records, ["unit", "e2e"], now)
+        # Then
+        self.assertEqual({"unit": {"week": 1, "month": 2, "last": now - 86400}}, counts)
 
 
 class BaseBuildTest(unittest.TestCase):

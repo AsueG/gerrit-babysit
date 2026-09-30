@@ -18,6 +18,8 @@ import time
 # Installed as a symlink into the SwiftBar plugin folder: resolve it to find the skill.
 SELF = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(SELF.parents[1]))
+import ci  # noqa: E402
+import snooze  # noqa: E402
 from config import (CI_STUCK_S, COMMAND, CONFIG, REPO, SKILL_DIR, STALE_AFTER_S, STATUS,  # noqa: E402
                     SWIFTBAR_PLUGIN, gerrit_user, t)
 
@@ -50,6 +52,8 @@ def state_of(change):
         return t("bar_ci_failed", labels=", ".join(change["ci_failed"])), "xmark.octagon.fill", "red"
     if change["code_review"] < 0:
         return f"CR {change['code_review']}", "hand.thumbsdown.fill", "red"
+    if change.get("outdated_parent"):
+        return t("bar_parent_updated", parent=change["outdated_parent"]), "square.stack.3d.up", "orange"
     if change.get("ci_stuck"):
         return t("bar_ci_stuck", hours=CI_STUCK_S // 3600), "exclamationmark.arrow.triangle.2.circlepath", "orange"
     if change["ready"] and change.get("open_parent"):
@@ -81,15 +85,27 @@ def snapshot_row(number):
     return next((c for c in changes if str(c["number"]) == number), {})
 
 
-def submit(number, patch_set):
-    subject = snapshot_row(number).get("subject", "")
-    confirm = osascript(
+def confirmed(question, detail, button):
+    """Cancel is the default button: a stray Enter never publishes anything."""
+    return osascript(
         'on run argv\n'
         'display dialog (item 1 of argv & return & return & item 2 of argv) '
         'buttons {item 3 of argv, item 4 of argv} default button 1 cancel button 1 with title "Gerrit" with icon caution\n'
         'end run',
-        t("bar_submit_confirm", n=number, ps=patch_set), subject, t("bar_cancel"), t("bar_submit_button"))
-    if confirm.returncode != 0:
+        question, detail, t("bar_cancel"), button).returncode == 0
+
+
+def alert(title, detail):
+    osascript('on run argv\ndisplay alert (item 1 of argv) message (item 2 of argv) as critical\nend run', title, detail)
+
+
+def refresh():
+    subprocess.run(["open", "-g", f"swiftbar://refreshplugin?name={SWIFTBAR_PLUGIN}"], capture_output=True)
+
+
+def submit(number, patch_set):
+    subject = snapshot_row(number).get("subject", "")
+    if not confirmed(t("bar_submit_confirm", n=number, ps=patch_set), subject, t("bar_submit_button")):
         return
     # Pinning the patch set makes Gerrit refuse if a newer one was pushed since the snapshot.
     result = subprocess.run([*SSH, "gerrit", "review", "--submit", f"{number},{patch_set}"],
@@ -97,9 +113,75 @@ def submit(number, patch_set):
     if result.returncode == 0:
         notify(t("bar_submitted", n=number), subject)
     else:
-        osascript('on run argv\ndisplay alert (item 1 of argv) message (item 2 of argv) as critical\nend run',
-                  t("bar_submit_failed", n=number), result.stderr.strip() or result.stdout.strip())
-    subprocess.run(["open", "-g", f"swiftbar://refreshplugin?name={SWIFTBAR_PLUGIN}"], capture_output=True)
+        alert(t("bar_submit_failed", n=number), result.stderr.strip() or result.stdout.strip())
+    refresh()
+
+
+RECHECK = re.compile(r"recheck(?:-[\w-]+)?")
+
+
+def recheck_detail(change):
+    """Why a recheck is worth one click: every failed job already flaked here, and none was rechecked yet."""
+    jobs = change.get("ci_failed_jobs") or []
+    flaky = change.get("flaky") or {}
+    if change["ci"] != "failed" or change.get("rechecks") or not jobs:
+        return None
+    if any(flaky.get(j["job"], {}).get("month", 0) < ci.FLAKY_MIN for j in jobs):
+        return None
+    return ", ".join(t("bar_flaky_week", job=j["job"], count=flaky[j["job"]]["week"]) if flaky[j["job"]]["week"]
+                     else t("bar_flaky_month", job=j["job"], count=flaky[j["job"]]["month"]) for j in jobs)
+
+
+def recheck(number, patch_set):
+    comment = CONFIG["recheck_comment"]
+    row = snapshot_row(number)
+    # The comment goes through Gerrit's SSH command line: only a plain recheck variant.
+    if not RECHECK.fullmatch(comment) or str(row.get("patch_set")) != patch_set:
+        return
+    if not confirmed(t("bar_recheck_confirm", comment=comment, n=number, ps=patch_set), row.get("subject", ""),
+                     t("bar_recheck_button")):
+        return
+    result = subprocess.run([*SSH, "gerrit", "review", "--message", comment, f"{number},{patch_set}"],
+                            capture_output=True, text=True, timeout=120)
+    if result.returncode == 0:
+        notify(t("bar_rechecked", n=number), row.get("subject", ""))
+    else:
+        alert(t("bar_recheck_failed", n=number), result.stderr.strip() or result.stdout.strip())
+    refresh()
+
+
+def ask_date(number):
+    tomorrow = time.strftime("%Y-%m-%d", time.localtime(snooze.in_days(1)))
+    answer = osascript(
+        'on run argv\n'
+        'text returned of (display dialog (item 1 of argv) default answer (item 2 of argv) '
+        'buttons {item 3 of argv, item 4 of argv} default button 2 cancel button 1 with title "Gerrit")\n'
+        'end run',
+        t("bar_snooze_prompt", n=number), tomorrow, t("bar_cancel"), t("bar_snooze_button"))
+    if answer.returncode != 0:
+        return None
+    try:
+        return snooze.parse_date(answer.stdout)
+    except ValueError:
+        alert(t("bar_snooze_invalid", value=answer.stdout.strip()), "")
+        return None
+
+
+def snooze_change(number, mode, value=None):
+    if mode == "ps":
+        snooze.set_snooze(number, patch_set=int(value))
+    else:
+        until = snooze.in_days(int(value)) if mode == "days" else ask_date(number)
+        if until is None:
+            return
+        snooze.set_snooze(number, until=until)
+    notify(t("bar_snoozed", n=number), snapshot_row(number).get("subject", ""))
+    refresh()
+
+
+def wake(number):
+    snooze.wake(number)
+    refresh()
 
 
 def open_terminal(path, title, command=None):
@@ -156,6 +238,12 @@ def handle(args):
         investigate(*params)
     elif name == "copy":
         copy(*params)
+    elif name == "recheck":
+        recheck(*params)
+    elif name == "snooze":
+        snooze_change(*params)
+    elif name == "wake":
+        wake(*params)
 
 
 def age(seconds):
@@ -182,10 +270,29 @@ def print_change(change, label, symbol, color, fresh):
     if change.get("open_parent"):
         parent_url = url.rsplit("/", 1)[0] + f"/{change['open_parent']}"
         print(f"--{t('bar_parent_open', parent=change['open_parent'])} | href={parent_url} sfimage=link")
-    # Stale data could hide a -1 that arrived meanwhile: no submit shortcut then.
+    print(f"--{t('bar_snooze')} | sfimage=moon.zzz")
+    if change.get("patch_set"):
+        print(f"----{t('bar_snooze_ps')} | {action('snooze', number, 'ps', change['patch_set'])}")
+    print(f"----{t('bar_snooze_tomorrow')} | {action('snooze', number, 'days', 1)}")
+    print(f"----{t('bar_snooze_week')} | {action('snooze', number, 'days', 7)}")
+    print(f"----{t('bar_snooze_date')} | {action('snooze', number, 'date')}")
+    # Stale data could hide a -1 or a push that arrived meanwhile: no public shortcut then.
+    recheck_reason = recheck_detail(change) if fresh and change.get("patch_set") else None
+    if recheck_reason:
+        print("-----")
+        print(f"--{t('bar_recheck', detail=recheck_reason)} | {action('recheck', number, change['patch_set'])} "
+              "sfimage=arrow.clockwise")
     if fresh and change["ready"] and not change.get("open_parent") and change.get("patch_set"):
         print("-----")
         print(f"--{t('bar_submit')} | {action('submit', number, change['patch_set'])} sfimage=paperplane.fill")
+
+
+def print_snoozed(change, entry):
+    until = (t("bar_snoozed_ps") if entry.get("patch_set") is not None
+             else t("bar_snoozed_until", date=time.strftime("%Y-%m-%d", time.localtime(entry["until"]))))
+    print(f"{change['number']}  {scope(change['subject'])} — {until} | href={change['url']} sfimage=moon.zzz sfcolor=gray")
+    print(f"--{t('bar_open_gerrit')} | href={change['url']} sfimage=safari")
+    print(f"--{t('bar_wake')} | {action('wake', change['number'])} sfimage=bell")
 
 
 def main():
@@ -200,7 +307,10 @@ def main():
     error = snapshot.get("last_error")
     stopped = now - last_attempt > STALE_AFTER_S
 
-    rows = sorted(((c, state_of(c)) for c in snapshot.get("changes", [])),
+    changes = snapshot.get("changes", [])
+    # Read here rather than from the snapshot: a snooze shows at once, not at the daemon's next poll.
+    snoozed = snooze.active({c["number"]: c.get("patch_set") for c in changes}, now)
+    rows = sorted(((c, state_of(c)) for c in changes if c["number"] not in snoozed),
                   key=lambda row: ORDER.get(row[1][2], 3))
     active = [row for row in rows if not row[0]["wip"]]
     problems = sum(1 for _, (_, _, color) in rows if color == "red")
@@ -217,8 +327,14 @@ def main():
     print("---")
     for change, state in rows:
         print_change(change, *state, fresh=not (error or stopped))
-    if not rows:
+    if not changes:
         print(t("bar_no_changes"))
+    if snoozed:
+        print("---")
+        print(f"{t('bar_snoozed_section')} | disabled=true")
+        for change in changes:
+            if change["number"] in snoozed:
+                print_snoozed(change, snoozed[change["number"]])
     print("---")
     data_age = age(now - snapshot["updated"]) if snapshot.get("updated") else "?"
     if stopped:

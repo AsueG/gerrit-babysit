@@ -8,6 +8,7 @@ from unittest import mock
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 os.environ["GERRIT_BABYSIT_CONFIG"] = str(FIXTURES / "config.json")
+os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-babysit-test-"))
 
 import config  # noqa: E402
 import watch  # noqa: E402

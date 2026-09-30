@@ -7,8 +7,9 @@ only for something actionable:
 
 - a reviewer comment or a Code-Review -1;
 - a CI failure, already sorted by cause: compile, unit tests, lint, screenshots, dependency guard, infra
-  or flaky;
-- a merge conflict, a "Merge Failed", a parent merged under another SHA, or CI stuck for hours;
+  or flaky (it remembers which jobs flaked on your changes lately);
+- a merge conflict, a "Merge Failed", a parent merged under another SHA or given a new patch set (the
+  rebase of the child is already prepared in its worktree), or CI stuck for hours;
 - a change that is ready to submit, or has waited too long for a review;
 - someone asking for your review, pushing a new patch set, or replying to your threads;
 - local branches of merged changes that can be cleaned up.
@@ -20,7 +21,8 @@ explicit "yes"**: no push, published comment, vote, recheck or submit.
 On macOS you can add:
 
 - a background daemon that sends notifications, even with no Claude session open;
-- a SwiftBar menu bar item listing your changes, with a guarded one-click submit;
+- a SwiftBar menu bar item listing your changes, with a guarded one-click submit, a one-click recheck
+  for known flakes, and a snooze (until a date or the next patch set);
 - a Claude Code status line segment.
 
 The interface follows the macOS language (English or French).

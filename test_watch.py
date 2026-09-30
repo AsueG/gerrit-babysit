@@ -12,6 +12,7 @@ from unittest import mock
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 os.environ["GERRIT_BABYSIT_CONFIG"] = str(FIXTURES / "config.json")
+os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-babysit-test-"))
 
 import ci  # noqa: E402
 import watch  # noqa: E402
@@ -794,7 +795,7 @@ class StaleParentsTest(GitRepoTest):
         self.git("update-ref", f"{watch.FETCH_NAMESPACE}/main", "main")
         c = change(current=patch_set(1, parents=(old_parent,)))
         # When
-        stale = watch.stale_parents([c], {1: (99, "MERGED")})
+        stale = watch.stale_parents([c], {1: (99, "MERGED", {})})
         # Then
         self.assertEqual({1: {"parent": 99, "old_parent_sha": old_parent}}, stale)
 
@@ -804,7 +805,7 @@ class StaleParentsTest(GitRepoTest):
         self.git("update-ref", f"{watch.FETCH_NAMESPACE}/main", "main")
         c = change(current=patch_set(1, parents=(parent,)))
         # When
-        results = [watch.stale_parents([c], {1: (99, status)}) for status in ("MERGED", "NEW")]
+        results = [watch.stale_parents([c], {1: (99, status, {})}) for status in ("MERGED", "NEW")]
         # Then
         self.assertEqual([{}, {}], results)
 
@@ -911,16 +912,149 @@ class InterdiffTest(GitRepoTest):
         self.assertEqual("", self.git("for-each-ref", f"{watch.FETCH_NAMESPACE}/review"))
 
 
+class PrepareRebaseTest(GitRepoTest):
+    """A stack parent → child in a linked worktree; the parent then gets a new patch set on `main`."""
+
+    def setUp(self):
+        super().setUp()
+        self.git("remote", "add", "origin", str(self.repo))
+        (self.repo / "A.kt").write_text("base\n")
+        self.git("add", "A.kt")
+        self.git("commit", "-q", "-m", "base A")
+        self.git("checkout", "-q", "-b", "feature")
+        self.old_parent = self.commit("parent")
+        (self.repo / "B.kt").write_text("child\n")
+        self.git("add", "B.kt")
+        self.git("commit", "-q", "-m", f"child\n\nChange-Id: {CHANGE_ID}")
+        self.git("checkout", "-q", "main")
+        self.worktree = pathlib.Path(self.tmp.name + "-wt")
+        self.git("worktree", "add", "-q", str(self.worktree), "feature")
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.worktree)])
+
+    def new_parent(self, a_text=None):
+        """Parent patch set 2, based on `main` like the first one; optionally rewriting A.kt."""
+        if a_text:
+            (self.repo / "A.kt").write_text(a_text)
+            self.git("add", "A.kt")
+        self.git("commit", "-q", "--allow-empty", "-m", "parent v2")
+        sha = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/changes/09/9/2", sha)
+        self.git("reset", "-q", "--hard", "HEAD^")
+        return sha
+
+    def event(self, new_sha):
+        return {"kind": "parent_updated", "change": 1, "change_id": CHANGE_ID, "branch": "main", "parent": 9,
+                "parent_ref": "refs/changes/09/9/2", "old_parent_sha": self.old_parent, "new_parent_sha": new_sha}
+
+    def in_worktree(self, *args):
+        return subprocess.run(["git", "-C", str(self.worktree), *args], capture_output=True, text=True).stdout.strip()
+
+    def test_the_child_moves_onto_the_new_parent_patch_set(self):
+        # Given
+        new = self.new_parent()
+        # When
+        found = watch.prepare_rebase(self.event(new))
+        # Then
+        self.assertEqual(("rebased", 1), (found["status"], found["commits"]))
+        self.assertEqual(new, self.in_worktree("rev-parse", "HEAD^"))
+        self.assertEqual(CHANGE_ID, self.in_worktree("log", "-1", "--format=%(trailers:key=Change-Id,valueonly)"))
+
+    def test_a_conflict_is_aborted_and_reported(self):
+        # Given
+        (self.worktree / "A.kt").write_text("child\n")
+        subprocess.run(["git", "-C", str(self.worktree), "commit", "-q", "--amend", "-am",
+                        f"child\n\nChange-Id: {CHANGE_ID}"], check=True)
+        head = self.in_worktree("rev-parse", "HEAD")
+        new = self.new_parent("parent\n")
+        # When
+        found = watch.prepare_rebase(self.event(new))
+        # Then
+        self.assertEqual(("conflict", ["A.kt"]), (found["status"], found["files"]))
+        self.assertEqual(head, self.in_worktree("rev-parse", "HEAD"))
+        self.assertEqual("", self.in_worktree("status", "--porcelain"))
+
+    def test_a_worktree_with_edits_is_left_alone(self):
+        # Given
+        new = self.new_parent()
+        (self.worktree / "B.kt").write_text("editing\n")
+        # When
+        found = watch.prepare_rebase(self.event(new))
+        # Then
+        self.assertEqual("busy", found["status"])
+
+    def test_already_on_the_new_parent(self):
+        # Given
+        new = self.new_parent()
+        watch.prepare_rebase(self.event(new))
+        # When
+        found = watch.prepare_rebase(self.event(new))
+        # Then
+        self.assertEqual("up_to_date", found["status"])
+
+    def test_merged_parent_rebases_onto_the_branch_tip(self):
+        # Given
+        self.git("commit", "-q", "--allow-empty", "-m", "parent, rebased on submit")
+        self.git("update-ref", f"{watch.FETCH_NAMESPACE}/main", "main")
+        event = {**self.event(None), "kind": "parent_merged"}
+        # When
+        found = watch.prepare_rebase(event)
+        # Then
+        self.assertEqual("rebased", found["status"])
+        self.assertEqual(self.git("rev-parse", "main"), self.in_worktree("rev-parse", "HEAD^"))
+
+    def test_never_in_the_main_checkout(self):
+        # Given
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "remove", "--force", str(self.worktree)], check=True)
+        self.git("checkout", "-q", "feature")
+        # When
+        found = watch.prepare_rebase(self.event(self.new_parent()))
+        # Then
+        self.assertEqual("no_worktree", found["status"])
+
+
 class ParentStatusesTest(unittest.TestCase):
     def test_mine_are_open_and_others_are_queried(self):
         # Given
         changes = [change(1, dependsOn=[{"number": 2}]), change(2, dependsOn=[{"number": 50}]), change(3)]
+        merged = {"number": 50, "status": "MERGED", "currentPatchSet": {"revision": "r50"}}
         # When
-        with mock.patch.object(watch, "gerrit_query", return_value=[{"number": 50, "status": "MERGED"}]) as query:
+        with mock.patch.object(watch, "gerrit_query", return_value=[merged]) as query:
             statuses = watch.parent_statuses(changes)
         # Then
-        self.assertEqual({1: (2, "NEW"), 2: (50, "MERGED")}, statuses)
-        query.assert_called_once_with("change:50")
+        self.assertEqual({1: (2, "NEW", patch_set()), 2: (50, "MERGED", {"revision": "r50"})}, statuses)
+        query.assert_called_once_with("change:50", "--current-patch-set")
+
+
+class OutdatedParentsTest(unittest.TestCase):
+    def test_open_parent_with_a_newer_patch_set(self):
+        # Given
+        child = change(1, current=patch_set(1, parents=("old",)))
+        on_top = change(2, current=patch_set(1, parents=("new",)))
+        parent_ps = {"number": 3, "revision": "new", "ref": "refs/changes/09/9/3"}
+        # When
+        outdated = watch.outdated_parents([child, on_top], {1: (9, "NEW", parent_ps), 2: (9, "NEW", parent_ps)})
+        # Then
+        self.assertEqual({1: {"parent": 9, "parent_patch_set": 3, "parent_ref": "refs/changes/09/9/3",
+                              "old_parent_sha": "old", "new_parent_sha": "new"}}, outdated)
+
+    def test_merged_parents_are_left_to_stale_parents(self):
+        # Given
+        child = change(1, current=patch_set(1, parents=("old",)))
+        # When
+        outdated = watch.outdated_parents([child], {1: (9, "MERGED", {"revision": "new"})})
+        # Then
+        self.assertEqual({}, outdated)
+
+    def test_parent_updated_once_per_parent_patch_set_and_before_conflicts(self):
+        # Given
+        outdated = {1: {"parent": 9, "parent_patch_set": 3, "parent_ref": "r", "old_parent_sha": "old",
+                        "new_parent_sha": "new"}}
+        result = {**poll_result([change()], conflicts={1: ["A.kt"]}), "outdated_parents": outdated}
+        # When
+        found = dict(watch.events(result))
+        # Then
+        self.assertEqual(["1:parent_updated:1:new"], [k for k, e in found.items() if e["kind"] != "message"])
+        self.assertEqual("1 · parent 9 has a new patch set", watch.notification(found["1:parent_updated:1:new"])[0])
 
 
 class CleanupCandidatesTest(GitRepoTest):
@@ -1163,6 +1297,100 @@ class NotificationsTest(unittest.TestCase):
         found = watch.notification(event)
         # Then
         self.assertEqual(("1 unreviewed for 3 working days", "s"), found)
+
+
+def zuul_verdict(ps, timestamp, result):
+    return message("zuul", f"Patch Set {ps}: Build{'+1' if result == 'SUCCESS' else '-1'}\n\n"
+                           f"- unit https://zuul/build/u{int(timestamp)} : {result}", timestamp)
+
+
+class FlakyMemoryTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(watch, "FLAKY", pathlib.Path(tmp.name) / "flaky.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_flakes_outlive_the_change_and_expire(self):
+        # Given
+        flaked = change(comments=[zuul_verdict(1, NOW - 20, "FAILURE"), zuul_verdict(1, NOW - 10, "SUCCESS")])
+        watch.record_flaky(poll_result([flaked]), NOW)
+        # When
+        watch.record_flaky(poll_result([]), NOW)
+        kept = watch.load_flaky()
+        watch.record_flaky(poll_result([]), NOW + watch.FLAKY_RETENTION_S)
+        # Then
+        self.assertEqual(["unit"], [r["job"] for r in kept.values()])
+        self.assertEqual({}, watch.load_flaky())
+
+    def test_a_failure_carries_the_local_flake_count_even_without_zuul_api(self):
+        # Given
+        watch.record_flaky(poll_result([change(comments=[zuul_verdict(1, NOW - 20, "FAILURE"),
+                                                         zuul_verdict(1, NOW - 10, "SUCCESS")])]), NOW)
+        event = {"kind": "message", "change": 2, "branch": "main", "author_username": "zuul",
+                 "message": zuul_verdict(3, NOW, "FAILURE")["message"]}
+        # When
+        with mock.patch.object(ci, "ZUUL_API", None):
+            watch.enrich([event])
+        # Then
+        self.assertEqual({"unit": {"week": 1, "month": 1, "last": NOW - 10}}, event["known_flaky"])
+
+    def test_the_status_row_lists_failed_jobs_their_flakes_and_my_rechecks(self):
+        # Given
+        watch.record_flaky(poll_result([change(2, comments=[zuul_verdict(1, NOW - 20, "FAILURE"),
+                                                            zuul_verdict(1, NOW - 10, "SUCCESS")])]), NOW)
+        red = change(current=patch_set(1, *[approval(label, -1, "zuul") for label in watch.CI_LABELS]),
+                     comments=[zuul_verdict(1, NOW - 5, "FAILURE"), message(watch.USER, "Patch Set 1:\n\nrecheck", NOW)])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        status = pathlib.Path(tmp.name) / "status.json"
+        # When
+        with mock.patch.object(watch, "STATUS", status), mock.patch.object(watch, "worktrees_by_change_id", return_value={}):
+            watch.write_status(poll_result([red]))
+        # Then
+        row = json.loads(status.read_text())["changes"][0]
+        self.assertEqual(([{"job": "unit", "result": "FAILURE"}], 1, 1),
+                         (row["ci_failed_jobs"], row["flaky"]["unit"]["month"], row["rechecks"]))
+
+
+class SnoozeFilterTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(watch.snooze, "SNOOZE", pathlib.Path(tmp.name) / "snooze.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_events_of_a_snoozed_change_are_held_back_until_the_next_patch_set(self):
+        # Given
+        comments = [message("reviewer", "Patch Set 1:\n\nwhy?", 10)]
+        watch.snooze.set_snooze(1, patch_set=1)
+        before = poll_result([change(comments=comments), change(2, comments=comments)])
+        after = poll_result([change(current=patch_set(2), comments=comments)])
+        # When
+        held = watch.awake(watch.events(before, NOW), watch.snoozed_changes(before, NOW))
+        back = watch.awake(watch.events(after, NOW), watch.snoozed_changes(after, NOW))
+        # Then
+        self.assertEqual(["2:10:reviewer"], list(held))
+        self.assertIn("1:10:reviewer", back)
+
+    def test_the_daemon_neither_notifies_nor_marks_a_snoozed_change_seen(self):
+        # Given
+        watch.snooze.set_snooze(1, until=NOW + 3600)
+        result = poll_result([change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10)])])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = pathlib.Path(tmp.name) / "daemon-seen.json"
+        # When
+        with mock.patch.object(watch, "DAEMON_STATE", state), mock.patch.object(watch, "write_daemon_poll"), \
+                mock.patch.object(watch, "write_status"), mock.patch.object(watch, "record_flaky"), \
+                mock.patch.object(watch, "is_quiet", return_value=False), \
+                mock.patch.object(watch, "swiftbar") as swiftbar:
+            watch.daemon_round(result, first_run=False)
+        # Then
+        self.assertEqual([], [c for c in swiftbar.call_args_list if c.args[0] == "notify"])
+        self.assertEqual({}, json.loads(state.read_text()))
 
 
 class WithIntKeysTest(unittest.TestCase):

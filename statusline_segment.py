@@ -3,6 +3,7 @@
 import json
 import time
 
+import snooze
 from config import STALE_AFTER_S, STATUS, t
 
 
@@ -14,7 +15,9 @@ def main():
     if not STATUS.exists():
         return
     snapshot = json.loads(STATUS.read_text())
-    active = [c for c in snapshot.get("changes", []) if not c["wip"]]
+    changes = snapshot.get("changes", [])
+    snoozed = snooze.active({c["number"]: c.get("patch_set") for c in changes})
+    active = [c for c in changes if not c["wip"] and c["number"] not in snoozed]
     last_attempt = snapshot.get("last_attempt", snapshot.get("updated", 0))
     segment = f"⎇ {len(active)}"
     if snapshot.get("last_error") or time.time() - last_attempt > STALE_AFTER_S:

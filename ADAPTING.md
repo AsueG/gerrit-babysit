@@ -52,6 +52,7 @@ Missing keys take the defaults of `config.py`.
 | `zuul_status_url` | `null` | `https://<zuul>/t/<tenant>/status` |
 | `periodic_build` | `null` | `{"pipeline", "job"}` of a periodic build of the target branch, used to spot a red base |
 | `screenshot_regression_marker` | `null` | Text on the line of a CI message that reports screenshot regressions |
+| `recheck_comment` | `"recheck"` | Comment the SwiftBar menu posts to rerun CI on a known flake (`recheck` or `recheck-<pipeline>`) |
 | `protected_branches` | `["main", "master"]` | Long-lived branches never offered for cleanup |
 | `review_dashboard_url` | `https://<host>/dashboard/self` | Link at the bottom of the SwiftBar menu |
 | `max_reviewers` | `10` | Above this many human reviewers, an addition is a group one, not a review request |

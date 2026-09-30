@@ -10,7 +10,6 @@ import pathlib
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import traceback
 import urllib.error
@@ -18,7 +17,9 @@ import urllib.parse
 import urllib.request
 
 import ci
-from config import CACHE, CI_STUCK_S, CONFIG, REPO, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, gerrit_user, t
+import snooze
+from config import (CACHE, CI_STUCK_S, CONFIG, REPO, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write,
+                    gerrit_user, t)
 
 HOST = CONFIG["gerrit_host"]
 PORT = str(CONFIG["ssh_port"])
@@ -127,14 +128,31 @@ def fetch_reviews():
 
 
 def parent_statuses(changes):
-    """{change number: (parent number, parent status)} — `dependsOn` lists merged parents too."""
+    """{change number: (parent number, parent status, parent's current patch set)} — `dependsOn` lists merged
+    parents too."""
     parent_of = {c["number"]: c["dependsOn"][0]["number"] for c in changes if c.get("dependsOn")}
-    status = {c["number"]: c["status"] for c in changes}
-    others = sorted(set(parent_of.values()) - status.keys())
+    parents = {c["number"]: c for c in changes}
+    others = sorted(set(parent_of.values()) - parents.keys())
     if others:
         query = " OR ".join(f"change:{n}" for n in others)
-        status |= {row["number"]: row["status"] for row in gerrit_query(query)}
-    return {number: (parent, status.get(parent)) for number, parent in parent_of.items()}
+        parents |= {row["number"]: row for row in gerrit_query(query, "--current-patch-set")}
+    return {number: (parent, parents.get(parent, {}).get("status"), parents.get(parent, {}).get("currentPatchSet", {}))
+            for number, parent in parent_of.items()}
+
+
+def outdated_parents(changes, statuses):
+    """{change number: {parent, parent_patch_set, parent_ref, old_parent_sha, new_parent_sha}} when the open parent
+    got a patch set the change is not based on yet."""
+    outdated = {}
+    for change in changes:
+        parent, status, parent_patch_set = statuses.get(change["number"], (None, None, {}))
+        base = change.get("currentPatchSet", {}).get("parents", [None])[0]
+        new = (parent_patch_set or {}).get("revision")
+        if status == "NEW" and base and new and base != new:
+            outdated[change["number"]] = {"parent": parent, "parent_patch_set": parent_patch_set.get("number"),
+                                          "parent_ref": parent_patch_set.get("ref"), "old_parent_sha": base,
+                                          "new_parent_sha": new}
+    return outdated
 
 
 def stale_parents(changes, statuses):
@@ -143,7 +161,7 @@ def stale_parents(changes, statuses):
     Must run after merge_conflicts(), which fetches the patch sets and branch tips it relies on."""
     stale = {}
     for change in changes:
-        parent, status = statuses.get(change["number"], (None, None))
+        parent, status, _ = statuses.get(change["number"], (None, None, None))
         base = change.get("currentPatchSet", {}).get("parents", [None])[0]
         if status != "MERGED" or not base:
             continue
@@ -166,8 +184,9 @@ def poll():
     return {
         "changes": changes,
         "conflicts": conflicts,
-        "parents": {n: parent for n, (parent, status) in statuses.items() if status == "NEW"},
+        "parents": {n: parent for n, (parent, status, _) in statuses.items() if status == "NEW"},
         "stale_parents": stale_parents(changes, statuses),
+        "outdated_parents": outdated_parents(changes, statuses),
         "threads": threads,
         "threads_error": threads_error,
         "reviews": fetch_reviews(),
@@ -179,7 +198,7 @@ def with_int_keys(result):
     """JSON turns the change-number keys into strings; defaults cover a daemon still running older code."""
     return {**result, "reviews": result.get("reviews", []), "attention": result.get("attention", []),
             **{key: {int(k): v for k, v in result.get(key, {}).items()}
-               for key in ("conflicts", "parents", "stale_parents", "threads")}}
+               for key in ("conflicts", "parents", "stale_parents", "outdated_parents", "threads")}}
 
 
 class DaemonError(Exception):
@@ -211,14 +230,6 @@ def write_daemon_poll(result=None, error=None):
     previous = json.loads(DAEMON_POLL.read_text()) if DAEMON_POLL.exists() else {}
     atomic_write(DAEMON_POLL, {"attempt": time.time(), "error": error,
                                "poll": result if error is None else previous.get("poll")})
-
-
-def atomic_write(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # A unique temp name: two writers (daemon and session) must not clobber each other's half-written file.
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as tmp:
-        tmp.write(json.dumps(payload, ensure_ascii=False))
-    pathlib.Path(tmp.name).replace(path)
 
 
 def git_run(*args, cwd=None, timeout=60):
@@ -432,15 +443,103 @@ def interdiff(event):
             git_run("update-ref", "-d", local)
 
 
+IN_PROGRESS = ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD")
+
+
+def busy(worktree):
+    """Tracked edits or an operation halfway through: someone is working there, a rebase would get in the way."""
+    if git("status", "--porcelain", "--untracked-files=no", cwd=worktree).strip():
+        return True
+    return any(pathlib.Path(worktree, git("rev-parse", "--git-path", name, cwd=worktree).strip()).exists()
+               for name in IN_PROGRESS)
+
+
+def rebase_target(event):
+    """The commit the change must sit on now, fetched if needed; None when it cannot be had."""
+    if event["kind"] == "parent_merged":
+        target = f"{FETCH_NAMESPACE}/{event['branch']}"
+        return git("rev-parse", "--verify", "--quiet", target).strip() or None
+    sha = event["new_parent_sha"]
+    if git_run("cat-file", "-e", f"{sha}^{{commit}}").returncode and event.get("parent_ref"):
+        git_run("fetch", "--quiet", "--no-write-fetch-head", "origin",
+                f"+{event['parent_ref']}:{FETCH_NAMESPACE}/changes/{event['parent']}", timeout=180)
+    return sha if git_run("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0 else None
+
+
+def prepare_rebase(event):
+    """Local only, never pushed: moves the change (and what is stacked on it) onto its new base in its worktree.
+
+    A conflict is aborted, leaving the worktree as it was, and reported with its files and the command to rerun."""
+    main_checkout = git("worktree", "list", "--porcelain").partition("\n")[0].removeprefix("worktree ")
+    worktree = worktrees_by_change_id().get(event["change_id"])
+    if not worktree or worktree == main_checkout:
+        return {"status": "no_worktree"}
+    if busy(worktree):
+        return {"status": "busy", "worktree": worktree}
+    onto = rebase_target(event)
+    if not onto:
+        return {"status": "error", "worktree": worktree, "detail": "new base not fetched"}
+    old = event["old_parent_sha"]
+    head = git("rev-parse", "HEAD", cwd=worktree).strip()
+    if git_run("merge-base", "--is-ancestor", onto, head, cwd=worktree).returncode == 0:
+        return {"status": "up_to_date", "worktree": worktree}
+    if git_run("merge-base", "--is-ancestor", old, head, cwd=worktree).returncode != 0:
+        # HEAD was rebased or reset by hand since the push: guessing what to replay could lose work.
+        return {"status": "diverged", "worktree": worktree, "head": head}
+    command = ["rebase", "--onto", onto, old]
+    try:
+        result = git_run(*command, cwd=worktree, timeout=300)
+    except subprocess.TimeoutExpired:
+        git_run("rebase", "--abort", cwd=worktree)
+        raise
+    report = {"worktree": worktree, "onto": onto, "previous_head": head,
+              "command": " ".join(["git", *command])}
+    if result.returncode:
+        files = git("diff", "--name-only", "--diff-filter=U", cwd=worktree).split()
+        git_run("rebase", "--abort", cwd=worktree)
+        return {**report, "status": "conflict", "files": files}
+    return {**report, "status": "rebased", "head": git("rev-parse", "HEAD", cwd=worktree).strip(),
+            "commits": int(git("rev-list", "--count", f"{onto}..HEAD", cwd=worktree).strip() or 0)}
+
+
+FLAKY = CACHE / "flaky.json"
+FLAKY_RETENTION_S = 90 * 86400
+
+
+def load_flaky():
+    return json.loads(FLAKY.read_text()) if FLAKY.exists() else {}
+
+
+def record_flaky(result, now=None):
+    """Keeps the flakes seen in the polled changes: their messages leave the query once the change merges."""
+    now = now or time.time()
+    runs = dict(run for c in result["changes"] + result.get("reviews", []) for run in ci.flaky_runs(c))
+    stored = load_flaky()
+    kept = {k: r for k, r in {**stored, **runs}.items() if now - r["passed_at"] < FLAKY_RETENTION_S}
+    if kept.keys() != stored.keys():
+        atomic_write(FLAKY, dict(sorted(kept.items())))
+
+
 def enrich(reported):
     """Network-bound extras, only for events about to be reported, so the idle loop stays free."""
     histories = {}
+    flakes = load_flaky()
     for event in reported:
         verdict = event.get("ci_verdict") or (event.get("message") if event.get("author_username") == CI_USER else None)
+        if verdict:
+            flaky = ci.flaky_counts(flakes, [j["job"] for j in ci.failed_jobs(verdict)])
+            if flaky:
+                event["known_flaky"] = flaky
         if verdict and ci.ZUUL_API:
-            event["ci_diagnosis"] = ci.diagnose_ci({"change": event["change"], "message": verdict}, histories)
+            event["ci_diagnosis"] = ci.diagnose_ci({"change": event["change"], "message": verdict}, histories,
+                                                   event.get("known_flaky"))
             if ci.PERIODIC_BUILD:
                 event["base_build"] = ci.base_build(event["branch"])
+        if event["kind"] in ("parent_merged", "parent_updated"):
+            try:
+                event["rebase"] = prepare_rebase(event)
+            except (subprocess.SubprocessError, OSError) as error:
+                event["rebase"] = {"status": "error", "detail": error_detail(error)}
         if event["kind"] == "review_new_patch_set" and event.get("since_ref") and event.get("current_ref"):
             event["interdiff"] = interdiff(event)
         if event["kind"] == "ci_stuck" and ci.ZUUL_API:
@@ -489,11 +588,16 @@ def write_status(result=None, error=None):
         return
     worktrees = worktrees_by_change_id()
     threads_error = result.get("threads_error")
+    flakes = load_flaky()
     rows = []
     for change in result["changes"]:
         patch_set = change.get("currentPatchSet", {})
         votes = votes_of(patch_set)
         code_review = votes.get("Code-Review", [])
+        state = ci_state(change, patch_set, votes)
+        verdict = latest_ci_verdict(change, patch_set) if state == "failed" else None
+        failed_jobs = [{"job": j["job"], "result": j["result"]} for j in ci.failed_jobs(verdict["message"])] if verdict else []
+        outdated = result.get("outdated_parents", {}).get(change["number"])
         rows.append({
             "number": change["number"],
             "patch_set": patch_set.get("number"),
@@ -501,12 +605,17 @@ def write_status(result=None, error=None):
             "url": change["url"],
             "wip": change.get("wip", False),
             "code_review": min(code_review) if code_review and min(code_review) < 0 else max(code_review, default=0),
-            "ci": ci_state(change, patch_set, votes),
+            "ci": state,
             "ci_failed": failed_ci_labels(votes),
+            "ci_failed_jobs": failed_jobs,
+            "flaky": ci.flaky_counts(flakes, [j["job"] for j in failed_jobs], now),
+            # Every recheck on the patch set, also after the verdict: one may already be running.
+            "rechecks": my_rechecks(change, patch_set, float("inf")),
             "ci_stuck": is_ci_stuck(change, patch_set, now),
             "threads": None if threads_error else len(result.get("threads", {}).get(change["number"], [])),
             "conflict": change["number"] in result["conflicts"],
             "open_parent": result["parents"].get(change["number"]),
+            "outdated_parent": outdated["parent"] if outdated else None,
             "ready": (is_ready_to_submit(patch_set) and not threads_error
                       and not result.get("threads", {}).get(change["number"])),
             "worktree": worktrees.get(change["id"]),
@@ -595,6 +704,7 @@ def events(result, now=None):
     day = work_day(now)
     conflicts = result["conflicts"]
     stale = result.get("stale_parents", {})
+    outdated = result.get("outdated_parents", {})
     threads = result.get("threads", {})
     threads_error = result.get("threads_error")
     attention = set(result.get("attention", []))
@@ -622,6 +732,10 @@ def events(result, now=None):
             # Takes over merge_conflict: the fix is a rebase --onto that drops the old parent, conflicts or not.
             yield f'{number}:parent_merged:{patch_set.get("number")}', {
                 **base, "kind": "parent_merged", **stale[number], "files": conflicts.get(number, [])}
+        elif number in outdated:
+            # Rebasing onto the parent's new patch set comes first: a conflict with the branch may go with it.
+            yield f'{number}:parent_updated:{patch_set.get("number")}:{outdated[number]["new_parent_sha"]}', {
+                **base, "kind": "parent_updated", **outdated[number]}
         elif number in conflicts:
             yield f'{number}:conflict:{patch_set.get("number")}', {
                 **base, "kind": "merge_conflict", "files": conflicts[number]}
@@ -715,6 +829,17 @@ def pending_events(result, now=None):
             yield event
 
 
+def snoozed_changes(result, now):
+    patch_sets = {c["number"]: c.get("currentPatchSet", {}).get("number")
+                  for c in result["changes"] + result.get("reviews", [])}
+    return snooze.active(patch_sets, now)
+
+
+def awake(pairs, snoozed):
+    """Events of snoozed changes are left out, hence left unseen: they come back once the snooze ends."""
+    return {key: event for key, event in pairs if event.get("change") not in snoozed}
+
+
 def remember(seen, keys, result, current, now):
     """Marks `keys` seen. Keys of changes gone from both queries (merged, abandoned) are kept for a while, so a
     change restored soon after does not replay its history, then dropped so the seen files stop growing."""
@@ -778,6 +903,8 @@ def notification(event):
         return t("ci_stuck", n=n), t("ci_stuck_body", hours=hours, subject=event["subject"])
     if kind == "parent_merged":
         return t("rebase", n=n), t("rebase_body", parent=event["parent"], subject=event["subject"])
+    if kind == "parent_updated":
+        return t("parent_updated", n=n, parent=event["parent"]), event["subject"]
     if kind == "waiting_for_review":
         return t("unreviewed", n=n, days=event["working_days"]), event["subject"]
     if kind == "message":
@@ -843,7 +970,7 @@ def daemon_round(result, first_run):
     swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
 
     now = time.time()
-    current = dict(events(result, now))
+    current = awake(events(result, now), snoozed_changes(result, now))
     seen = load_seen(DAEMON_STATE)
     quiet = is_quiet(now)
     if not first_run and not quiet:
@@ -852,6 +979,7 @@ def daemon_round(result, first_run):
     # Held back at night and on weekends: still unseen, they notify at the start of the next working day.
     marked = () if quiet and not first_run else current.keys()
     save_seen(remember(seen, marked, result, current, now), DAEMON_STATE)
+    record_flaky(result, now)
 
 
 def main():
@@ -875,9 +1003,11 @@ def main():
             if result is None:
                 result = poll()
                 write_status(result)
+                record_flaky(result)
             cleanup = dict(cleanup_candidates(frozenset(c["id"] for c in result["changes"])))
             now = time.time()
-            current = dict(events(result, now)) | cleanup
+            snoozed = snoozed_changes(result, now)
+            current = awake(events(result, now), snoozed) | cleanup
             failures = 0
         except (subprocess.SubprocessError, OSError, ValueError, DaemonError) as error:
             if not isinstance(error, DaemonError):
@@ -893,10 +1023,11 @@ def main():
         seen = load_seen()
         if args.pending:
             # Same poll for the report and the seen set: nothing can slip in between.
-            report = enrich(list(pending_events(result, now)) + list(cleanup.values()))
+            report = enrich([e for e in pending_events(result, now) if e.get("change") not in snoozed]
+                            + list(cleanup.values()))
             save_seen(remember(seen, current.keys(), result, current, now))
-            print(json.dumps({"status": "pending", "events": report, "threads_error": result.get("threads_error")},
-                             ensure_ascii=False, indent=1))
+            print(json.dumps({"status": "pending", "events": report, "threads_error": result.get("threads_error"),
+                              "snoozed": snoozed}, ensure_ascii=False, indent=1))
             return 0
 
         fresh = {key: current[key] for key in current.keys() - seen.keys()}
