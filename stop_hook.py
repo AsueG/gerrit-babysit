@@ -9,8 +9,8 @@ import sys
 SESSION = pathlib.Path.home() / ".cache" / "gerrit-babysit" / "session.json"
 WATCH_PY = pathlib.Path(__file__).resolve().parent / "watch.py"
 REASON = (f"The gerrit-babysit watcher is no longer running in this session. Relaunch `python3 {WATCH_PY}` "
-          "with run_in_background before ending the turn. If watching should stop (stop requested, "
-          "status: error), delete ~/.cache/gerrit-babysit/session.json instead.")
+          "with run_in_background before ending the turn. If watching should stop (stop requested), "
+          "delete ~/.cache/gerrit-babysit/session.json instead.")
 
 
 def processes():

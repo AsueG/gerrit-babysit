@@ -43,6 +43,7 @@ MAX_THREADS = 20
 REST = f"https://{HOST}/a"
 # Longer than the daemon's interval, so the session sees at least one newer poll before reporting.
 SETTLE_S = 90
+MAX_BACKOFF_S = 600
 SEEN_RETENTION_S = 30 * 86400
 WORK_HOURS = tuple(CONFIG["work_hours"])
 UNREVIEWED_WORKING_DAYS = 2
@@ -350,11 +351,12 @@ def is_ready_to_submit(patch_set):
     # submitRecords can report OK on a change voted -1 (seen on Gerrit 3.x), so read the votes instead.
     votes = votes_of(patch_set)
     code_review = votes.get("Code-Review", [])
-    return (
-        2 in code_review
-        and min(code_review) >= 0
-        and all(1 in votes.get(label, []) and min(votes[label]) >= 0 for label in CI_LABELS)
-    )
+    return 2 in code_review and min(code_review) >= 0 and ci_passed(votes)
+
+
+def ci_passed(votes):
+    # Some CIs vote +2 (e.g. a gate pipeline), not only +1.
+    return all(max(votes.get(label, [0])) >= 1 and min(votes[label]) >= 0 for label in CI_LABELS)
 
 
 def votes_of(patch_set):
@@ -451,7 +453,7 @@ def enrich(reported):
 def ci_state(change, patch_set, votes):
     if failed_ci_labels(votes):
         return "stale_base" if is_merge_failed(change, patch_set) else "failed"
-    if all(1 in votes.get(label, []) for label in CI_LABELS):
+    if ci_passed(votes):
         return "passed"
     return "running"
 
@@ -801,18 +803,26 @@ def daemon(interval):
     """Status snapshot + notifications with no Claude session; clicking a notification opens one."""
     first_run = not DAEMON_STATE.exists()
     last_error = None
+
+    def failed(error, expected):
+        """Logged once per distinct error: a VPN left off overnight would otherwise add a line a minute."""
+        nonlocal last_error
+        detail = error_detail(error) if expected else f"{type(error).__name__}: {error}"
+        if detail != last_error:
+            log = f"poll failed: {detail}" if expected else traceback.format_exc()
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {log}", file=sys.stderr, flush=True)
+            last_error = detail
+        write_status(error=detail)
+        swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
+        return detail
+
     while True:
         try:
             result = poll()
-        except (subprocess.SubprocessError, OSError, ValueError) as error:
-            detail = error_detail(error)
-            # Logged once per distinct error: a VPN left off overnight would otherwise add a line a minute.
-            if detail != last_error:
-                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} poll failed: {detail}", file=sys.stderr, flush=True)
-                last_error = detail
-            write_status(error=detail)
-            write_daemon_poll(error=detail)
-            swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
+        # A bug on one odd change must not turn into a silent launchd crash loop.
+        except Exception as error:  # noqa: BLE001
+            expected = isinstance(error, (subprocess.SubprocessError, OSError, ValueError))
+            write_daemon_poll(error=failed(error, expected))
             time.sleep(interval)
             continue
         try:
@@ -822,19 +832,14 @@ def daemon(interval):
                 print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} recovered", file=sys.stderr, flush=True)
                 last_error = None
         except Exception as error:  # noqa: BLE001
-            # A bug on one odd change must not turn into a silent launchd crash loop.
-            detail = f"{type(error).__name__}: {error}"
-            if detail != last_error:
-                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {traceback.format_exc()}", file=sys.stderr, flush=True)
-                last_error = detail
-            write_status(error=detail)
-            swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
+            failed(error, expected=False)
         time.sleep(interval)
 
 
 def daemon_round(result, first_run):
-    write_status(result)
+    # Published first: a bug further down must not starve the session of a poll that is fine.
     write_daemon_poll(result)
+    write_status(result)
     swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
 
     now = time.time()
@@ -877,11 +882,12 @@ def main():
         except (subprocess.SubprocessError, OSError, ValueError, DaemonError) as error:
             if not isinstance(error, DaemonError):
                 write_status(error=error_detail(error))
-            failures += 1
-            if failures >= 10:
+            if args.pending:
                 print(json.dumps({"status": "error", "detail": error_detail(error)}))
                 return 1
-            time.sleep(args.interval * failures)
+            # Never gives up: a VPN off over lunch or overnight must not end the babysitting.
+            failures += 1
+            time.sleep(min(args.interval * failures, MAX_BACKOFF_S))
             continue
 
         seen = load_seen()

@@ -45,8 +45,8 @@ Stop (`/gerrit-babysit stop` or "stop watching"): `TaskStop` on the watcher task
 
 If the `Stop` hook (`stop_hook.py`) is installed, it refuses to end a turn of this session while no session
 `watch.py` (neither `--daemon` nor `--pending`) runs under its `claude` process. Other sessions are left
-alone, and it blocks only once per turn so a failing relaunch cannot loop. To stop on purpose (stop,
-`status: error`), delete `session.json` **before** ending the turn.
+alone, and it blocks only once per turn so a failing relaunch cannot loop. To stop on purpose, delete
+`session.json` **before** ending the turn.
 
 The snapshot `~/.cache/gerrit-babysit/status.json` (per change: votes, `ci` =
 `running`/`passed`/`failed`/`stale_base` (Merge Failed), `ci_failed`, conflict, `open_parent`, worktree,
@@ -72,7 +72,9 @@ before this verdict), `merge_conflict` (+ `files`), `parent_merged` (+ `parent`,
 `files`), `ci_stuck` (+ `idle_since`, `zuul_queue`), `waiting_for_review` (+ `working_days`,
 `reviewers`), `ready_to_submit` ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
 `review_requested` / `review_new_patch_set` / `review_reply` ("Other people's reviews" section).
-`status: error` = Gerrit SSH keeps failing → tell the user and stop.
+The watcher never gives up on Gerrit being unreachable (VPN off…): it retries with a backoff capped at
+10 min, and the status line shows `?` meanwhile. Only `--pending` returns `status: error` (with `detail`)
+on the first failure → tell the user, and start the watcher anyway.
 
 `threads_error` (at the root of the output and in `status.json`) = the REST call for comment threads
 failed (HTTP password expired or missing) while SSH works. Polling goes on: `threads_awaiting_me` is then

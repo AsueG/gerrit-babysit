@@ -225,6 +225,14 @@ class ReadyToSubmitTest(unittest.TestCase):
         # Then
         self.assertFalse(ready)
 
+    def test_a_ci_plus_two_counts_as_green(self):
+        # Given
+        ps = patch_set(1, approval("Code-Review", 2), *[approval(label, 2, "zuul") for label in watch.CI_LABELS])
+        # When
+        ready = watch.is_ready_to_submit(ps)
+        # Then
+        self.assertTrue(ready)
+
     def test_missing_ci_label_blocks(self):
         # Given
         ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI[:2])
@@ -263,6 +271,14 @@ class CiStateTest(unittest.TestCase):
         states = [watch.ci_state(change(current=ps), ps, watch.votes_of(ps)) for ps in (green, pending)]
         # Then
         self.assertEqual(["passed", "running"], states)
+
+    def test_a_ci_plus_two_is_passed_not_running(self):
+        # Given
+        ps = patch_set(1, *[approval(label, 2, "zuul") for label in watch.CI_LABELS])
+        # When
+        state = watch.ci_state(change(current=ps), ps, watch.votes_of(ps))
+        # Then
+        self.assertEqual("passed", state)
 
 
 class EventsTest(unittest.TestCase):
@@ -696,6 +712,42 @@ class SettleTest(unittest.TestCase):
         self.assertFalse(state.exists())
 
 
+class SessionRetryTest(unittest.TestCase):
+    def run_main(self, argv, polls):
+        out = []
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with mock.patch.object(watch, "STATE", pathlib.Path(tmp.name) / "seen.json"), \
+                mock.patch.object(watch, "write_session_lock"), \
+                mock.patch.object(watch, "write_status"), \
+                mock.patch.object(watch, "daemon_poll", side_effect=polls), \
+                mock.patch.object(watch, "cleanup_candidates", return_value=[]), \
+                mock.patch.object(watch, "enrich", side_effect=lambda events: events), \
+                mock.patch.object(watch.time, "sleep") as sleep, \
+                mock.patch("sys.argv", ["watch.py", *argv]), \
+                mock.patch("builtins.print", side_effect=out.append):
+            code = watch.main()
+        return code, [json.loads(line) for line in out], [c.args[0] for c in sleep.call_args_list]
+
+    def test_the_watcher_outlasts_a_long_outage_with_a_capped_backoff(self):
+        # Given
+        down = watch.DaemonError("Could not resolve hostname")
+        back = poll_result([change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10)])])
+        # When
+        code, out, sleeps = self.run_main([], [down] * 15 + [back, back])
+        # Then
+        self.assertEqual((0, "events"), (code, out[0]["status"]))
+        self.assertEqual(watch.MAX_BACKOFF_S, max(sleeps[:15]))
+
+    def test_the_pending_sweep_reports_the_first_failure(self):
+        # Given
+        down = OSError("Could not resolve hostname")
+        # When
+        code, out, _ = self.run_main(["--pending"], [down])
+        # Then
+        self.assertEqual((1, "error"), (code, out[0]["status"]))
+
+
 class SwiftbarTest(unittest.TestCase):
     def test_a_hung_swiftbar_does_not_kill_the_daemon(self):
         # Given
@@ -1060,6 +1112,26 @@ class DaemonTest(unittest.TestCase):
         # Then
         self.assertEqual(1, log.count("poll failed"))
         self.assertIn("recovered", log)
+
+    def test_a_bug_inside_the_poll_does_not_crash_the_daemon(self):
+        # Given
+        status = mock.Mock()
+        # When
+        log = self.run_daemon(2, poll=mock.Mock(side_effect=KeyError("status")), write_status=status)
+        # Then
+        self.assertEqual(1, log.count("Traceback"))
+        self.assertEqual([mock.call(error="KeyError: 'status'")] * 2, status.call_args_list)
+
+    def test_the_poll_is_published_even_if_the_status_write_fails(self):
+        # Given
+        published = mock.Mock()
+        # When
+        with mock.patch.object(watch, "write_daemon_poll", published), \
+                mock.patch.object(watch, "write_status", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            watch.daemon_round({"changes": []}, first_run=True)
+        # Then
+        published.assert_called_once_with({"changes": []})
 
 
 class NotificationsTest(unittest.TestCase):

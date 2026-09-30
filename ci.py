@@ -166,7 +166,8 @@ def diagnose_ci(event, histories=None):
             # One call covers both: 200 builds of a job span well over the ±3 h flaky window.
             if job["job"] not in histories:
                 histories[job["job"]] = json.loads(
-                    http_get(f"{ZUUL_API}/builds?job_name={job['job']}&limit={JOB_HISTORY_LIMIT}"))
+                    http_get(f"{ZUUL_API}/builds?"
+                             + urllib.parse.urlencode({"job_name": job["job"], "limit": JOB_HISTORY_LIMIT})))
             history = histories[job["job"]]
             around = iso_to_epoch(build["end_time"]) if build.get("end_time") else time.time()
             entry["others_failing"] = others_failing(history, job["job"], event["change"], around)

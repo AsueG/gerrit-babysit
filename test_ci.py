@@ -131,6 +131,19 @@ class CiDiagnosisTest(unittest.TestCase):
         self.assertEqual(([2], 1), (diagnosis[0]["others_failing"], diagnosis[0]["job_history"]["builds"]))
         self.assertEqual(1, sum("/builds?" in c.args[0] for c in http.call_args_list))
 
+    def test_the_job_name_is_url_encoded(self):
+        # Given
+        event = {"change": 1, "message": "Patch Set 1: Verified-1\n\n- app&x https://z/build/abc : FAILURE"}
+        build = {"log_url": "https://logs/x/", "artifacts": []}
+        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}",
+                   "/builds?": "[]"}
+        get = lambda url: next(body for marker, body in answers.items() if marker in url)
+        # When
+        with mock.patch.object(ci, "http_get", side_effect=get) as http:
+            ci.diagnose_ci(event)
+        # Then
+        self.assertIn("/builds?job_name=app%26x&limit=", http.call_args_list[-1].args[0])
+
     def test_others_failing_excludes_self_old_and_successes(self):
         # Given
         around = ci.iso_to_epoch("2026-09-29T12:00:00")
