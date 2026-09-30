@@ -81,6 +81,57 @@ def gradle_failure(log):
     return "\n".join(block).strip()[:3000]
 
 
+TAIL_LINES = 40
+
+
+def log_tail(log):
+    """Without a Gradle block: the lines leading up to the first failed zuul task (its bare `ERROR` line), else to the
+    first PLAY RECAP, else the end of the log. The post-run playbooks that follow are the same for every failure."""
+    lines = log.splitlines()
+    end = next((i for i, line in enumerate(lines) if "PLAY RECAP" in line
+                or (LOG_PREFIX.match(line) and LOG_PREFIX.sub("", line).strip() == "ERROR")), len(lines))
+    kept = [stripped for line in lines[:end] if (stripped := LOG_PREFIX.sub("", line).rstrip()).strip()]
+    return "\n".join(kept[-TAIL_LINES:])[-3000:]
+
+
+# Build ids, hashes, durations, ports and line numbers differ between two runs of the same breakage.
+FINGERPRINT_NOISE = [(re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"), "<id>"),
+                     (re.compile(r"\b[0-9a-f]{7,64}\b"), "<hex>"),
+                     (re.compile(r"\d+"), "#")]
+# Below this Jaccard index two fingerprints share too little for the older fix to be worth a look.
+SIMILAR_MIN = 0.5
+SIMILAR_MAX = 3
+
+
+def fingerprint(snippet):
+    """Sorted, normalized, distinct lines of a failure snippet."""
+    lines = set()
+    for line in snippet.lower().splitlines():
+        line = LOG_PREFIX.sub("", line)
+        for pattern, placeholder in FINGERPRINT_NOISE:
+            line = pattern.sub(placeholder, line)
+        line = " ".join(line.split())
+        if len(line) > 3:
+            lines.add(line)
+    return sorted(lines)
+
+
+def similar_failures(known, snippet):
+    """Failures already diagnosed by hand whose fingerprint looks like this snippet's, closest first. A lead, not a
+    verdict: a brand-new failure can share boilerplate lines with an old one."""
+    mine = set(fingerprint(snippet))
+    if not mine:
+        return []
+    matches = []
+    for record in known.values():
+        theirs = set(record.get("fingerprint", ()))
+        score = len(mine & theirs) / len(mine | theirs) if theirs else 0
+        if score >= SIMILAR_MIN:
+            matches.append({"similarity": round(score, 2),
+                            **{k: record.get(k) for k in ("change", "patch_set", "job", "cause", "fix", "recorded_at")}})
+    return sorted(matches, key=lambda m: -m["similarity"])[:SIMILAR_MAX]
+
+
 def lint_errors(sarif):
     errors = []
     for run in sarif.get("runs", []):
@@ -182,21 +233,23 @@ def http_get(url):
     return body.decode(errors="replace")
 
 
-def diagnose_ci(event, histories=None, flaky=None):
+def diagnose_ci(event, histories=None, flaky=None, known=None):
     """Network-bound: only for fresh zuul failures, so the idle loop stays free. The failed jobs are diagnosed side by
     side, each one being a handful of downloads.
 
     `histories` is shared across the events of one wake-up, see job_builds(). `flaky` ({job: counts}) is the local
-    flake memory, see flaky_counts()."""
+    flake memory, see flaky_counts(). `known` is the memory of failures diagnosed by hand, see similar_failures()."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        return [future.result() for future in submit_diagnosis(pool, event, {} if histories is None else histories, flaky)]
+        return [future.result() for future in
+                submit_diagnosis(pool, event, {} if histories is None else histories, flaky, known)]
 
 
-def submit_diagnosis(pool, event, histories, flaky=None):
+def submit_diagnosis(pool, event, histories, flaky=None, known=None):
     """One future per failed job, in the verdict's order: several events can share one pool.
 
     No deadlock on a shared pool: a job only waits in job_builds() for a download already running."""
-    return [pool.submit(diagnose_job, job, event, histories, flaky or {}) for job in failed_jobs(event["message"])]
+    return [pool.submit(diagnose_job, job, event, histories, flaky or {}, known or {})
+            for job in failed_jobs(event["message"])]
 
 
 _histories_lock = threading.Lock()
@@ -220,13 +273,16 @@ def job_builds(job, histories):
     return histories[job].result()
 
 
-def diagnose_job(job, event, histories, flaky):
+def diagnose_job(job, event, histories, flaky, known):
     entry = {"job": job["job"], "result": job["result"], "url": job["url"]}
     try:
         build = json.loads(http_get(f"{ZUUL_API}/build/{job['uuid']}"))
         log_url = build["log_url"].rstrip("/")
         entry["log_url"] = log_url
-        entry["failure"] = gradle_failure(http_get(f"{log_url}/job-output.txt"))
+        log = http_get(f"{log_url}/job-output.txt")
+        entry["failure"] = gradle_failure(log)
+        if not entry["failure"]:
+            entry["log_tail"] = log_tail(log)
         sarif = next((a["url"] for a in build.get("artifacts", []) if a["name"].endswith("lint.sarif")), None)
         errors = lint_errors(json.loads(http_get(sarif))) if sarif else []
         if errors:
@@ -242,6 +298,10 @@ def diagnose_job(job, event, histories, flaky):
         entry["diagnosis_error"] = str(error)
     entry["category"] = categorize(job["job"], event["message"], job["result"], entry.get("failure", ""),
                                    entry.get("lint_errors") or entry.get("file_comments") or ())
+    if entry["category"] == "unknown" and known:
+        resembles = similar_failures(known, entry.get("failure") or entry.get("log_tail", ""))
+        if resembles:
+            entry["resembles"] = resembles
     if job["job"] in flaky:
         entry["flaky_here"] = flaky[job["job"]]
         # A known cause (compile, lint…) wins: only an unexplained failure is put down to flakiness.

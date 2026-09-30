@@ -115,7 +115,7 @@ otherwise the next events are lost.
 | `parent_updated` | The open parent got a new patch set and my change still sits on the old one. Same handling as `parent_merged` via `rebase`; emitted once per new parent revision |
 | `ci_stuck` | CI "running" but nothing from zuul (no verdict, no "Starting") for 2 h on the current patch set, once per patch set. Read `zuul_queue`: a list of `{pipeline, enqueued_at, remaining_s, jobs_waiting, jobs_running}` = the change is queued, report only, **no** recheck. `[]` = zuul lost the change → offer (`AskUserQuestion`) a `recheck`, public so only after "yes". `{"error": …}` = open `zuul_status_url` by hand |
 | `waiting_for_review` | Non-WIP patch set, CI red neither, not ready to submit, reminded every working day. Read from Gerrit's attention set of my change (REST): `waiting_on` = `[{name, username, working_days}]`, the reviewers holding it for ≥ 2 working days, even after a first round of comments — they are the ones to nudge. Never emitted while I am in the attention set myself (the ball is mine). `waiting_on: []` = nobody holds it and nobody reviewed the patch set for `working_days` ≥ 2: `dismissed` = `[{name, username, reason}]` lists who left the attention set since the upload without a word (saw it and passed) → suggest other reviewers rather than nudging them. When the REST call fails, both are `null` and only the old count remains (no comment nor vote from a reviewer for ≥ 2 working days). If `reviewers` is empty or they are away: suggest reviewers. Offer (`AskUserQuestion`) **Add reviewers** / **Nudge** / **Nothing**. Nudge per reviewer, not per change: when `nudges` gives a reviewer several changes, draft **one** message listing them all (to send wherever the user wants, e.g. chat) instead of a comment on each. The first two are public, so only after "yes" |
-| Failed zuul job | Start from `ci_diagnosis` (one item per failed job: `category`, `failure` = Gradle's "What went wrong" block, `lint_errors`, `file_comments`, `others_failing`, `job_history`, `log_url`). Per-category detail below. On `diagnosis_error`: read `<log_url>/job-output.txt` by hand (`curl -L --compressed`) |
+| Failed zuul job | Start from `ci_diagnosis` (one item per failed job: `category`, `failure` = Gradle's "What went wrong" block, `log_tail` = the log's last lines before the failed zuul task when there is no such block, `lint_errors`, `file_comments`, `others_failing`, `job_history`, `log_url`, `resembles`). Per-category detail below. On `diagnosis_error`: read `<log_url>/job-output.txt` by hand (`curl -L --compressed`) |
 | Clear, local inline comment | Fix it |
 | Question, design disagreement, ambiguous request, out of the change's scope | **Do not touch the code** — draft a reply |
 | Bare -1/-2 vote without a comment | Report, nothing to do |
@@ -162,7 +162,14 @@ hint.
 | `compile` / `unit_tests` | Reproduce the Gradle task named in `failure` locally, fix. If the failing file is not in the change, the target branch probably moved → rebase |
 | `infra` (POST_FAILURE, TIMED_OUT…) or `failure` unrelated to the change + non-empty `others_failing` | Flaky or red base, no code change. Offer (`AskUserQuestion`) to post `recheck` (or the team's variant from `LOCAL.md`) — public, so only after "yes" |
 | `flaky` | An `infra`/`unknown` failure of a job that flaked ≥ 2 times this month (`flaky_here`). Say so ("flaky 4× this week") and offer the `recheck` — public, so only after "yes". The SwiftBar menu offers the same one-click recheck (with a confirmation dialog) |
-| `unknown` | Open `log_url` and diagnose by hand |
+| `unknown` | Open `log_url` and diagnose by hand. `resembles` (if any) = failures already diagnosed by hand whose normalized `failure`/`log_tail` looks like this one (`similarity` ≥ 0.5, closest first: `change`, `patch_set`, `job`, `cause`, `fix`). A **lead, never a verdict**: say "looks like #N, fixed by X", then check in the log that the cause really applies before reusing the fix |
+
+**Remember a failure diagnosed by hand** (`unknown`, or `rechecks` ≥ 1), once its cause is established:
+`python3 <skill>/known_failures.py record <change> <patch_set> <job> --log-url <log_url> --cause "…" --fix "…"`
+(one line each). It stores the fingerprint of the same excerpt the diagnosis reads, in
+`~/.cache/gerrit-babysit/known_failures.json` (180 days); the next look-alike failure carries `resembles`.
+No argument lists the records, `forget <change> <patch_set> <job>` drops a wrong one. Local only, nothing
+is published, so no approval is needed.
 
 ### 2. Move into the change's worktree
 

@@ -7,7 +7,8 @@ only for something actionable:
 
 - a reviewer comment or a Code-Review -1;
 - a CI failure, already sorted by cause: compile, unit tests, lint, screenshots, dependency guard, infra
-  or flaky (it remembers which jobs flaked on your changes lately);
+  or flaky (it remembers which jobs flaked on your changes lately). An unexplained failure that looks like
+  one already diagnosed by hand points at that change and its fix, as a lead to check;
 - a merge conflict, a "Merge Failed", a parent merged under another SHA or given a new patch set (the
   rebase of the child is already prepared in its worktree), or CI stuck for hours;
 - a change that is ready to submit, or has waited too long for a review;

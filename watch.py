@@ -14,6 +14,7 @@ import urllib.parse
 import ci
 import events
 import gerrit
+import known_failures
 import procs
 import repo
 import snooze
@@ -187,10 +188,11 @@ def diagnose_failures(failures):
     """Side by side in one bounded pool: a morning flush of red changes downloads its logs at once without flooding
     zuul, and each branch's periodic build is asked once."""
     histories = {}
+    known = known_failures.load()
     branches = sorted({event["branch"] for event, _ in failures}) if ci.PERIODIC_BUILD else []
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         diagnoses = [ci.submit_diagnosis(pool, {"change": event["change"], "message": verdict}, histories,
-                                         event.get("known_flaky")) for event, verdict in failures]
+                                         event.get("known_flaky"), known) for event, verdict in failures]
         base_builds = {branch: pool.submit(ci.base_build, branch) for branch in branches}
         for (event, _), futures in zip(failures, diagnoses):
             event["ci_diagnosis"] = [future.result() for future in futures]

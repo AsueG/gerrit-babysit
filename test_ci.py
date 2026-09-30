@@ -44,6 +44,84 @@ class CiDiagnosisTest(unittest.TestCase):
         # Then
         self.assertEqual("", failure)
 
+    def test_log_tail_stops_before_the_failed_task_and_the_post_run(self):
+        # Given
+        log = "\n".join([f"2026-09-29 10:00:0{i}.1 | main | step {i}" for i in range(3)]
+                        + ["2026-09-29 10:00:03.1 | main |", "2026-09-29 10:00:04.1 | main | npm ERR! code E401",
+                           "2026-09-29 10:00:05.1 | main | ERROR", "2026-09-29 10:00:06.1 | main | {",
+                           "2026-09-29 10:00:07.1 | PLAY RECAP", "2026-09-29 10:00:08.1 | post-run noise"])
+        # When
+        tail = ci.log_tail(log)
+        # Then
+        self.assertEqual("step 0\nstep 1\nstep 2\nnpm ERR! code E401", tail)
+
+    def test_log_tail_keeps_the_last_lines_without_markers(self):
+        # Given
+        log = "\n".join(f"line {i}" for i in range(100))
+        # When
+        tail = ci.log_tail(log)
+        # Then
+        self.assertEqual(ci.TAIL_LINES, len(tail.splitlines()))
+        self.assertTrue(tail.endswith("line 99"))
+
+    def test_a_missing_gradle_block_falls_back_to_the_log_tail(self):
+        # Given
+        event = {"change": 1, "message": "Patch Set 1: Verified-1\n\n- app-e2e https://z/build/abc : FAILURE"}
+        build = {"log_url": "https://logs/x/", "artifacts": []}
+        answers = {"/build/": json.dumps(build), "job-output.txt": "2026-09-29 10:00:00.1 | main | emulator died",
+                   "zuul-file-comments.json": "{}", "/builds?": "[]"}
+        get = lambda url: next(body for marker, body in answers.items() if marker in url)
+        # When
+        with mock.patch.object(ci, "http_get", side_effect=get):
+            entry = ci.diagnose_ci(event)[0]
+        # Then
+        self.assertEqual(("", "emulator died"), (entry["failure"], entry["log_tail"]))
+
+    def test_fingerprints_ignore_ids_hashes_and_numbers(self):
+        # Given
+        one = "Timeout after 300s waiting for emulator-5554\nbuild 3f9a2c1d8e failed"
+        two = "timeout after 120s waiting for emulator-5556\nBuild 77aa00bb11 failed"
+        # When
+        prints = [ci.fingerprint(text) for text in (one, two)]
+        # Then
+        self.assertEqual(prints[0], prints[1])
+        self.assertEqual(["build <hex> failed", "timeout after #s waiting for emulator-#"], prints[0])
+
+    def test_similar_failures_rank_look_alikes_and_drop_strangers(self):
+        # Given
+        snippet = "adb: device offline\nemulator-5554 disconnected\ninstrumentation run failed"
+        known = {"9:2:e2e": {"change": 9, "patch_set": 2, "job": "e2e", "cause": "emulator OOM", "fix": "bump heap",
+                             "recorded_at": 1, "fingerprint": ci.fingerprint(snippet + "\nretrying")},
+                 "8:1:e2e": {"change": 8, "patch_set": 1, "job": "e2e", "cause": "c", "fix": "f", "recorded_at": 1,
+                             "fingerprint": ci.fingerprint("adb: device offline\nnpm ERR! code E401\nlogin failed")},
+                 "7:1:e2e": {"change": 7, "patch_set": 1, "job": "e2e", "cause": "c", "fix": "f", "recorded_at": 1,
+                             "fingerprint": ci.fingerprint(snippet)}}
+        # When
+        found = ci.similar_failures(known, snippet)
+        # Then
+        self.assertEqual([(7, 1.0), (9, 0.75)], [(m["change"], m["similarity"]) for m in found])
+        self.assertEqual("bump heap", found[1]["fix"])
+
+    def test_only_unknown_failures_get_look_alikes(self):
+        # Given
+        event = {"change": 1, "message": "Patch Set 1: Verified-1\n\n- app-e2e https://z/build/abc : FAILURE"}
+        build = {"log_url": "https://logs/x/", "artifacts": []}
+        known = {"k": {"change": 9, "fingerprint": ci.fingerprint("emulator died\n> There were failing tests.")}}
+        logs = ["2026-09-29 10:00:00.1 | main | emulator died\n2026-09-29 10:00:00.1 | main | > There were failing tests.",
+                "2026-09-29 10:00:00.1 | main | * What went wrong:\n> There were failing tests.\n* Try:"]
+        found = []
+        for log in logs:
+            answers = {"/build/": json.dumps(build), "job-output.txt": log, "zuul-file-comments.json": "{}",
+                       "/builds?": "[]"}
+            get = lambda url, answers=answers: next(body for marker, body in answers.items() if marker in url)
+            # When
+            with mock.patch.object(ci, "http_get", side_effect=get):
+                found.append(ci.diagnose_ci(event, known=known)[0])
+        # Then
+        self.assertEqual([("unknown", [9]), ("unit_tests", None)],
+                         [(e["category"], [m["change"] for m in e["resembles"]] if "resembles" in e else None)
+                          for e in found])
+
     def test_lint_errors_keep_only_error_level(self):
         # Given
         location = {"physicalLocation": {"artifactLocation": {"uri": "A.kt"}, "region": {"startLine": 3}}}
