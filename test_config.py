@@ -12,7 +12,6 @@ os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-ba
 
 import config  # noqa: E402
 import gerrit  # noqa: E402
-import watch  # noqa: E402
 
 
 class ConfigTest(unittest.TestCase):
@@ -20,6 +19,14 @@ class ConfigTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.dir = pathlib.Path(tmp.name)
+
+    def test_every_language_has_every_string(self):
+        # Given
+        english = config.MESSAGES["en"].keys()
+        # When
+        gaps = {language: english ^ messages.keys() for language, messages in config.MESSAGES.items()}
+        # Then
+        self.assertEqual({language: set() for language in config.MESSAGES}, gaps)
 
     def test_the_env_variable_wins_over_the_skill_folder(self):
         # Given

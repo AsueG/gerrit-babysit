@@ -1,0 +1,9 @@
+[tool.ruff]
+target-version = "py39"
+line-length = 135
+extend-include = ["macos/gerrit.30s.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "BLE"]
+# Short named lambdas are the house style for one-line helpers.
+ignore = ["E731"]

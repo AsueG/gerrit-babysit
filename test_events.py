@@ -5,7 +5,6 @@ import unittest
 
 # First: points the config at the fixtures before any module reads it.
 from fakes import FIXTURES, ZUUL, NOW, DAY, GREEN_CI, approval, patch_set, message, change, poll_result, inline, review
-import ci
 import events
 import gerrit
 
