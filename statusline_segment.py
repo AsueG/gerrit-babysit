@@ -13,7 +13,7 @@ def main():
         return
     status = read_json(STATUS)
     changes = status.get("changes", [])
-    snoozed = snooze.active({c["number"]: c.get("patch_set") for c in changes})
+    snoozed = snooze.snapshot_active(status)
     states = [snapshot.state(c) for c in changes if not c["wip"] and c["number"] not in snoozed]
     segment = f"⎇ {len(states)}"
     if status.get("last_error") or snapshot.is_stopped(status, time.time()):

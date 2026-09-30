@@ -2,6 +2,7 @@
 import calendar
 import concurrent.futures
 import gzip
+import itertools
 import json
 import re
 import threading
@@ -18,6 +19,7 @@ FLAKY_WINDOW_S = 3 * 3600
 PERIODIC_BUILD = CONFIG["periodic_build"]
 SCREENSHOT_MARKER = CONFIG["screenshot_regression_marker"]
 JOB_HISTORY_LIMIT = 200
+BASE_HISTORY_LIMIT = 20
 CI_USER = CONFIG["ci_user"]
 # Local flakes (failed, then green on the same patch set) over 30 days that make a failure look flaky.
 FLAKY_MIN = 2
@@ -310,17 +312,38 @@ def diagnose_job(job, event, histories, flaky, known):
     return entry
 
 
-def base_build(branch):
-    """Latest periodic build of the target branch: red means the base itself is broken, so a recheck can't help."""
+def base_health(branch):
+    """The target branch's latest periodic builds: red means the base itself is broken, so a recheck can't help."""
     query = urllib.parse.urlencode({"pipeline": PERIODIC_BUILD["pipeline"], "job_name": PERIODIC_BUILD["job"],
-                                    "branch": branch, "limit": 1})
+                                    "branch": branch, "limit": BASE_HISTORY_LIMIT})
     try:
-        builds = json.loads(http_get(f"{ZUUL_API}/builds?{query}"))
+        return red_streak(json.loads(http_get(f"{ZUUL_API}/builds?{query}")))
     except (OSError, ValueError) as error:
         return {"error": str(error)}
-    if not builds:
+
+
+def red_streak(builds):
+    """The latest verdict; when red, `red_since` = end of the streak's first failure and `last_green` = end of the
+    green build before it, None past the history window (the streak is then at least `failures` long)."""
+    finished = sorted((b for b in builds if b.get("result") in ("SUCCESS", "FAILURE") and b.get("end_time")),
+                      key=lambda b: b["end_time"], reverse=True)
+    if not finished:
         return None
-    return {key: builds[0].get(key) for key in ("result", "end_time", "log_url")}
+    health = {key: finished[0].get(key) for key in ("result", "end_time", "log_url")}
+    if health["result"] == "FAILURE":
+        streak = list(itertools.takewhile(lambda b: b["result"] == "FAILURE", finished))
+        green = finished[len(streak)] if len(streak) < len(finished) else None
+        health |= {"red_since": streak[-1]["end_time"], "failures": len(streak),
+                   "last_green": green["end_time"] if green else None}
+    return health
+
+
+def is_red(health):
+    return bool(health) and health.get("result") == "FAILURE"
+
+
+def red_for_s(health, now):
+    return max(0, now - iso_to_epoch(health["red_since"])) if health.get("red_since") else 0
 
 
 def zuul_queue(change, patch_set):

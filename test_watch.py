@@ -132,20 +132,21 @@ class EnrichTest(unittest.TestCase):
         # Then
         self.assertEqual(len(jobs), sum("/builds?" in c.args[0] for c in http.call_args_list))
 
-    def test_the_periodic_build_is_asked_once_per_branch(self):
+    def test_failures_reuse_the_polled_base_health(self):
         # Given
         failures = [{"kind": "message", "change": n, "branch": branch, "author_username": "zuul", "message": "m"}
                     for n, branch in ((1, "main"), (2, "main"), (3, "release"))]
+        base = {"main": {"result": "FAILURE"}, "release": {"result": "SUCCESS"}}
         # When
         with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
                 mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
                 mock.patch.object(ci, "submit_diagnosis", side_effect=lambda _, event, *__: [done(event["change"])]), \
-                mock.patch.object(ci, "base_build", side_effect=lambda branch: {"branch": branch}) as base_build:
-            watch.enrich(failures)
+                mock.patch.object(ci, "base_health") as base_health:
+            watch.enrich(failures, base)
         # Then
-        self.assertEqual([("main",), ("release",)], sorted(c.args for c in base_build.call_args_list))
-        self.assertEqual([([1], "main"), ([2], "main"), ([3], "release")],
-                         [(f["ci_diagnosis"], f["base_build"]["branch"]) for f in failures])
+        base_health.assert_not_called()
+        self.assertEqual([([1], "FAILURE"), ([2], "FAILURE"), ([3], "SUCCESS")],
+                         [(f["ci_diagnosis"], f["base_build"]["result"]) for f in failures])
 
     def test_only_ci_failures_and_new_patch_sets_get_extras(self):
         # Given
@@ -154,9 +155,8 @@ class EnrichTest(unittest.TestCase):
         patch = {"kind": "review_new_patch_set", "change": 2, "since_ref": "a", "current_ref": "b"}
         # When
         with mock.patch.object(ci, "submit_diagnosis", return_value=[done("d")]), \
-                mock.patch.object(ci, "base_build", return_value={"result": "SUCCESS"}), \
                 mock.patch.object(repo, "interdiff", return_value={"stat": "s"}):
-            watch.enrich([failure, human, patch])
+            watch.enrich([failure, human, patch], {"main": {"result": "SUCCESS"}})
         # Then
         self.assertEqual((["d"], {"result": "SUCCESS"}), (failure["ci_diagnosis"], failure["base_build"]))
         self.assertNotIn("ci_diagnosis", human)
@@ -471,6 +471,96 @@ class MyAttentionSetsTest(unittest.TestCase):
         rest.assert_called_once_with("/changes/?q=owner%3Aself%20status%3Aopen&o=DETAILED_ACCOUNTS")
         self.assertEqual(({7: {"holders": [{"username": "alice", "name": "Alice", "since": 1790668800.0, "reason": ""}],
                                "removed": []}}, None), (found, failed))
+
+
+RED = {"result": "FAILURE", "end_time": "2026-09-29T12:00:00", "log_url": "https://logs/p/",
+       "red_since": "2026-09-29T10:00:00", "failures": 2, "last_green": "2026-09-29T09:00:00"}
+
+
+class BaseHealthTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(watch.snooze, "SNOOZE", pathlib.Path(tmp.name) / "snooze.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_each_target_branch_is_asked_once_per_poll(self):
+        # Given
+        changes = [change(1), change(2), change(3, branch="release")]
+        # When
+        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
+                mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
+                mock.patch.object(ci, "base_health", side_effect=lambda branch: {"branch": branch}) as base_health:
+            found = watch.base_health(changes)
+        with mock.patch.object(ci, "PERIODIC_BUILD", None):
+            unset = watch.base_health(changes)
+        # Then
+        self.assertEqual({"main": {"branch": "main"}, "release": {"branch": "release"}}, found)
+        self.assertEqual(2, base_health.call_count)
+        self.assertEqual({}, unset)
+
+    def test_a_red_base_is_announced_once_for_all_its_changes(self):
+        # Given
+        red = {**poll_result([change(1), change(2), change(3, branch="release")]),
+               "base_health": {"main": RED, "release": {"result": "SUCCESS"}}}
+        longer = {**red, "base_health": {"main": {**RED, "end_time": "2026-09-29T14:00:00", "failures": 3}}}
+        again = {**red, "base_health": {"main": {**RED, "last_green": "2026-09-29T13:00:00"}}}
+        # When
+        found = [{k: e for k, e in events.events(result, NOW) if e["kind"] == "base_red"}
+                 for result in (red, longer, again)]
+        # Then
+        self.assertEqual(["base_red:main:2026-09-29T09:00:00"], list(found[0]))
+        self.assertEqual([1, 2], found[0]["base_red:main:2026-09-29T09:00:00"]["changes"])
+        self.assertEqual(found[0].keys(), found[1].keys())
+        self.assertNotEqual(found[0].keys(), found[2].keys())
+
+    def test_the_notification_says_since_when(self):
+        # Given
+        event = {"kind": "base_red", "branch": "main", "changes": [1, 2], **RED}
+        # When
+        title, body = events.notification(event, ci.iso_to_epoch("2026-09-29T15:30:00"))
+        # Then
+        self.assertEqual("main red for 5 h", title)
+        self.assertIn("1, 2", body)
+
+    def test_snoozed_changes_leave_the_announcement(self):
+        # Given
+        watch.snooze.set_snooze(1, patch_set=1)
+        result = {**poll_result([change(1), change(2)]), "base_health": {"main": RED}}
+        watch.snooze.set_snooze(2, until=NOW + 3600)
+        both = watch.awake(events.events(result, NOW), watch.snoozed_changes(result, NOW))
+        watch.snooze.wake(2)
+        # When
+        one = watch.awake(events.events(result, NOW), watch.snoozed_changes(result, NOW))
+        # Then
+        self.assertEqual([], [e for e in both.values() if e["kind"] == "base_red"])
+        self.assertEqual([[2]], [e["changes"] for e in one.values() if e["kind"] == "base_red"])
+
+    def test_a_base_green_snooze_holds_while_red_or_unknown(self):
+        # Given
+        watch.snooze.set_snooze(1, base_green=True)
+        polls = [{**poll_result([change(1)]), "base_health": {"main": health}}
+                 for health in (RED, {"error": "offline"}, {"result": "SUCCESS"})]
+        # When
+        found = [bool(watch.snoozed_changes(result, NOW)) for result in polls]
+        # Then
+        self.assertEqual([True, True, False], found)
+
+    def test_the_snapshot_flags_rows_on_a_red_base(self):
+        # Given
+        result = {**poll_result([change(1), change(2, branch="release")]), "base_health": {"main": RED}}
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        status = pathlib.Path(tmp.name) / "status.json"
+        watch.snooze.set_snooze(1, base_green=True)
+        # When
+        with mock.patch.object(watch, "STATUS", status), mock.patch.object(repo, "worktrees_by_change_id", return_value={}):
+            watch.write_status(result)
+        snapshot = json.loads(status.read_text())
+        # Then
+        self.assertEqual([True, False], [row["base_red"] for row in snapshot["changes"]])
+        self.assertEqual([1], list(watch.snooze.snapshot_active(snapshot, NOW)))
 
 
 class WithIntKeysTest(unittest.TestCase):

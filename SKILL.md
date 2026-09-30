@@ -30,9 +30,9 @@ no vote, no recheck. Everything else (worktree, fix, local amend, tests) happens
    poll**, so nothing slips between the sweep and the watch. Every change of mine that needs something
    gives a `kind: pending` item (`ci`, `code_review`, `threads_awaiting_me`, plus `ci_diagnosis` and
    `base_build` when CI is red). State events follow: `merge_conflict`, `parent_merged`,
-   `parent_updated`, `ci_stuck`, `ready_to_submit`, `waiting_for_review`, `cleanup_candidate`, and the
-   `review_*` ones (`review_requested` where I already voted or commented are left out). Handle each item
-   with the steps below. `snoozed` = `{number: {until | patch_set}}` of the changes muted by the user:
+   `parent_updated`, `ci_stuck`, `ready_to_submit`, `waiting_for_review`, `base_red`, `cleanup_candidate`,
+   and the `review_*` ones (`review_requested` where I already voted or commented are left out). Handle each
+   item with the steps below. `snoozed` = `{number: {until | patch_set | base_green}}` of the changes muted by the user:
    their events are held back (neither reported nor marked seen) and come back when the snooze ends. Do not
    mention them unless asked.
 2. **Start the watcher** with `Bash` and `run_in_background: true`: `python3 <skill>/watch.py`.
@@ -52,7 +52,7 @@ alone, and it blocks only once per turn so a failing relaunch cannot loop. To st
 
 The snapshot `~/.cache/gerrit-babysit/status.json` (per change: votes, `ci` =
 `running`/`passed`/`failed`/`stale_base` (Merge Failed), `ci_failed`, conflict, `open_parent`, worktree,
-patch set; plus `last_attempt`/`last_error`) feeds the status line segment and the SwiftBar menu.
+patch set, `branch`, `base_red`; plus `last_attempt`/`last_error` and `base_health` = `{branch: base_build}`) feeds the status line segment and the SwiftBar menu.
 
 When installed (`macos/install.sh`), a LaunchAgent runs `watch.py --daemon` permanently: fresh snapshot +
 one macOS notification per new event, with its own state (`daemon-seen.json`) and SSH failures logged to
@@ -74,7 +74,8 @@ Each item has a `kind`:
 before this verdict, and `known_flaky` = `{job: {week, month, last}}` from the local flake memory),
 `merge_conflict` (+ `files`), `parent_merged` (+ `parent`, `old_parent_sha`, `files`, `rebase`),
 `parent_updated` (+ `parent`, `parent_patch_set`, `old_parent_sha`, `new_parent_sha`, `rebase`), `ci_stuck` (+ `idle_since`, `zuul_queue`), `waiting_for_review` (+ `working_days`,
-`reviewers`, `waiting_on`, `dismissed`), `ready_to_submit` ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
+`reviewers`, `waiting_on`, `dismissed`), `base_red` (no `change`: `branch`, `changes`, see `base_build`
+below), `ready_to_submit` ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
 `review_requested` / `review_new_patch_set` / `review_reply` ("Other people's reviews" section).
 The watcher never gives up on Gerrit being unreachable (VPN off…): it retries with a backoff capped at
 10 min, and the status line shows `?` meanwhile. Only `--pending` returns `status: error` (with `detail`)
@@ -148,11 +149,19 @@ Before any fix, check that `failure` / `lint_errors` / `file_comments` point at 
 **`rechecks` ≥ 1**: a recheck was already tried on this patch set and the job still fails. Do not offer
 another one by default: diagnose by hand (`log_url`), comparing with the previous failure.
 
-**`base_build`** (only when `periodic_build` is set) = latest periodic build of the target branch
-(`result`, `end_time`, `log_url`). `result: FAILURE` = **confirmed red base**: offer neither a `recheck`
-(it would fail the same way) nor a fix outside the change. Report it with the link and wait for the base
-to be fixed. An old build or `SUCCESS` does not rule it out (newer breakage): `others_failing` is then the
-hint.
+**`base_build`** (only when `periodic_build` is set) = health of the target branch, read on every poll
+from its last 20 periodic builds: `result`, `end_time`, `log_url` of the latest, and when red `red_since`
+(end of the streak's first failure), `failures` and `last_green` (`null` = red for longer than the
+window). `{"error": …}` = zuul unreachable. `result: FAILURE` = **confirmed red base**: offer neither a
+`recheck` (it would fail the same way) nor a fix outside the change. Report it with the link and "red
+for 5 h", and wait for the base to be fixed. An old build or `SUCCESS` does not rule it out (newer
+breakage): `others_failing` is then the hint.
+
+**`base_red`** = a target branch went red: emitted **once per red streak** (keyed on `last_green`) with
+the same fields plus `changes` = my open changes on it (snoozed ones left out). Report it once for all of
+them instead of per change, then offer (`AskUserQuestion`, multiSelect, one option per change) to snooze
+them until the base is green (`snooze.py <n> --base-green`, local so no approval rule). Their own red
+verdicts then wait until the base recovers.
 
 | `category` | Fix |
 |---|---|
@@ -288,9 +297,10 @@ decided with the user.
 ## Snooze
 
 "Snooze 12345 until Monday / until the next patch set": `python3 <skill>/snooze.py <n> --until YYYY-MM-DD`
-(morning of that day), `--days N` (a weekend lands on Monday) or `--patch-set <current>` (wakes on a newer one);
-`--clear` wakes it, no argument lists them. The SwiftBar menu has the same Snooze submenu and a "Snoozed"
-section. A snoozed change leaves the counts, the status line and the notifications.
+(morning of that day), `--days N` (a weekend lands on Monday), `--patch-set <current>` (wakes on a newer one)
+or `--base-green` (wakes once the target branch's periodic build passes; a zuul outage keeps it asleep);
+`--clear` wakes it, no argument lists them. The SwiftBar menu has the same Snooze submenu ("Until the base is
+green" only on a red base), a "Snoozed" section and a line per red branch linking to its failing build. A snoozed change leaves the counts, the status line and the notifications.
 
 ## Doctor
 

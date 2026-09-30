@@ -318,17 +318,44 @@ class FlakyRunsTest(unittest.TestCase):
         self.assertEqual({"unit": {"week": 1, "month": 2, "last": now - 86400}}, counts)
 
 
-class BaseBuildTest(unittest.TestCase):
-    def test_latest_periodic_build_of_the_branch(self):
+def periodic(result, end_time, log_url="https://logs/x/"):
+    return {"result": result, "end_time": end_time, "log_url": log_url, "uuid": "u"}
+
+
+class BaseHealthTest(unittest.TestCase):
+    def test_a_red_streak_starts_at_its_first_failure_after_the_last_green(self):
         # Given
-        build = {"result": "FAILURE", "end_time": "2026-09-29T12:11:28", "log_url": "https://logs/x/", "uuid": "u"}
+        builds = [periodic("FAILURE", "2026-09-29T12:00:00"), periodic("CANCELED", "2026-09-29T11:00:00"),
+                  periodic("FAILURE", "2026-09-29T10:00:00"), periodic("SUCCESS", "2026-09-29T09:00:00"),
+                  periodic("FAILURE", "2026-09-29T08:00:00")]
         # When
-        with mock.patch.object(ci, "http_get", return_value=json.dumps([build])) as get:
-            found = ci.base_build("main")
+        with mock.patch.object(ci, "http_get", return_value=json.dumps(builds)) as get:
+            found = ci.base_health("main")
         # Then
-        self.assertEqual({"result": "FAILURE", "end_time": "2026-09-29T12:11:28", "log_url": "https://logs/x/"}, found)
+        self.assertEqual({"result": "FAILURE", "end_time": "2026-09-29T12:00:00", "log_url": "https://logs/x/",
+                          "red_since": "2026-09-29T10:00:00", "failures": 2, "last_green": "2026-09-29T09:00:00"},
+                         found)
         self.assertIn("pipeline=periodic", get.call_args.args[0])
         self.assertIn("branch=main", get.call_args.args[0])
+        self.assertIn(f"limit={ci.BASE_HISTORY_LIMIT}", get.call_args.args[0])
+
+    def test_a_streak_longer_than_the_window_has_no_last_green(self):
+        # Given
+        builds = [periodic("FAILURE", "2026-09-29T10:00:00"), periodic("FAILURE", "2026-09-29T12:00:00")]
+        # When
+        found = ci.red_streak(builds)
+        # Then
+        self.assertEqual(("2026-09-29T10:00:00", 2, None), (found["red_since"], found["failures"], found["last_green"]))
+        self.assertEqual(5 * 3600, ci.red_for_s(found, ci.iso_to_epoch("2026-09-29T15:00:00")))
+
+    def test_a_green_base_carries_no_streak(self):
+        # Given
+        builds = [periodic("SUCCESS", "2026-09-29T12:00:00"), periodic("FAILURE", "2026-09-29T10:00:00")]
+        # When
+        found = ci.red_streak(builds)
+        # Then
+        self.assertEqual({"result": "SUCCESS", "end_time": "2026-09-29T12:00:00", "log_url": "https://logs/x/"}, found)
+        self.assertFalse(ci.is_red(found))
 
     def test_no_build_or_offline(self):
         # Given
@@ -338,9 +365,10 @@ class BaseBuildTest(unittest.TestCase):
         found = []
         for answer in answers:
             with answer:
-                found.append(ci.base_build("main"))
+                found.append(ci.base_health("main"))
         # Then
         self.assertEqual([None, {"error": "offline"}], found)
+        self.assertFalse(ci.is_red(found[1]))
 
 
 class ZuulQueueTest(unittest.TestCase):

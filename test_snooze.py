@@ -66,11 +66,19 @@ class SnoozeTest(unittest.TestCase):
         snooze.set_snooze(1, until=time.time() - 1)
         snooze.set_snooze(2, patch_set=1)
         snooze.set_snooze(3, until=time.time() + 3600)
+        snooze.set_snooze(4, base_green=True)
         # When
         snooze.wake(3)
         # Then
-        self.assertEqual({2: {"patch_set": 1}}, snooze.load())
+        self.assertEqual({2: {"patch_set": 1}, 4: {"base_green": True}}, snooze.load())
 
+    def test_a_base_green_snooze_holds_only_on_a_red_base(self):
+        # Given
+        snooze.set_snooze(1, base_green=True)
+        # When
+        found = [bool(snooze.active({1: 3}, base_red=red)) for red in ({1}, set())]
+        # Then
+        self.assertEqual([True, False], found)
 
     def test_forget_drops_only_the_given_changes(self):
         # Given

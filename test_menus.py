@@ -270,6 +270,22 @@ class SnoozeMenuTest(SnapshotTest):
             statusline_segment.main()
         self.assertEqual("⎇ 0", out.getvalue())
 
+    def test_a_red_base_is_shown_and_offers_a_snooze_until_green(self):
+        # Given
+        red = {"result": "FAILURE", "log_url": "https://logs/p/", "red_since": "2026-09-29T10:00:00"}
+        self.write([row(1, branch="main", base_red=True), row(2, branch="release", base_red=False),
+                    row(3, branch="main", base_red=True)],
+                   base_health={"main": red, "release": {"result": "SUCCESS"}})
+        plugin.snooze.set_snooze(3, base_green=True)
+        # When
+        found = self.menu()
+        # Then
+        self.assertIn("main red for", found)
+        self.assertIn("href=https://logs/p/", found)
+        self.assertIn("3  inbox — until the base is green", found)
+        self.assertIn('param2="1" param3="base"', found)
+        self.assertNotIn('param2="2" param3="base"', found)
+
 
 class NeverPolledTest(SnapshotTest):
     def test_a_snapshot_of_failed_polls_only_still_renders(self):

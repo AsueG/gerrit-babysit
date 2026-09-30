@@ -111,15 +111,24 @@ def threads_or_error(changes):
         return {}, gerrit.error_detail(error)
 
 
+def base_health(changes):
+    """{branch: periodic build health} for the branches my changes target, zuul unreachable included: the red base
+    is watched on every poll, not only once a change of mine fails."""
+    if not (ci.ZUUL_API and ci.PERIODIC_BUILD):
+        return {}
+    return {branch: ci.base_health(branch) for branch in sorted({c["branch"] for c in changes})}
+
+
 def poll():
     # Independent round trips run side by side: the SSH queries share one multiplexed connection, and the REST
     # calls overlap the local git fetch.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
         reviews = pool.submit(fetch_reviews)
         attention = pool.submit(fetch_attention)
         attention_sets = pool.submit(my_attention_sets)
         changes = fetch_changes()
         threads_job = pool.submit(threads_or_error, changes)
+        base_job = pool.submit(base_health, changes)
         statuses = parent_statuses(changes)
         conflicts = repo.merge_conflicts(changes)
         stale = repo.stale_parents(changes, statuses)
@@ -135,6 +144,7 @@ def poll():
             "reviews": reviews.result(),
             "attention": attention.result(),
             "attention_sets": attention_sets.result(),
+            "base_health": base_job.result(),
         }
 
 
@@ -184,20 +194,18 @@ def ci_verdict(event):
     return event.get("message") if event.get("author_username") == gerrit.CI_USER else None
 
 
-def diagnose_failures(failures):
+def diagnose_failures(failures, base):
     """Side by side in one bounded pool: a morning flush of red changes downloads its logs at once without flooding
-    zuul, and each branch's periodic build is asked once."""
+    zuul. `base` is the poll's base_health: the periodic build is not asked again."""
     histories = {}
     known = known_failures.load()
-    branches = sorted({event["branch"] for event, _ in failures}) if ci.PERIODIC_BUILD else []
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         diagnoses = [ci.submit_diagnosis(pool, {"change": event["change"], "message": verdict}, histories,
                                          event.get("known_flaky"), known) for event, verdict in failures]
-        base_builds = {branch: pool.submit(ci.base_build, branch) for branch in branches}
         for (event, _), futures in zip(failures, diagnoses):
             event["ci_diagnosis"] = [future.result() for future in futures]
             if ci.PERIODIC_BUILD:
-                event["base_build"] = base_builds[event["branch"]].result()
+                event["base_build"] = base.get(event["branch"])
 
 
 def rebase(event):
@@ -227,7 +235,7 @@ EXTRAS = {"parent_merged": rebase, "parent_updated": rebase, "review_new_patch_s
           "ci_stuck": zuul_queue, "review_requested": prereview}
 
 
-def enrich(reported):
+def enrich(reported, base=None):
     """Network-bound extras, only for events about to be reported, so the idle loop stays free."""
     failures = [(event, verdict) for event in reported if (verdict := ci_verdict(event))]
     flakes = load_flaky()
@@ -236,7 +244,7 @@ def enrich(reported):
         if flaky:
             event["known_flaky"] = flaky
     if failures and ci.ZUUL_API:
-        diagnose_failures(failures)
+        diagnose_failures(failures, base or {})
     for event in reported:
         if event["kind"] in EXTRAS:
             event.update(EXTRAS[event["kind"]](event))
@@ -254,18 +262,29 @@ def write_status(result=None, error=None):
         return
     rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(), now)
     atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None,
-                          "threads_error": result.get("threads_error"), "changes": rows})
+                          "threads_error": result.get("threads_error"), "changes": rows,
+                          "base_health": result.get("base_health", {})})
 
 
 def snoozed_changes(result, now):
     patch_sets = {c["number"]: c.get("currentPatchSet", {}).get("number")
                   for c in result["changes"] + result.get("reviews", [])}
-    return snooze.active(patch_sets, now)
+    return snooze.active(patch_sets, now, base_red=snooze.red_base(result["changes"], result.get("base_health", {})))
 
 
 def awake(pairs, snoozed):
-    """Events of snoozed changes are left out, hence left unseen: they come back once the snooze ends."""
-    return {key: event for key, event in pairs if event.get("change") not in snoozed}
+    """Events of snoozed changes are left out, hence left unseen: they come back once the snooze ends. A red base
+    only names the changes still awake, and waits while all of them sleep."""
+    kept = {}
+    for key, event in pairs:
+        if event["kind"] == "base_red":
+            event = {**event, "changes": [n for n in event["changes"] if n not in snoozed]}
+            if not event["changes"]:
+                continue
+        elif event.get("change") in snoozed:
+            continue
+        kept[key] = event
+    return kept
 
 
 def remember(seen, keys, result, current, now):
@@ -407,8 +426,8 @@ def main():
         seen = load_seen()
         if args.pending:
             # Same poll for the report and the seen set: nothing can slip in between.
-            report = enrich([e for e in events.pending_events(result, now) if e.get("change") not in snoozed]
-                            + list(cleanup.values()))
+            report = enrich(list(awake(enumerate(events.pending_events(result, now)), snoozed).values())
+                            + list(cleanup.values()), result.get("base_health"))
             save_seen(remember(seen, current.keys(), result, current, now))
             threads_error = result.get("threads_error")
             if threads_error is None and not result["changes"]:
@@ -427,7 +446,7 @@ def main():
         settling = {key: current.get(key, event) for key, event in settling.items()} | fresh
         if settling:
             # Enriched before being marked seen: a crash in the extras must not swallow the events.
-            report = enrich(list(settling.values()))
+            report = enrich(list(settling.values()), result.get("base_health"))
             save_seen(remember(seen, settling.keys(), result, current, now))
             print(json.dumps({"status": "events", "events": report, "nudges": events.nudges(report),
                               "threads_error": result.get("threads_error")}, ensure_ascii=False, indent=1))

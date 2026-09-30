@@ -281,8 +281,19 @@ def events(result, now=None):
                 "dismissed": dismissed,
                 "reviewers": [r.get("name") or r.get("username") for r in change.get("allReviewers", [])
                               if r.get("username", "") not in NOT_ME]}
+    yield from base_events(result)
     for change in result.get("reviews", []):
         yield from review_events(change, day, change["number"] in attention)
+
+
+def base_events(result):
+    """One event per red streak of a target branch, naming every change of mine on it: the last green build keys
+    the streak, so it is announced once however long it lasts."""
+    for branch, health in sorted(result.get("base_health", {}).items()):
+        changes = sorted(c["number"] for c in result["changes"] if c["branch"] == branch)
+        if ci.is_red(health) and changes:
+            yield f'base_red:{branch}:{health.get("last_green") or "?"}', {
+                "kind": "base_red", "branch": branch, "url": health.get("log_url"), "changes": changes, **health}
 
 
 def patch_set_of(message):
@@ -393,6 +404,8 @@ def status_rows(result, flakes, worktrees, now):
             "outdated_parent": outdated["parent"] if outdated else None,
             "ready": is_ready_to_submit(patch_set) and not threads_error and not threads.get(number),
             "worktree": worktrees.get(change["id"]),
+            "branch": change["branch"],
+            "base_red": ci.is_red(result.get("base_health", {}).get(change["branch"])),
         })
     return rows
 
@@ -427,6 +440,10 @@ def notification(event, now=None):
         return t("new_patch_set", n=n, ps=event["patch_set"]), f"{event['owner']} · {event['subject']}"
     if kind == "review_reply":
         return t("replied", n=n, author=event["author"]), event["message"].split("\n\n", 1)[-1][:200]
+    if kind == "base_red":
+        hours = int(ci.red_for_s(event, now) // 3600)
+        return (t("base_red", branch=event["branch"], hours=hours),
+                t("base_red_body", changes=", ".join(map(str, event["changes"]))))
     return None
 
 

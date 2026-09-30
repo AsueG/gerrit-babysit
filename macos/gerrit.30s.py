@@ -191,6 +191,8 @@ def ask_date(number):
 def snooze_change(number, mode, value=None):
     if mode == "ps":
         snooze.set_snooze(number, patch_set=int(value))
+    elif mode == "base":
+        snooze.set_snooze(number, base_green=True)
     else:
         until = snooze.in_days(int(value)) if mode == "days" else ask_date(number)
         if until is None:
@@ -288,6 +290,8 @@ def print_change(change, label, symbol, color, fresh):
     print(f"--{t('bar_snooze')} | sfimage=moon.zzz")
     if change.get("patch_set"):
         print(f"----{t('bar_snooze_ps')} | {action('snooze', number, 'ps', change['patch_set'])}")
+    if change.get("base_red"):
+        print(f"----{t('bar_snooze_base')} | {action('snooze', number, 'base')}")
     print(f"----{t('bar_snooze_tomorrow')} | {action('snooze', number, 'days', 1)}")
     print(f"----{t('bar_snooze_week')} | {action('snooze', number, 'days', 7)}")
     print(f"----{t('bar_snooze_date')} | {action('snooze', number, 'date')}")
@@ -303,8 +307,12 @@ def print_change(change, label, symbol, color, fresh):
 
 
 def print_snoozed(change, entry):
-    until = (t("bar_snoozed_ps") if entry.get("patch_set") is not None
-             else t("bar_snoozed_until", date=time.strftime("%Y-%m-%d", time.localtime(entry["until"]))))
+    if entry.get("base_green"):
+        until = t("bar_snoozed_base")
+    elif entry.get("patch_set") is not None:
+        until = t("bar_snoozed_ps")
+    else:
+        until = t("bar_snoozed_until", date=time.strftime("%Y-%m-%d", time.localtime(entry["until"])))
     print(f"{change['number']}  {scope(change['subject'])} — {until} | href={change['url']} sfimage=moon.zzz sfcolor=gray")
     print(f"--{t('bar_open_gerrit')} | href={change['url']} sfimage=safari")
     print(f"--{t('bar_wake')} | {action('wake', change['number'])} sfimage=bell")
@@ -323,7 +331,7 @@ def main():
 
     changes = status.get("changes", [])
     # Read here rather than from the snapshot: a snooze shows at once, not at the daemon's next poll.
-    snoozed = snooze.active({c["number"]: c.get("patch_set") for c in changes}, now)
+    snoozed = snooze.snapshot_active(status, now)
     rows = sorted(((c, state_of(c)) for c in changes if c["number"] not in snoozed),
                   key=lambda row: ORDER.get(row[1][2], 3))
     active = [row for row in rows if not row[0]["wip"]]
@@ -339,6 +347,11 @@ def main():
     print(f"{title} | {ICON} ansi=true")
 
     print("---")
+    for branch, health in sorted(status.get("base_health", {}).items()):
+        if ci.is_red(health):
+            link = f"href={health['log_url']} " if health.get("log_url") else ""
+            print(f"{t('bar_base_red', branch=branch, age=age(ci.red_for_s(health, now)))} | "
+                  f"{link}sfimage=flame.fill sfcolor=red")
     for change, state in rows:
         print_change(change, *state, fresh=not (error or stopped))
     if not changes:

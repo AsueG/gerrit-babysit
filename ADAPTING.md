@@ -50,7 +50,7 @@ Missing keys take the defaults of `config.py`.
 | `bot_users` | `[]` | Other automated accounts whose messages and votes mean nothing to the user |
 | `zuul_api` | `null` (no CI diagnosis) | `https://<zuul>/api/tenant/<tenant>`: the build links in CI messages point to `https://<zuul>/t/<tenant>/build/<uuid>` |
 | `zuul_status_url` | `null` | `https://<zuul>/t/<tenant>/status` |
-| `periodic_build` | `null` | `{"pipeline", "job"}` of a periodic build of the target branch, used to spot a red base |
+| `periodic_build` | `null` | `{"pipeline", "job"}` of a periodic build of the target branch, used to spot a red base (one zuul request per target branch and per poll) |
 | `screenshot_regression_marker` | `null` | Text on the line of a CI message that reports screenshot regressions |
 | `recheck_comment` | `"recheck"` | Comment the SwiftBar menu posts to rerun CI on a known flake (`recheck` or `recheck-<pipeline>`) |
 | `protected_branches` | `["main", "master"]` | Long-lived branches never offered for cleanup |
@@ -65,7 +65,7 @@ Check the result: `python3 <skill>/watch.py --pending` must print `{"status": "p
 host, port or user is.
 
 Without zuul, leave the `zuul_*` and `periodic_build` keys at `null`: events still flow, only
-`ci_diagnosis`, `base_build` and `zuul_queue` disappear. Another CI that votes on Gerrit works the same
+`ci_diagnosis`, `base_build`, `base_red`, `zuul_queue` and the `--base-green` snooze disappear. Another CI that votes on Gerrit works the same
 way as long as `ci_user` and `ci_labels` match it.
 
 ## 3. Team overlay: `LOCAL.md`
