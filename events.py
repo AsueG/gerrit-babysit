@@ -89,9 +89,8 @@ def ci_idle_since(change, patch_set):
                default=patch_set.get("createdOn", 0))
 
 
-def is_ci_stuck(change, patch_set, now):
-    return (ci_state(change, patch_set, votes_of(patch_set)) == "running"
-            and now - ci_idle_since(change, patch_set) > CI_STUCK_S)
+def is_ci_stuck(change, patch_set, state, now):
+    return state == "running" and now - ci_idle_since(change, patch_set) > CI_STUCK_S
 
 
 def is_merge_failed(change, patch_set):
@@ -295,7 +294,8 @@ def state_events(change, result, day, now):
     stale = result.get("stale_parents", {})
     outdated = result.get("outdated_parents", {})
     blockers = (result.get("submit_blockers") or {}).get(number)
-    if is_ci_stuck(change, patch_set, now):
+    state = ci_state(change, patch_set, votes_of(patch_set))
+    if is_ci_stuck(change, patch_set, state, now):
         yield f'{number}:ci_stuck:{ps}', {**base, "kind": "ci_stuck", "idle_since": ci_idle_since(change, patch_set)}
     if number in stale:
         # Takes over merge_conflict: the fix is a rebase --onto that drops the old parent, conflicts or not.
@@ -320,7 +320,7 @@ def state_events(change, result, day, now):
     wait = None if attention_sets is None else attention_sets.get(number, {"holders": [], "removed": []})
     wait = review_wait(change, patch_set, wait, now)
     if (wait and number not in conflicts and number not in stale and not is_ready_to_submit(patch_set)
-            and ci_state(change, patch_set, votes_of(patch_set)) not in ("failed", "stale_base")):
+            and state not in ("failed", "stale_base")):
         days, waiting_on, dismissed = wait
         yield f'{number}:unreviewed:{ps}:{day}', {
             **base, "kind": "waiting_for_review", "working_days": days, "waiting_on": waiting_on,
@@ -440,7 +440,7 @@ def status_rows(result, flakes, worktrees, now):
             "flaky": ci.flaky_counts(flakes, [j["job"] for j in failed_jobs], now),
             # Every recheck on the patch set, also after the verdict: one may already be running.
             "rechecks": my_rechecks(change, patch_set, float("inf")),
-            "ci_stuck": is_ci_stuck(change, patch_set, now),
+            "ci_stuck": is_ci_stuck(change, patch_set, state, now),
             "threads": None if threads is None else len(threads),
             "conflict": number in result["conflicts"],
             "open_parent": result["parents"].get(number),
@@ -454,43 +454,47 @@ def status_rows(result, flakes, worktrees, now):
     return rows
 
 
-def notification(event, now=None):
-    now = now or time.time()
-    n = event.get("change")
-    kind = event["kind"]
-    if kind == "merge_conflict":
-        return t("conflict", n=n), ", ".join(pathlib.Path(f).name for f in event["files"])
-    if kind == "submit_blocked":
-        return t("submit_blocked", n=n), t("submit_blocked_body", requirements=", ".join(event["requirements"]))
-    if kind == "ready_to_submit":
-        since = event.get("ready_since")
-        days = int((now - since) // 86400) if since else 0
-        return t("ready", n=n) + (t("ready_for", days=days) if days else ""), event["subject"]
-    if kind == "ci_stuck":
-        hours = int((now - event["idle_since"]) // 3600)
-        return t("ci_stuck", n=n), t("ci_stuck_body", hours=hours, subject=event["subject"])
-    if kind == "parent_merged":
-        return t("rebase", n=n), t("rebase_body", parent=event["parent"], subject=event["subject"])
-    if kind == "parent_updated":
-        return t("parent_updated", n=n, parent=event["parent"]), event["subject"]
-    if kind == "waiting_for_review" and event.get("waiting_on"):
+def message_body(event):
+    return event["message"].split("\n\n", 1)[-1][:200]
+
+
+def ready_title(event, n, now):
+    since = event.get("ready_since")
+    days = int((now - since) // 86400) if since else 0
+    return t("ready", n=n) + (t("ready_for", days=days) if days else "")
+
+
+def waiting_title(event, n):
+    if event.get("waiting_on"):
         names = ", ".join(h["name"] for h in event["waiting_on"])
-        return t("waiting_on", n=n, names=names, days=event["working_days"]), event["subject"]
-    if kind == "waiting_for_review":
-        return t("unreviewed", n=n, days=event["working_days"]), event["subject"]
-    if kind == "message":
-        return f"{n} · {event['author']}", event["message"].split("\n\n", 1)[-1][:200]
-    if kind == "review_requested":
-        return t("review_requested", owner=event["owner"]), f"{n} · {event['subject']}"
-    if kind == "review_new_patch_set":
-        return t("new_patch_set", n=n, ps=event["patch_set"]), f"{event['owner']} · {event['subject']}"
-    if kind == "review_reply":
-        return t("replied", n=n, author=event["author"]), event["message"].split("\n\n", 1)[-1][:200]
-    if kind == "base_red":
-        hours = int(ci.red_for_s(event, now) // 3600)
-        return (t("base_red", branch=event["branch"], hours=hours),
-                t("base_red_body", changes=", ".join(map(str, event["changes"]))))
-    return None
+        return t("waiting_on", n=n, names=names, days=event["working_days"])
+    return t("unreviewed", n=n, days=event["working_days"])
+
+
+# kind → (event, change number, now) → (title, body)
+NOTIFICATIONS = {
+    "merge_conflict": lambda e, n, now: (t("conflict", n=n), ", ".join(pathlib.Path(f).name for f in e["files"])),
+    "submit_blocked": lambda e, n, now: (t("submit_blocked", n=n),
+                                         t("submit_blocked_body", requirements=", ".join(e["requirements"]))),
+    "ready_to_submit": lambda e, n, now: (ready_title(e, n, now), e["subject"]),
+    "ci_stuck": lambda e, n, now: (t("ci_stuck", n=n),
+                                   t("ci_stuck_body", hours=int((now - e["idle_since"]) // 3600), subject=e["subject"])),
+    "parent_merged": lambda e, n, now: (t("rebase", n=n), t("rebase_body", parent=e["parent"], subject=e["subject"])),
+    "parent_updated": lambda e, n, now: (t("parent_updated", n=n, parent=e["parent"]), e["subject"]),
+    "waiting_for_review": lambda e, n, now: (waiting_title(e, n), e["subject"]),
+    "message": lambda e, n, now: (f"{n} · {e['author']}", message_body(e)),
+    "review_requested": lambda e, n, now: (t("review_requested", owner=e["owner"]), f"{n} · {e['subject']}"),
+    "review_new_patch_set": lambda e, n, now: (t("new_patch_set", n=n, ps=e["patch_set"]),
+                                               f"{e['owner']} · {e['subject']}"),
+    "review_reply": lambda e, n, now: (t("replied", n=n, author=e["author"]), message_body(e)),
+    "base_red": lambda e, n, now: (t("base_red", branch=e["branch"], hours=int(ci.red_for_s(e, now) // 3600)),
+                                   t("base_red_body", changes=", ".join(map(str, e["changes"])))),
+}
+
+
+def notification(event, now=None):
+    render = NOTIFICATIONS.get(event["kind"])
+    return render(event, event.get("change"), now or time.time()) if render else None
 
 
 def waiting_on_url(username):

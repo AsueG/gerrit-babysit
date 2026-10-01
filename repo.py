@@ -49,9 +49,12 @@ def fetch_refs(refspecs):
 
 def branch_tips(branches):
     """{branch: tip SHA} of the branches fetched into the namespace; the others are left out."""
-    tips = {branch: git("rev-parse", "--verify", "--quiet", f"{FETCH_NAMESPACE}/{branch}").strip()
-            for branch in branches}
-    return {branch: sha for branch, sha in tips.items() if sha}
+    if not branches:
+        return {}
+    prefix = f"{FETCH_NAMESPACE}/"
+    refs = dict(line.split(" ") for line in
+                git("for-each-ref", "--format=%(refname) %(objectname)", prefix).splitlines())
+    return {branch: refs[prefix + branch] for branch in branches if prefix + branch in refs}
 
 
 _conflicts_memo = PollMemo()
@@ -244,8 +247,9 @@ def prepare_rebase(event):
     """Local only, never pushed: moves the change (and what is stacked on it) onto its new base in its worktree.
 
     A conflict is aborted, leaving the worktree as it was, and reported with its files and the command to rerun."""
-    main_checkout = git("worktree", "list", "--porcelain").partition("\n")[0].removeprefix("worktree ")
-    worktree = worktrees_by_change_id().get(event["change_id"])
+    listing = git("worktree", "list", "--porcelain")
+    main_checkout = listing.partition("\n")[0].removeprefix("worktree ")
+    worktree = worktrees_by_change_id(listing).get(event["change_id"])
     if not worktree or worktree == main_checkout:
         return {"status": "no_worktree"}
     if busy(worktree):
@@ -301,11 +305,11 @@ def unfinished_work(changes):
     return found
 
 
-def worktrees_by_change_id():
+def worktrees_by_change_id(listing=None):
     """Change-Id → worktree path; linked worktrees win over the main checkout, whose branch keeps moving.
 
     Only recomputed when a worktree appears, disappears or moves its HEAD."""
-    listing = git("worktree", "list", "--porcelain")
+    listing = listing if listing is not None else git("worktree", "list", "--porcelain")
     if listing not in _worktrees_memo:
         paths = [line.removeprefix("worktree ") for line in listing.splitlines() if line.startswith("worktree ")]
         found = {}

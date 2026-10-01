@@ -385,13 +385,16 @@ def daemon(interval):
         return detail
 
     while True:
+        started = time.monotonic()
+        # The poll's own duration (a slow fetch) comes off the wait, so a round still starts every `interval`.
+        pause = lambda started=started: time.sleep(max(0, interval - (time.monotonic() - started)))
         try:
             result = poll()
         # A bug on one odd change must not turn into a silent launchd crash loop.
         except Exception as error:  # noqa: BLE001
             expected = isinstance(error, (subprocess.SubprocessError, OSError, ValueError))
             write_daemon_poll(error=failed(error, expected))
-            time.sleep(interval)
+            pause()
             continue
         try:
             daemon_round(result, first_run)
@@ -401,7 +404,7 @@ def daemon(interval):
                 last_error = None
         except Exception as error:  # noqa: BLE001
             failed(error, expected=False)
-        time.sleep(interval)
+        pause()
 
 
 def daemon_round(result, first_run):

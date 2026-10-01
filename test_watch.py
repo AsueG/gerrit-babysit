@@ -409,6 +409,18 @@ class DaemonTest(unittest.TestCase):
         self.assertEqual(1, log.count("poll failed"))
         self.assertIn("recovered", log)
 
+    def test_the_poll_duration_comes_off_the_wait(self):
+        # Given
+        sleep = mock.Mock(side_effect=self.Stop())
+        clock = mock.Mock(side_effect=[100.0, 125.0])
+        # When
+        with mock.patch.object(watch.time, "sleep", sleep), mock.patch.object(watch.time, "monotonic", clock), \
+                mock.patch.object(watch, "poll", return_value={}), mock.patch.object(watch, "daemon_round"), \
+                mock.patch.object(watch, "write_daemon_poll"), self.assertRaises(self.Stop):
+            watch.daemon(60)
+        # Then
+        sleep.assert_called_once_with(35.0)
+
     def test_a_bug_inside_the_poll_does_not_crash_the_daemon(self):
         # Given
         status = mock.Mock()

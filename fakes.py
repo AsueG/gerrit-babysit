@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import time
@@ -71,16 +72,29 @@ def zuul_verdict(ps, timestamp, result):
                            f"- unit https://zuul/build/u{int(timestamp)} : {result}", timestamp)
 
 
+_template = None
+
+
+def template_repo():
+    """Built once per run, then copied: a git process costs ~25 ms, and every repo test needs the same start."""
+    global _template
+    if _template is None:
+        _template = tempfile.TemporaryDirectory()
+        run = lambda *args: subprocess.run(["git", "-C", _template.name, *args], capture_output=True, check=True)
+        run("init", "-q", "-b", "main")
+        run("config", "user.email", "t@t")
+        run("config", "user.name", "t")
+        run("commit", "-q", "--allow-empty", "-m", "base")
+    return pathlib.Path(_template.name)
+
+
 class GitRepoTest(unittest.TestCase):
     """A throwaway repo standing in for the checkout: REPO is resolved at call time."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.repo = pathlib.Path(self.tmp.name)
-        self.git("init", "-q", "-b", "main")
-        self.git("config", "user.email", "t@t")
-        self.git("config", "user.name", "t")
-        self.commit("base")
+        self.repo = pathlib.Path(self.tmp.name) / "repo"
+        shutil.copytree(template_repo(), self.repo, symlinks=True)
         patcher = mock.patch.object(repo, "REPO", self.repo)
         patcher.start()
         self.addCleanup(patcher.stop)

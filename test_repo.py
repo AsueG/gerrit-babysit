@@ -51,6 +51,21 @@ class StaleParentsTest(GitRepoTest):
         self.assertEqual([], [call for call in git_run.call_args_list if call.args[0] == "merge-base"])
 
 
+class BranchTipsTest(GitRepoTest):
+    def test_only_the_fetched_branches_asked_for(self):
+        # Given
+        tip = self.git("rev-parse", "HEAD")
+        self.git("update-ref", f"{repo.FETCH_NAMESPACE}/main", "main")
+        self.git("update-ref", f"{repo.FETCH_NAMESPACE}/release/1.0", "main")
+        self.git("update-ref", f"{repo.FETCH_NAMESPACE}/changes/7", "main")
+        # When
+        with mock.patch.object(repo, "git", wraps=repo.git) as git:
+            tips = repo.branch_tips({"main", "release/1.0", "never-fetched"})
+        # Then
+        self.assertEqual({"main": tip, "release/1.0": tip}, tips)
+        self.assertEqual(1, git.call_count)
+
+
 class MergeConflictsTest(GitRepoTest):
     def setUp(self):
         super().setUp()
