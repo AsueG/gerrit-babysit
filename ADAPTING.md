@@ -104,9 +104,11 @@ Ask the user for these rather than guessing; start small and let it grow.
 ## 5. macOS extras (optional)
 
 `macos/install.sh` builds the `GerritBabysit.app` applet, installs the LaunchAgent (`watch.py --daemon`:
-snapshot + notifications even without a Claude session) and links the SwiftBar plugin when SwiftBar is
-configured. Rerun it after moving the skill, changing `launchd_label` or updating the plugin (the plugin
-folder's path changes with each version). Outside `<repo>/.claude/skills`, it requires `repo`. Notifications go through
+snapshot + notifications even without a Claude session) and the SwiftBar plugin when SwiftBar is
+configured. All three go through `~/.config/gerrit-babysit/launch.py`, which runs the plugin version Claude
+Code installed last: a plugin update needs no rerun, and the daemon restarts itself onto the new version
+within a minute or two. Rerun it after moving a cloned skill or changing `launchd_label`. Outside
+`<repo>/.claude/skills`, it requires `repo`. Notifications go through
 SwiftBar (`swiftbar://notify`); without it, the daemon still keeps the snapshot fresh.
 
 `macos/open-babysit.sh` focuses the running `/gerrit-babysit` session or opens one, in an Orca

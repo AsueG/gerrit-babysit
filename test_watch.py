@@ -400,6 +400,23 @@ class DaemonTest(unittest.TestCase):
         self.assertEqual(1, log.count("Traceback"))
         self.assertEqual([mock.call(error="KeyError: 'number'")] * 3, status.call_args_list)
 
+    def test_a_plugin_update_ends_the_daemon_after_its_round(self):
+        # Given
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        launcher = pathlib.Path(tmp.name) / "launch.py"
+        launcher.write_text("import pathlib\ndef skill_dir():\n    return pathlib.Path('/elsewhere/1.4.2')\n")
+        round_ = mock.Mock()
+        # When
+        with mock.patch.dict(watch.os.environ, {"GERRIT_BABYSIT_LAUNCHER": str(launcher)}), \
+                mock.patch.object(watch, "swiftbar"), mock.patch.object(watch, "write_daemon_poll"), \
+                mock.patch.object(watch, "poll", return_value={}), mock.patch.object(watch, "daemon_round", round_), \
+                mock.patch("sys.stderr", io.StringIO()) as stderr:
+            code = watch.daemon(60)
+        # Then
+        self.assertEqual((0, 1), (code, round_.call_count))
+        self.assertIn("restarting", stderr.getvalue())
+
     def test_a_repeated_poll_failure_is_logged_once(self):
         # Given
         down = OSError("Could not resolve hostname")

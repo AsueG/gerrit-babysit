@@ -2,6 +2,7 @@
 """Block until one of my open Gerrit changes gets a new actionable event, print it as JSON, exit."""
 import argparse
 import concurrent.futures
+import importlib.util
 import json
 import os
 import pathlib
@@ -18,7 +19,7 @@ import known_failures
 import procs
 import repo
 import snooze
-from config import CACHE, SESSION, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write, read_json
+from config import CACHE, SESSION, SKILL_DIR, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write, read_json
 from memo import PollMemo
 
 QUERY = "owner:self status:open"
@@ -369,6 +370,17 @@ def swiftbar(action, **params):
         pass
 
 
+def superseded():
+    """True once the launcher (macos/launch.py) would run another install than this one: a plugin update."""
+    launcher = os.environ.get("GERRIT_BABYSIT_LAUNCHER")
+    if not launcher or not pathlib.Path(launcher).is_file():
+        return False
+    spec = importlib.util.spec_from_file_location("gerrit_babysit_launch", launcher)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.skill_dir().resolve() != SKILL_DIR
+
+
 def daemon(interval):
     """Status snapshot + notifications with no Claude session; clicking a notification opens one."""
     first_run = not DAEMON_STATE.exists()
@@ -406,6 +418,11 @@ def daemon(interval):
                 last_error = None
         except Exception as error:  # noqa: BLE001
             failed(error, expected=False)
+        if superseded():
+            # launchd's KeepAlive starts it again through the launcher, on the new version.
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} a newer install replaced {SKILL_DIR}: restarting",
+                  file=sys.stderr, flush=True)
+            return 0
         pause()
 
 

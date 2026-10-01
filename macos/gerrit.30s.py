@@ -20,12 +20,13 @@ sys.path.insert(0, str(SELF.parents[1]))
 import ci  # noqa: E402
 import snapshot  # noqa: E402
 import snooze  # noqa: E402
-from config import CI_STUCK_S, COMMAND, CONFIG, REPO, SKILL_DIR, STATUS, SWIFTBAR_PLUGIN, read_json  # noqa: E402
+from config import CI_STUCK_S, COMMAND, CONFIG, REPO, STATUS, SWIFTBAR_PLUGIN, USER_DIR, read_json  # noqa: E402
 from i18n import t  # noqa: E402
 
 DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{CONFIG['gerrit_host']}/dashboard/self"
 ICON = "sfimage=arrow.triangle.pull"
-OPEN_CLAUDE = SKILL_DIR / "GerritBabysit.app"
+# Built by macos/install.sh outside the plugin folder, which each update replaces.
+OPEN_CLAUDE = USER_DIR / "GerritBabysit.app"
 ORCA = shutil.which("orca") or "/opt/homebrew/bin/orca"
 CLAUDE = shutil.which("claude") or str(pathlib.Path.home() / ".local/bin/claude")
 # Worst first: the menu lists problems before anything else.
