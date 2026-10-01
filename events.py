@@ -61,6 +61,12 @@ def votes_of(patch_set):
     return votes
 
 
+def code_review_score(votes):
+    """The worst vote once someone voted against, else the best: what Gerrit shows on the change."""
+    code_review = votes.get("Code-Review", [])
+    return min(code_review) if code_review and min(code_review) < 0 else max(code_review, default=0)
+
+
 def failed_ci_labels(votes):
     return [label for label in CI_LABELS if min(votes.get(label, [0])) < 0]
 
@@ -81,6 +87,14 @@ def patch_set_messages(change, patch_set, author):
 
 def latest_ci_verdict(change, patch_set):
     return max(patch_set_messages(change, patch_set, CI_USER), key=lambda m: m["timestamp"], default=None)
+
+
+def ci_reading(change):
+    """(current patch set, votes, CI state, zuul's verdict when it failed)."""
+    patch_set = change.get("currentPatchSet", {})
+    votes = votes_of(patch_set)
+    state = ci_state(change, patch_set, votes)
+    return patch_set, votes, state, latest_ci_verdict(change, patch_set) if state == "failed" else None
 
 
 def ci_idle_since(change, patch_set):
@@ -394,16 +408,13 @@ def review_events(change, day, needs_my_attention=False):
 def pending_events(result, now=None):
     """Start-up sweep: what needs me right now, instead of replaying every past message."""
     for change in result["changes"]:
-        patch_set = change.get("currentPatchSet", {})
-        votes = votes_of(patch_set)
-        state = ci_state(change, patch_set, votes)
-        code_review = min(votes.get("Code-Review", [0]))
+        patch_set, votes, state, verdict = ci_reading(change)
+        code_review = code_review_score(votes)
         threads = threads_of(result, change["number"])
         if not (threads or code_review < 0 or state in ("failed", "stale_base")):
             continue
         event = {**event_base(change), "kind": "pending", "wip": change.get("wip", False), "ci": state,
                  "code_review": code_review, "threads_awaiting_me": threads}
-        verdict = latest_ci_verdict(change, patch_set) if state == "failed" else None
         if verdict:
             event["ci_verdict"] = verdict["message"][:1500]
             event["rechecks"] = my_rechecks(change, patch_set, verdict["timestamp"])
@@ -420,11 +431,7 @@ def status_rows(result, flakes, worktrees, now):
     for change in result["changes"]:
         number = change["number"]
         threads = threads_of(result, number)
-        patch_set = change.get("currentPatchSet", {})
-        votes = votes_of(patch_set)
-        code_review = votes.get("Code-Review", [])
-        state = ci_state(change, patch_set, votes)
-        verdict = latest_ci_verdict(change, patch_set) if state == "failed" else None
+        patch_set, votes, state, verdict = ci_reading(change)
         failed_jobs = [{"job": j["job"], "result": j["result"]} for j in ci.failed_jobs(verdict["message"])] if verdict else []
         outdated = result.get("outdated_parents", {}).get(number)
         rows.append({
@@ -433,7 +440,7 @@ def status_rows(result, flakes, worktrees, now):
             "subject": change["subject"],
             "url": change["url"],
             "wip": change.get("wip", False),
-            "code_review": min(code_review) if code_review and min(code_review) < 0 else max(code_review, default=0),
+            "code_review": code_review_score(votes),
             "ci": state,
             "ci_failed": failed_ci_labels(votes),
             "ci_failed_jobs": failed_jobs,

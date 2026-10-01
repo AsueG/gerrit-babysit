@@ -227,8 +227,8 @@ def busy(worktree):
     """Tracked edits or an operation halfway through: someone is working there, a rebase would get in the way."""
     if git("status", "--porcelain", "--untracked-files=no", cwd=worktree).strip():
         return True
-    return any(pathlib.Path(worktree, git("rev-parse", "--git-path", name, cwd=worktree).strip()).exists()
-               for name in IN_PROGRESS)
+    paths = git("rev-parse", *(arg for name in IN_PROGRESS for arg in ("--git-path", name)), cwd=worktree)
+    return any(pathlib.Path(worktree, path).exists() for path in paths.splitlines())
 
 
 def rebase_target(event):

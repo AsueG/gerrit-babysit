@@ -15,8 +15,11 @@ class PollMemo:
     def poll(self):
         try:
             yield self
-        finally:
-            self.kept, self._asked = self._asked, {}
+        except BaseException:
+            # A poll cut short (REST down) must not throw away what the next one would ask again.
+            self.kept, self._asked = {**self.kept, **self._asked}, {}
+            raise
+        self.kept, self._asked = self._asked, {}
 
     def get(self, key, compute, *args):
         """`compute` returning None means unknown: nothing is kept, so the next poll asks again."""

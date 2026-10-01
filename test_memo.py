@@ -31,6 +31,19 @@ class PollMemoTest(unittest.TestCase):
         # Then
         self.assertEqual(("known", 2), (found, compute.call_count))
 
+    def test_a_failed_poll_keeps_what_was_known(self):
+        # Given
+        memo = PollMemo()
+        with memo.poll():
+            memo.get("a", str.upper, "a")
+            memo.get("b", str.upper, "b")
+        # When
+        with self.assertRaises(OSError), memo.poll():
+            memo.get("a", str.upper, "a")
+            raise OSError("REST down")
+        # Then
+        self.assertEqual({"a": "A", "b": "B"}, memo.kept)
+
 
 if __name__ == "__main__":
     unittest.main()

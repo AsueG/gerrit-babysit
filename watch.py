@@ -123,14 +123,18 @@ def outdated_parents(changes, statuses):
     return outdated
 
 
-def unfinished_events(changes):
-    """Work an earlier session left halfway (a crash between the fix and its approval): local commits or edits Gerrit
-    has not seen, and drafts I never published, on my changes or on the ones I review."""
-    local = repo.unfinished_work(changes)
+def fetch_drafts():
+    """{change number: row} of the changes holding drafts I never published; {} when Gerrit is unreachable."""
     try:
-        drafts = {row["number"]: row for row in gerrit.query(DRAFTS_QUERY)}
+        return {row["number"]: row for row in gerrit.query(DRAFTS_QUERY)}
     except (subprocess.SubprocessError, OSError, ValueError):
-        drafts = {}
+        return {}
+
+
+def unfinished_events(changes, drafts):
+    """Work an earlier session left halfway (a crash between the fix and its approval): local commits or edits Gerrit
+    has not seen, and drafts I never published (see fetch_drafts), on my changes or on the ones I review."""
+    local = repo.unfinished_work(changes)
     mine = {c["number"]: c for c in changes}
     for number in sorted(local.keys() | drafts.keys()):
         yield f"{number}:unfinished", {
@@ -426,6 +430,46 @@ def daemon_round(result, first_run):
     record_flaky(result, now)
 
 
+def session_poll():
+    """(result, now, snoozed, cleanup): the daemon's poll when it runs, else one of our own."""
+    result = daemon_poll()
+    if result is None:
+        result = poll()
+        write_status(result)
+        record_flaky(result)
+    cleanup = dict(repo.cleanup_candidates(frozenset(c["id"] for c in result["changes"])))
+    now = time.time()
+    return result, now, snoozed_changes(result, now), cleanup
+
+
+def pending_report(result, now, snoozed, cleanup):
+    """The start-up sweep. The drafts query overlaps the extras; the local git work stays one thing at a time."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        drafts = pool.submit(fetch_drafts)
+        report = enrich(list(awake(enumerate(events.pending_events(result, now)), snoozed).values())
+                        + list(cleanup.values()), result.get("base_health"))
+        unfinished = awake(unfinished_events(result["changes"], drafts.result()), snoozed)
+    report = events.by_urgency(list(unfinished.values()) + report)
+    threads_error = result.get("threads_error")
+    if threads_error is None and not result["changes"]:
+        # No open change, no REST call in the poll: check the HTTP password before a change needs it.
+        threads_error = gerrit.http_error()
+    return {"status": "pending", "events": report, "nudges": events.nudges(report),
+            "threads_error": threads_error, "snoozed": snoozed}
+
+
+def events_report(fresh, result):
+    # A snooze ending or a morning catch-up can flush many at once: most urgent first.
+    report = events.by_urgency(enrich(list(fresh.values()), result.get("base_health")))
+    return {"status": "events", "events": report, "nudges": events.nudges(report),
+            "threads_error": result.get("threads_error")}
+
+
+def emit(report):
+    print(json.dumps(report, ensure_ascii=False, indent=1))
+    return 0
+
+
 def main():
     if not gerrit.HOST:
         sys.exit("gerrit-babysit: set gerrit_host in config.json (see config.example.json)")
@@ -443,14 +487,7 @@ def main():
     settling = {}
     while True:
         try:
-            result = daemon_poll()
-            if result is None:
-                result = poll()
-                write_status(result)
-                record_flaky(result)
-            cleanup = dict(repo.cleanup_candidates(frozenset(c["id"] for c in result["changes"])))
-            now = time.time()
-            snoozed = snoozed_changes(result, now)
+            result, now, snoozed, cleanup = session_poll()
             current = awake(events.events(result, now), snoozed) | cleanup
             failures = 0
         except (subprocess.SubprocessError, OSError, ValueError, DaemonError) as error:
@@ -467,17 +504,9 @@ def main():
         seen = load_seen()
         if args.pending:
             # Same poll for the report and the seen set: nothing can slip in between.
-            report = enrich(list(awake(enumerate(events.pending_events(result, now)), snoozed).values())
-                            + list(cleanup.values()), result.get("base_health"))
-            report = events.by_urgency(list(awake(unfinished_events(result["changes"]), snoozed).values()) + report)
+            report = pending_report(result, now, snoozed, cleanup)
             save_seen(remember(seen, current.keys(), result, current, now))
-            threads_error = result.get("threads_error")
-            if threads_error is None and not result["changes"]:
-                # No open change, no REST call in the poll: check the HTTP password before a change needs it.
-                threads_error = gerrit.http_error()
-            print(json.dumps({"status": "pending", "events": report, "nudges": events.nudges(report),
-                              "threads_error": threads_error, "snoozed": snoozed}, ensure_ascii=False, indent=1))
-            return 0
+            return emit(report)
 
         fresh = {key: current[key] for key in current.keys() - seen.keys()}
         if fresh and not settling:
@@ -488,12 +517,9 @@ def main():
         settling = {key: current.get(key, event) for key, event in settling.items()} | fresh
         if settling:
             # Enriched before being marked seen: a crash in the extras must not swallow the events.
-            # A snooze ending or a morning catch-up can flush many at once: most urgent first.
-            report = events.by_urgency(enrich(list(settling.values()), result.get("base_health")))
+            report = events_report(settling, result)
             save_seen(remember(seen, settling.keys(), result, current, now))
-            print(json.dumps({"status": "events", "events": report, "nudges": events.nudges(report),
-                              "threads_error": result.get("threads_error")}, ensure_ascii=False, indent=1))
-            return 0
+            return emit(report)
         time.sleep(args.interval)
 
 

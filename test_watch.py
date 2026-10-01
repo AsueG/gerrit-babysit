@@ -243,6 +243,7 @@ class SessionRetryTest(unittest.TestCase):
                 mock.patch.object(watch, "daemon_poll", side_effect=polls), \
                 mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
                 mock.patch.object(watch, "unfinished_events", return_value=list(unfinished)), \
+                mock.patch.object(watch, "fetch_drafts", return_value={}), \
                 mock.patch.object(watch, "enrich", side_effect=lambda events, *_: events), \
                 mock.patch.object(watch.time, "sleep") as sleep, \
                 mock.patch("sys.argv", ["watch.py", *argv]), \
@@ -297,7 +298,7 @@ class UnfinishedEventsTest(unittest.TestCase):
         with mock.patch.object(repo, "unfinished_work", return_value=local), \
                 mock.patch.object(gerrit, "query", return_value=drafts) as query:
             # When
-            found = dict(watch.unfinished_events([change(1)]))
+            found = dict(watch.unfinished_events([change(1)], watch.fetch_drafts()))
         # Then
         query.assert_called_once_with(watch.DRAFTS_QUERY)
         self.assertEqual([("/wt/1", True, True), (None, False, True)],
@@ -310,7 +311,7 @@ class UnfinishedEventsTest(unittest.TestCase):
         with mock.patch.object(repo, "unfinished_work", return_value=local), \
                 mock.patch.object(gerrit, "query", side_effect=OSError("offline")):
             # When
-            found = dict(watch.unfinished_events([change(1)]))
+            found = dict(watch.unfinished_events([change(1)], watch.fetch_drafts()))
         # Then
         self.assertEqual([(True, False)], [(e["busy"], e["drafts"]) for e in found.values()])
 

@@ -15,6 +15,10 @@ def load():
     return {int(k): v for k, v in read_json(SNOOZE).items()}
 
 
+def save(entries):
+    atomic_write(SNOOZE, {str(n): e for n, e in sorted(entries.items())})
+
+
 def is_active(entry, patch_set, base_red, now):
     if entry.get("base_green"):
         return base_red
@@ -73,7 +77,7 @@ def set_snooze(number, until=None, patch_set=None, base_green=False, now=None):
         entries[int(number)] = {"base_green": True}
     else:
         entries[int(number)] = {"patch_set": int(patch_set)} if patch_set is not None else {"until": until}
-    atomic_write(SNOOZE, {str(n): e for n, e in sorted(entries.items())})
+    save(entries)
 
 
 def forget(numbers):
@@ -81,13 +85,13 @@ def forget(numbers):
     entries = load()
     kept = {n: e for n, e in entries.items() if n not in numbers}
     if kept != entries:
-        atomic_write(SNOOZE, {str(n): e for n, e in sorted(kept.items())})
+        save(kept)
 
 
 def wake(number):
     entries = load()
     if entries.pop(int(number), None) is not None:
-        atomic_write(SNOOZE, {str(n): e for n, e in sorted(entries.items())})
+        save(entries)
 
 
 def main():

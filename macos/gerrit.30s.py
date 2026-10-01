@@ -54,25 +54,29 @@ STYLES = {
 }
 
 
+def cr_label(change):
+    return f"+{change['code_review']}" if change["code_review"] > 0 else "0"
+
+
+# snapshot.state → snapshot row → label; the others read `bar_<state>` as is.
+LABELS = {
+    "ci_failed": lambda c: t("bar_ci_failed", labels=", ".join(c["ci_failed"])),
+    "rejected": lambda c: f"CR {c['code_review']}",
+    "parent_updated": lambda c: t("bar_parent_updated", parent=c["outdated_parent"]),
+    "ci_stuck": lambda c: t("bar_ci_stuck", hours=CI_STUCK_S // 3600),
+    "ready_parent": lambda c: t("bar_ready_parent", parent=c["open_parent"]),
+    "submit_blocked": lambda c: t("bar_submit_blocked", requirements=", ".join(c["submit_blocked"])),
+    "ci_running": lambda c: t("bar_ci_running", cr=cr_label(c)),
+    "ci_passed": lambda c: t("bar_ci_passed", cr=cr_label(c)),
+}
+
+
 def label_of(state, change):
     if state == "wip":
         problem = snapshot.problem(change)
         return f"WIP · {label_of(problem, change)}" if problem else "WIP"
-    if state == "ci_failed":
-        return t("bar_ci_failed", labels=", ".join(change["ci_failed"]))
-    if state == "rejected":
-        return f"CR {change['code_review']}"
-    if state == "parent_updated":
-        return t("bar_parent_updated", parent=change["outdated_parent"])
-    if state == "ci_stuck":
-        return t("bar_ci_stuck", hours=CI_STUCK_S // 3600)
-    if state == "ready_parent":
-        return t("bar_ready_parent", parent=change["open_parent"])
-    if state == "submit_blocked":
-        return t("bar_submit_blocked", requirements=", ".join(change["submit_blocked"]))
-    if state in ("ci_running", "ci_passed"):
-        return t(f"bar_{state}", cr=f"+{change['code_review']}" if change["code_review"] > 0 else "0")
-    return t(f"bar_{state}")
+    render = LABELS.get(state)
+    return render(change) if render else t(f"bar_{state}")
 
 
 def state_of(change):

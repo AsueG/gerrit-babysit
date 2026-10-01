@@ -480,6 +480,15 @@ class UnfinishedWorkTest(GitRepoTest):
         # Then
         self.assertEqual([(8, False, True)], [(n, w["unpushed"], w["busy"]) for n, w in found.items()])
 
+    def test_a_rebase_halfway_through_is_unfinished(self):
+        # Given
+        pushed = self.commit("feat", CHANGE_ID)
+        (self.repo / ".git" / "rebase-merge").mkdir()
+        # When
+        found = repo.unfinished_work([self.pushed(7, CHANGE_ID, pushed)])
+        # Then
+        self.assertEqual([(7, False, True)], [(n, w["unpushed"], w["busy"]) for n, w in found.items()])
+
 
 if __name__ == "__main__":
     unittest.main()
