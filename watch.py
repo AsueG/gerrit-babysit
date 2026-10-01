@@ -67,13 +67,9 @@ def open_threads(changes):
     """{change number: threads awaiting me}; the REST call only reruns when the change moves."""
     keys = {c["number"]: (c["number"], c.get("lastUpdated")) for c in changes}
     with _threads_memo.poll() as memo:
-        missing = [key for key in keys.values() if key not in memo]
-        fetched = {}
-        if missing:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                fetched = dict(zip(missing, pool.map(
-                    lambda key: events.awaiting_threads(gerrit.rest_get(f"/changes/{key[0]}/comments")), missing)))
-        return {number: memo.get(key, fetched.get, key) for number, key in keys.items()}
+        threads = memo.get_all(keys.values(),
+                               lambda key: events.awaiting_threads(gerrit.rest_get(f"/changes/{key[0]}/comments")))
+    return {number: threads[key] for number, key in keys.items()}
 
 
 _requirements_memo = PollMemo()
@@ -85,14 +81,15 @@ def submit_blockers(changes):
     moves."""
     keys = {c["number"]: (c["number"], c.get("lastUpdated")) for c in changes
             if events.is_ready_to_submit(c.get("currentPatchSet", {}))}
-    def fetch(number):
-        return events.unsatisfied_requirements(gerrit.rest_get(f"/changes/{number}?o=SUBMIT_REQUIREMENTS"))
+    def fetch(key):
+        return events.unsatisfied_requirements(gerrit.rest_get(f"/changes/{key[0]}?o=SUBMIT_REQUIREMENTS"))
 
     try:
         with _requirements_memo.poll() as memo:
-            return {number: memo.get(key, fetch, number) for number, key in keys.items()}
+            requirements = memo.get_all(keys.values(), fetch)
     except (OSError, ValueError, KeyError):
         return None
+    return {number: requirements[key] for number, key in keys.items()}
 
 
 def parent_statuses(changes):
@@ -442,12 +439,13 @@ def session_poll():
     return result, now, snoozed_changes(result, now), cleanup
 
 
-def pending_report(result, now, snoozed, cleanup):
-    """The start-up sweep. The drafts query overlaps the extras; the local git work stays one thing at a time."""
+def pending_report(result, now, snoozed, current):
+    """The start-up sweep over `current`, the poll's awake events and cleanup candidates. The drafts query overlaps
+    the extras; the local git work stays one thing at a time."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         drafts = pool.submit(fetch_drafts)
-        report = enrich(list(awake(enumerate(events.pending_events(result, now)), snoozed).values())
-                        + list(cleanup.values()), result.get("base_health"))
+        sweep = events.pending_events(result, now, current.values())
+        report = enrich(list(awake(enumerate(sweep), snoozed).values()), result.get("base_health"))
         unfinished = awake(unfinished_events(result["changes"], drafts.result()), snoozed)
     report = events.by_urgency(list(unfinished.values()) + report)
     threads_error = result.get("threads_error")
@@ -504,7 +502,7 @@ def main():
         seen = load_seen()
         if args.pending:
             # Same poll for the report and the seen set: nothing can slip in between.
-            report = pending_report(result, now, snoozed, cleanup)
+            report = pending_report(result, now, snoozed, current)
             save_seen(remember(seen, current.keys(), result, current, now))
             return emit(report)
 

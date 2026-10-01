@@ -105,6 +105,15 @@ class MergeConflictsTest(GitRepoTest):
         self.assertEqual([(self.git("rev-parse", "release"), c["currentPatchSet"]["revision"], True)],
                          list(repo._conflicts_memo.kept))
 
+    def test_the_content_merge_setting_is_asked_once_per_project(self):
+        # Given
+        changes = [self.conflicting_change(1, "release"), self.conflicting_change(2, "release")]
+        # When
+        with mock.patch.object(gerrit, "uses_content_merge", return_value=True) as asked:
+            repo.merge_conflicts(changes)
+        # Then
+        asked.assert_called_once_with(changes[0]["project"])
+
     def test_without_content_merge_edits_far_apart_in_one_file_conflict(self):
         # Given
         lines = [f"line {i}\n" for i in range(20)]

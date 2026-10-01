@@ -1,5 +1,6 @@
 """A memo that only keeps what the latest poll asked for: keyed by branch tip or patch set, it would otherwise grow with
 every push."""
+import concurrent.futures
 import contextlib
 
 
@@ -29,3 +30,12 @@ class PollMemo:
         if value is not None:
             self._asked[key] = value
         return value
+
+    def get_all(self, keys, fetch, max_workers=4):
+        """{key: value}, the keys the memo lacks fetched side by side: `fetch(key)` is a REST round trip."""
+        missing = [key for key in keys if key not in self]
+        fetched = {}
+        if missing:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                fetched = dict(zip(missing, pool.map(fetch, missing)))
+        return {key: self.get(key, fetched.get, key) for key in keys}

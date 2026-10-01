@@ -30,7 +30,10 @@ RECHECK = re.compile(r"recheck(?:-[\w-]+)?")
 
 
 ZUUL_JOB_LINE = re.compile(r"^- (\S+) (https://\S+/build/(\w+)) : (\w+)", re.MULTILINE)
-LOG_PREFIX = re.compile(r"^\S+ \S+ \| \w+ \| ?")
+LOG_PREFIX = re.compile(r"^\S+ \S+ \| \w+ \| ?", re.MULTILINE)
+# The first failed zuul task (its bare `ERROR` line) or the first PLAY RECAP, whichever comes first.
+LOG_TAIL_END = re.compile(r"^(?:[^\n]*PLAY RECAP[^\n]*|\S+ \S+ \| \w+ \| ?[ \t]*ERROR[ \t\r]*)$", re.MULTILINE)
+GRADLE_FAILURE = "* What went wrong:"
 VERDICT_PATCH_SET = re.compile(r"^Patch Set (\d+):")
 
 
@@ -71,16 +74,20 @@ def flaky_counts(records, jobs, now=None):
 
 
 def gradle_failure(log):
-    """Gradle's `* What went wrong:` block(s), without zuul's timestamp prefixes."""
-    lines = [LOG_PREFIX.sub("", line) for line in log.splitlines()]
-    if "* What went wrong:" not in lines:
+    """Gradle's `* What went wrong:` blocks, one per failed task with `--continue`, without zuul's timestamp prefixes."""
+    start = log.find(GRADLE_FAILURE)
+    if start < 0:
         return ""
-    block = []
-    for line in lines[lines.index("* What went wrong:") + 1:]:
-        if line.startswith(("* Try:", "BUILD FAILED")):
-            break
-        block.append(line)
-    return "\n".join(block).strip()[:3000]
+    blocks, block = [], None
+    for line in LOG_PREFIX.sub("", log[log.rfind("\n", 0, start) + 1:]).splitlines():
+        if line == GRADLE_FAILURE:
+            block = []
+            blocks.append(block)
+        elif line.startswith(("* Try:", "BUILD FAILED")):
+            block = None
+        elif block is not None:
+            block.append(line)
+    return "\n\n".join(text for b in blocks if (text := "\n".join(b).strip()))[:3000]
 
 
 TAIL_LINES = 40
@@ -89,11 +96,16 @@ TAIL_LINES = 40
 def log_tail(log):
     """Without a Gradle block: the lines leading up to the first failed zuul task (its bare `ERROR` line), else to the
     first PLAY RECAP, else the end of the log. The post-run playbooks that follow are the same for every failure."""
-    lines = log.splitlines()
-    end = next((i for i, line in enumerate(lines) if "PLAY RECAP" in line
-                or (LOG_PREFIX.match(line) and LOG_PREFIX.sub("", line).strip() == "ERROR")), len(lines))
-    kept = [stripped for line in lines[:end] if (stripped := LOG_PREFIX.sub("", line).rstrip()).strip()]
-    return "\n".join(kept[-TAIL_LINES:])[-3000:]
+    end = LOG_TAIL_END.search(log)
+    kept = []
+    # From the end: a log of several MB only pays for the lines it keeps.
+    for line in reversed(log[:end.start() if end else len(log)].splitlines()):
+        stripped = LOG_PREFIX.sub("", line).rstrip()
+        if stripped.strip():
+            kept.append(stripped)
+            if len(kept) == TAIL_LINES:
+                break
+    return "\n".join(reversed(kept))[-3000:]
 
 
 # Build ids, hashes, durations, ports and line numbers differ between two runs of the same breakage.

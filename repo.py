@@ -72,13 +72,15 @@ def merge_conflicts(changes):
     fetch_refs(sorted(refspecs))
 
     tips = branch_tips({c["branch"] for c, _ in candidates})
+    # Once per project, not per change: an unreadable setting is asked again, each time paying REST's timeout.
+    content_merges = {project: gerrit.uses_content_merge(project) for project in {c["project"] for c, _ in candidates}}
     conflicts = {}
     with _conflicts_memo.poll() as memo:
         for change, patch_set in candidates:
             target = tips.get(change["branch"])
             if not target:
                 continue
-            content_merge = gerrit.uses_content_merge(change["project"])
+            content_merge = content_merges[change["project"]]
             merge = merged_with_content if content_merge else changed_on_both_sides
             # None when the patch set is not fetched (its ref failed): unknown, not clean.
             files = memo.get((target, patch_set["revision"], content_merge), merge, target, patch_set["revision"])

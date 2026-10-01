@@ -38,7 +38,10 @@ def is_actionable(message):
 
 def is_ready_to_submit(patch_set):
     # submitRecords can report OK on a change voted -1 (seen on Gerrit 3.x), so read the votes instead.
-    votes = votes_of(patch_set)
+    return votes_ready(votes_of(patch_set))
+
+
+def votes_ready(votes):
     code_review = votes.get("Code-Review", [])
     return 2 in code_review and min(code_review) >= 0 and ci_passed(votes)
 
@@ -308,7 +311,9 @@ def state_events(change, result, day, now):
     stale = result.get("stale_parents", {})
     outdated = result.get("outdated_parents", {})
     blockers = (result.get("submit_blockers") or {}).get(number)
-    state = ci_state(change, patch_set, votes_of(patch_set))
+    votes = votes_of(patch_set)
+    state = ci_state(change, patch_set, votes)
+    voted = votes_ready(votes)
     if is_ci_stuck(change, patch_set, state, now):
         yield f'{number}:ci_stuck:{ps}', {**base, "kind": "ci_stuck", "idle_since": ci_idle_since(change, patch_set)}
     if number in stale:
@@ -321,7 +326,7 @@ def state_events(change, result, day, now):
             **base, "kind": "parent_updated", **outdated[number]}
     elif number in conflicts:
         yield f'{number}:conflict:{ps}', {**base, "kind": "merge_conflict", "files": conflicts[number]}
-    elif is_ready(result, change) and number not in result["parents"]:
+    elif voted and threads_of(result, number) == [] and number not in result["parents"]:
         if blockers:
             # The votes are there but Gerrit would refuse the submit: once per patch set and set of blockers.
             yield f'{number}:blocked:{ps}:{"+".join(blockers)}', {
@@ -333,7 +338,7 @@ def state_events(change, result, day, now):
     attention_sets = result.get("attention_sets")
     wait = None if attention_sets is None else attention_sets.get(number, {"holders": [], "removed": []})
     wait = review_wait(change, patch_set, wait, now)
-    if (wait and number not in conflicts and number not in stale and not is_ready_to_submit(patch_set)
+    if (wait and number not in conflicts and number not in stale and not voted
             and state not in ("failed", "stale_base")):
         days, waiting_on, dismissed = wait
         yield f'{number}:unreviewed:{ps}:{day}', {
@@ -405,8 +410,9 @@ def review_events(change, day, needs_my_attention=False):
             yield f'{number}:review_reply:{message["timestamp"]}', message_event(base, message, "review_reply")
 
 
-def pending_events(result, now=None):
-    """Start-up sweep: what needs me right now, instead of replaying every past message."""
+def pending_events(result, now=None, current=None):
+    """Start-up sweep: what needs me right now, instead of replaying every past message. `current` holds the
+    poll's events() already worked out by the caller."""
     for change in result["changes"]:
         patch_set, votes, state, verdict = ci_reading(change)
         code_review = code_review_score(votes)
@@ -419,7 +425,7 @@ def pending_events(result, now=None):
             event["ci_verdict"] = verdict["message"][:1500]
             event["rechecks"] = my_rechecks(change, patch_set, verdict["timestamp"])
         yield event
-    for _, event in events(result, now):
+    for event in current if current is not None else (event for _, event in events(result, now)):
         if event["kind"] != "message" and not event.get("participated"):
             yield event
 

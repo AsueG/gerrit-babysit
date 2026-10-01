@@ -42,6 +42,19 @@ class CiDiagnosisTest(unittest.TestCase):
         self.assertNotIn("* Try:", failure)
         self.assertNotIn("| main |", failure)
 
+    def test_gradle_failure_keeps_every_block_of_a_continued_build(self):
+        # Given
+        log = "\n".join(f"2026-09-29 10:00:00.1 | main | {line}" for line in [
+            "FAILURE: Build completed with 2 failures.", "1: Task failed with an exception.", "* What went wrong:",
+            "Execution failed for task ':app:compileKotlin'.", "* Try:", "> Run with --stacktrace",
+            "2: Task failed with an exception.", "* What went wrong:", "Execution failed for task ':app:test'.",
+            "> There were failing tests.", "* Try:", "> Run with --scan", "BUILD FAILED in 1m"])
+        # When
+        failure = ci.gradle_failure(log)
+        # Then
+        self.assertEqual("Execution failed for task ':app:compileKotlin'.\n\n"
+                         "Execution failed for task ':app:test'.\n> There were failing tests.", failure)
+
     def test_gradle_failure_absent(self):
         # Given
         log = "2026-09-28 10:56:59.095837 | main | BUILD SUCCESSFUL"
