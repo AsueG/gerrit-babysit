@@ -74,9 +74,12 @@ def failed_ci_labels(votes):
     return [label for label in CI_LABELS if min(votes.get(label, [0])) < 0]
 
 
-def ci_state(change, patch_set, votes):
+def ci_state(change, patch_set, votes, verdict=None):
+    """`verdict` is zuul's latest one on the patch set when the caller already has it."""
     if failed_ci_labels(votes):
-        return "stale_base" if is_merge_failed(change, patch_set) else "failed"
+        verdict = verdict or latest_ci_verdict(change, patch_set)
+        # 'Merge Failed.': no job ran, the base is stale.
+        return "stale_base" if verdict and "Merge Failed." in verdict["message"] else "failed"
     if ci_passed(votes):
         return "passed"
     return "running"
@@ -96,8 +99,9 @@ def ci_reading(change):
     """(current patch set, votes, CI state, zuul's verdict when it failed)."""
     patch_set = change.get("currentPatchSet", {})
     votes = votes_of(patch_set)
-    state = ci_state(change, patch_set, votes)
-    return patch_set, votes, state, latest_ci_verdict(change, patch_set) if state == "failed" else None
+    verdict = latest_ci_verdict(change, patch_set) if failed_ci_labels(votes) else None
+    state = ci_state(change, patch_set, votes, verdict)
+    return patch_set, votes, state, verdict if state == "failed" else None
 
 
 def ci_idle_since(change, patch_set):
@@ -108,12 +112,6 @@ def ci_idle_since(change, patch_set):
 
 def is_ci_stuck(change, patch_set, state, now):
     return state == "running" and now - ci_idle_since(change, patch_set) > CI_STUCK_S
-
-
-def is_merge_failed(change, patch_set):
-    """Zuul's latest verdict on this patch set is 'Merge Failed.': no job ran, the base is stale."""
-    verdict = latest_ci_verdict(change, patch_set)
-    return verdict is not None and "Merge Failed." in verdict["message"]
 
 
 def my_rechecks(change, patch_set, before):
@@ -263,11 +261,6 @@ def ready_since(patch_set):
 def threads_of(result, number):
     """Threads awaiting me on a change of mine; None when REST failed, which is unknown, not none."""
     return None if result.get("threads_error") else result.get("threads", {}).get(number, [])
-
-
-def is_ready(result, change):
-    """The votes are in and no thread waits on me; parents and submit requirements are left to the caller."""
-    return is_ready_to_submit(change.get("currentPatchSet", {})) and threads_of(result, change["number"]) == []
 
 
 def events(result, now=None):
@@ -458,7 +451,8 @@ def status_rows(result, flakes, worktrees, now):
             "conflict": number in result["conflicts"],
             "open_parent": result["parents"].get(number),
             "outdated_parent": outdated["parent"] if outdated else None,
-            "ready": is_ready(result, change) and not blockers.get(number),
+            # The votes are in and no thread waits on me; an open parent is the reader's call.
+            "ready": votes_ready(votes) and threads == [] and not blockers.get(number),
             "submit_blocked": blockers.get(number, []),
             "worktree": worktrees.get(change["id"]),
             "branch": change["branch"],

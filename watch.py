@@ -290,16 +290,17 @@ def enrich(reported, base=None):
     return reported
 
 
-def write_status(result=None, error=None):
+def write_status(result=None, error=None, listing=None):
     """Snapshot read by the SwiftBar plugin and the Claude Code status line, so they never hit Gerrit themselves.
 
-    On error the last good rows are kept and `updated` stays at the last success."""
+    On error the last good rows are kept and `updated` stays at the last success. `listing` is `git worktree list`
+    when the caller already ran it."""
     now = time.time()
     if error is not None:
         previous = read_json(STATUS)
         atomic_write(STATUS, {**previous, "last_attempt": now, "last_error": error})
         return
-    rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(), now)
+    rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(listing), now)
     atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None,
                           "threads_error": result.get("threads_error"), "changes": rows,
                           "base_health": result.get("base_health", {})})
@@ -430,11 +431,15 @@ def daemon_round(result, first_run):
 def session_poll():
     """(result, now, snoozed, cleanup): the daemon's poll when it runs, else one of our own."""
     result = daemon_poll()
-    if result is None:
+    own_poll = result is None
+    if own_poll:
         result = poll()
-        write_status(result)
+    # One listing for the snapshot and the cleanup check.
+    listing = repo.worktree_listing()
+    if own_poll:
+        write_status(result, listing=listing)
         record_flaky(result)
-    cleanup = dict(repo.cleanup_candidates(frozenset(c["id"] for c in result["changes"])))
+    cleanup = dict(repo.cleanup_candidates(frozenset(c["id"] for c in result["changes"]), listing))
     now = time.time()
     return result, now, snoozed_changes(result, now), cleanup
 

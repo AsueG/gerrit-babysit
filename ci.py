@@ -97,14 +97,15 @@ def log_tail(log):
     """Without a Gradle block: the lines leading up to the first failed zuul task (its bare `ERROR` line), else to the
     first PLAY RECAP, else the end of the log. The post-run playbooks that follow are the same for every failure."""
     end = LOG_TAIL_END.search(log)
+    stop = end.start() if end else len(log)
     kept = []
-    # From the end: a log of several MB only pays for the lines it keeps.
-    for line in reversed(log[:end.start() if end else len(log)].splitlines()):
-        stripped = LOG_PREFIX.sub("", line).rstrip()
+    # Walked back from the end: a log of several MB only pays for the lines it keeps.
+    while stop > 0 and len(kept) < TAIL_LINES:
+        start = log.rfind("\n", 0, stop) + 1
+        stripped = LOG_PREFIX.sub("", log[start:stop]).rstrip()
         if stripped.strip():
             kept.append(stripped)
-            if len(kept) == TAIL_LINES:
-                break
+        stop = start - 1
     return "\n".join(reversed(kept))[-3000:]
 
 

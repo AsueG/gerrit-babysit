@@ -34,7 +34,8 @@ ORDER = {"red": 0, "green": 1, "orange": 2, None: 3, "gray": 4}
 
 def scope(subject):
     match = re.match(r"^(?:\[WIP\]\s*)?\w+\(([^)]+)\)", subject)
-    return match.group(1) if match else subject[:30]
+    # A `|` would end SwiftBar's title and turn the rest into parameters.
+    return (match.group(1) if match else subject[:30]).replace("|", "¦")
 
 
 # snapshot.state → (sf symbol, color); red is exactly snapshot.PROBLEMS.

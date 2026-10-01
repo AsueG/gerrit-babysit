@@ -4,6 +4,25 @@ import concurrent.futures
 import contextlib
 
 
+_UNSET = object()
+
+
+class LatestMemo:
+    """The value of the last key asked only: a new key replaces it."""
+
+    def __init__(self):
+        self.clear()
+
+    def clear(self):
+        self.key, self.value = _UNSET, None
+
+    def get(self, key, compute, *args):
+        if key != self.key:
+            self.value = compute(*args)
+            self.key = key
+        return self.value
+
+
 class PollMemo:
     def __init__(self):
         self.kept = {}

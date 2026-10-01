@@ -6,7 +6,7 @@ import subprocess
 
 import gerrit
 from config import CONFIG, REPO
-from memo import PollMemo
+from memo import LatestMemo, PollMemo
 
 PROTECTED_BRANCHES = set(CONFIG["protected_branches"])
 # Private namespace: never moves a ref another session relies on (branches, FETCH_HEAD).
@@ -148,18 +148,23 @@ def change_id_of(sha):
     return value if CHANGE_ID.fullmatch(value) else ""
 
 
-_cleanup_memo = {}
+_cleanup_memo = LatestMemo()
 _change_ids = PollMemo()
 
 
-def cleanup_candidates(open_ids=frozenset()):
+def worktree_listing():
+    return git("worktree", "list", "--porcelain")
+
+
+def cleanup_candidates(open_ids=frozenset(), listing=None):
     """Read-only: local branches (and their worktree) whose tip is a pushed patch set of a merged or abandoned CL of
     mine.
 
     Branches of still-open CLs are skipped, so the Gerrit query only reruns when a CL leaves `open_ids` or a
     branch moves. Runs every poll: only the few candidates pay for a `git status` of their worktree."""
+    listing = listing if listing is not None else worktree_listing()
     blocks = [dict(line.partition(" ")[::2] for line in block.splitlines())
-              for block in git("worktree", "list", "--porcelain").split("\n\n") if block.strip()]
+              for block in listing.split("\n\n") if block.strip()]
     main_branch = blocks[0].get("branch", "").removeprefix("refs/heads/") if blocks else ""
     worktree_of = {b["branch"].removeprefix("refs/heads/"): b for b in blocks[1:] if "branch" in b}
 
@@ -177,12 +182,9 @@ def cleanup_candidates(open_ids=frozenset()):
             branches[branch] = (sha, change_id, worktree["worktree"] if worktree else None)
     if not branches:
         return []
-    key = frozenset(branches.items())
-    if key not in _cleanup_memo:
-        _cleanup_memo.clear()
-        _cleanup_memo[key] = list(closed_branches(branches))
+    closed = _cleanup_memo.get(frozenset(branches.items()), lambda: list(closed_branches(branches)))
     # Checked on every call, not memoized: a worktree can get dirty without its branch moving.
-    return [(k, event) for k, event in _cleanup_memo[key]
+    return [(k, event) for k, event in closed
             if not event["worktree"] or not git("status", "--porcelain", cwd=event["worktree"]).strip()]
 
 
@@ -249,7 +251,7 @@ def prepare_rebase(event):
     """Local only, never pushed: moves the change (and what is stacked on it) onto its new base in its worktree.
 
     A conflict is aborted, leaving the worktree as it was, and reported with its files and the command to rerun."""
-    listing = git("worktree", "list", "--porcelain")
+    listing = worktree_listing()
     main_checkout = listing.partition("\n")[0].removeprefix("worktree ")
     worktree = worktrees_by_change_id(listing).get(event["change_id"])
     if not worktree or worktree == main_checkout:
@@ -282,7 +284,7 @@ def prepare_rebase(event):
             "commits": int(git("rev-list", "--count", f"{onto}..HEAD", cwd=worktree).strip() or 0)}
 
 
-_worktrees_memo = {}
+_worktrees_memo = LatestMemo()
 
 
 def unfinished_work(changes):
@@ -311,14 +313,15 @@ def worktrees_by_change_id(listing=None):
     """Change-Id → worktree path; linked worktrees win over the main checkout, whose branch keeps moving.
 
     Only recomputed when a worktree appears, disappears or moves its HEAD."""
-    listing = listing if listing is not None else git("worktree", "list", "--porcelain")
-    if listing not in _worktrees_memo:
-        paths = [line.removeprefix("worktree ") for line in listing.splitlines() if line.startswith("worktree ")]
-        found = {}
-        for path in reversed(paths):
-            trailers = git("log", "-10", "--format=%(trailers:key=Change-Id,valueonly)", "HEAD", cwd=path)
-            for change_id in trailers.split():
-                found.setdefault(change_id, path)
-        _worktrees_memo.clear()
-        _worktrees_memo[listing] = found
-    return _worktrees_memo[listing]
+    listing = listing if listing is not None else worktree_listing()
+    return _worktrees_memo.get(listing, change_ids_by_worktree, listing)
+
+
+def change_ids_by_worktree(listing):
+    paths = [line.removeprefix("worktree ") for line in listing.splitlines() if line.startswith("worktree ")]
+    found = {}
+    for path in reversed(paths):
+        trailers = git("log", "-10", "--format=%(trailers:key=Change-Id,valueonly)", "HEAD", cwd=path)
+        for change_id in trailers.split():
+            found.setdefault(change_id, path)
+    return found

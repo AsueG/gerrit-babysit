@@ -111,6 +111,12 @@ class MenuStateTest(unittest.TestCase):
         # Then
         self.assertEqual([(f"WIP · {plugin.t('bar_conflict')}", "pencil", "gray"), ("WIP", "pencil", "gray")], found)
 
+    def test_a_pipe_in_the_subject_does_not_break_the_title_line(self):
+        # When
+        found = [plugin.scope("Fix A | B"), plugin.scope("feat(a|b): x")]
+        # Then
+        self.assertEqual(["Fix A ¦ B", "a¦b"], found)
+
     def test_ready_is_green_only_without_an_open_parent(self):
         # Given
         ready, blocked = row(ready=True), row(ready=True, open_parent=9)
