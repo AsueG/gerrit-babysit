@@ -71,7 +71,7 @@ def http_credentials():
     return entry[0], entry[2]
 
 
-_content_merge = {}
+_content_merge: dict[str, bool] = {}
 
 
 def uses_content_merge(project):

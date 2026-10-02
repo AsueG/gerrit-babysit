@@ -22,6 +22,7 @@ import statusline_segment  # noqa: E402
 
 # The plugin's file name (SwiftBar's refresh interval is in it) is not an importable module name.
 _spec = importlib.util.spec_from_file_location("swiftbar_plugin", pathlib.Path(__file__).parent / "macos" / "gerrit.30s.py")
+assert _spec and _spec.loader
 plugin = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(plugin)
 
