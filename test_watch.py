@@ -233,12 +233,21 @@ class SettleTest(unittest.TestCase):
         self.assertFalse(state.exists())
 
 
+NETWORK = {"dns": {"gerrit.example.com": False}, "vpn_tunnel": False, "globalprotect_running": True}
+
+
 class SessionRetryTest(unittest.TestCase):
-    def run_main(self, argv, polls, unfinished=()):
-        out = []
+    def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        with mock.patch.object(watch, "STATE", pathlib.Path(tmp.name) / "seen.json"), \
+        self.cache = pathlib.Path(tmp.name)
+        (self.cache / "status.json").write_text(json.dumps({"updated": 1000.0}))
+
+    def run_main(self, argv, polls, unfinished=()):
+        out = []
+        with mock.patch.object(watch, "STATE", self.cache / "seen.json"), \
+                mock.patch.object(watch, "STATUS", self.cache / "status.json"), \
+                mock.patch.object(watch.network, "checks", return_value=NETWORK), \
                 mock.patch.object(watch, "write_session_lock"), \
                 mock.patch.object(watch, "write_status"), \
                 mock.patch.object(watch, "daemon_poll", side_effect=polls), \
@@ -256,11 +265,43 @@ class SessionRetryTest(unittest.TestCase):
         # Given
         down = watch.DaemonError("Could not resolve hostname")
         back = poll_result([change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10)])])
+        (self.cache / "seen.json").write_text(json.dumps({"unreachable:1000.0": 1}))
         # When
         code, out, sleeps = self.run_main([], [down] * 15 + [back, back])
         # Then
         self.assertEqual((0, "events"), (code, out[0]["status"]))
+        self.assertEqual(["message"], [e["kind"] for e in out[0]["events"]])
         self.assertEqual(watch.MAX_BACKOFF_S, max(sleeps[:15]))
+
+    def test_a_lasting_outage_wakes_the_session_once_with_the_network_checks(self):
+        # Given
+        down = watch.DaemonError("Could not resolve hostname")
+        # When
+        code, (first,), sleeps = self.run_main([], [down] * 3)
+        _, (after,), _ = self.run_main([], [down] * 4 + [poll_result([change(comments=[message("r", "Patch Set 1:\n\n?", 5)])])] * 2)
+        # Then
+        self.assertEqual((0, 2), (code, len(sleeps)))
+        self.assertEqual({"kind": "unreachable", "detail": "Could not resolve hostname", "failures": 3, "since": 1000.0,
+                          "network": NETWORK}, first["events"][0])
+        self.assertEqual(["message"], [e["kind"] for e in after["events"]])
+
+    def test_a_new_outage_is_reported_again(self):
+        # Given
+        down = watch.DaemonError("Could not resolve hostname")
+        self.run_main([], [down] * 3)
+        (self.cache / "status.json").write_text(json.dumps({"updated": 2000.0}))
+        # When
+        _, (again,), _ = self.run_main([], [down] * 3)
+        # Then
+        self.assertEqual(("unreachable", 2000.0), (again["events"][0]["kind"], again["events"][0]["since"]))
+
+    def test_a_lone_event_that_nothing_follows_is_reported_without_waiting(self):
+        # Given
+        ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
+        # When
+        _, (out,), sleeps = self.run_main([], [poll_result([change(current=ps)], threads={1: []})])
+        # Then
+        self.assertEqual((["ready_to_submit"], []), ([e["kind"] for e in out["events"]], sleeps))
 
     def test_the_pending_sweep_reports_the_first_failure(self):
         # Given
@@ -268,7 +309,7 @@ class SessionRetryTest(unittest.TestCase):
         # When
         code, out, _ = self.run_main(["--pending"], [down])
         # Then
-        self.assertEqual((1, "error"), (code, out[0]["status"]))
+        self.assertEqual((1, "error", NETWORK), (code, out[0]["status"], out[0]["network"]))
 
     def test_the_pending_sweep_checks_the_http_password_when_no_change_needs_it(self):
         # Given
@@ -480,6 +521,47 @@ class DaemonTest(unittest.TestCase):
         # Then
         self.assertEqual(1, log.count("poll failed"))
         self.assertIn("recovered", log)
+
+    def outage(self, rounds, first_run=False, quiet=False):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cache = pathlib.Path(tmp.name)
+        state = cache / "daemon-seen.json"
+        if not first_run:
+            state.write_text("{}")
+        (cache / "status.json").write_text(json.dumps({"updated": 1000.0}))
+        notify = mock.Mock()
+        down = OSError("Could not resolve hostname")
+        with mock.patch.object(watch, "DAEMON_STATE", state), mock.patch.object(watch, "STATUS", cache / "status.json"), \
+                mock.patch.object(watch.events, "is_quiet", return_value=quiet):
+            self.run_daemon(rounds, poll=mock.Mock(side_effect=down), write_status=mock.Mock(),
+                            swiftbar=mock.Mock(side_effect=lambda action, **p: action == "notify" and notify(p)))
+        return notify
+
+    def test_a_lasting_outage_notifies_once_pointing_at_the_vpn(self):
+        # When
+        notify = self.outage(6)
+        # Then
+        notify.assert_called_once()
+        self.assertIn("VPN", notify.call_args.args[0]["body"])
+
+    def test_no_outage_notification_on_a_first_install_or_at_night(self):
+        # When
+        silent = [self.outage(4, first_run=True), self.outage(4, quiet=True), self.outage(2)]
+        # Then
+        self.assertEqual([0, 0, 0], [n.call_count for n in silent])
+
+    def test_the_heartbeat_names_the_daemons_version(self):
+        # Given
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        heartbeat = pathlib.Path(tmp.name) / "daemon-poll.json"
+        # When
+        with mock.patch.object(watch, "DAEMON_POLL", heartbeat):
+            watch.write_daemon_poll({"changes": []})
+        # Then
+        self.assertEqual((watch.VERSION, str(watch.SKILL_DIR)),
+                         (json.loads(heartbeat.read_text())["version"], json.loads(heartbeat.read_text())["skill_dir"]))
 
     def test_the_poll_duration_comes_off_the_wait(self):
         # Given

@@ -1,5 +1,6 @@
 """Settings shared by the watcher, the status line and the SwiftBar plugin."""
 import getpass
+import importlib.util
 import json
 import os
 import pathlib
@@ -14,6 +15,9 @@ CACHE = pathlib.Path(os.environ.get("GERRIT_BABYSIT_CACHE") or pathlib.Path.home
 STATUS = CACHE / "status.json"
 # Read by macos/open-babysit.sh and the Stop hook: the Claude session the watcher runs in.
 SESSION = CACHE / "session.json"
+DAEMON_POLL = CACHE / "daemon-poll.json"
+# Written by macos/install.sh; outlives plugin updates.
+LAUNCHER = USER_DIR / "launch.py"
 # A daemon loop can take interval + fetch timeout + ssh timeout before it writes again.
 STALE_AFTER_S = 360
 CI_STUCK_S = 2 * 3600
@@ -66,6 +70,21 @@ def read_json(path):
     except ValueError as error:
         print(f"gerrit-babysit: ignoring corrupt {path}: {error}", file=sys.stderr)
         return {}
+
+
+def version_of(skill_dir):
+    return read_json(pathlib.Path(skill_dir) / ".claude-plugin" / "plugin.json").get("version")
+
+
+VERSION = version_of(SKILL_DIR)
+
+
+def launched_skill_dir(launcher):
+    """The install a launcher (macos/launch.py) would run now."""
+    spec = importlib.util.spec_from_file_location("gerrit_babysit_launch", launcher)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.skill_dir().resolve()
 
 
 def config_path():

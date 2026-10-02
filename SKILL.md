@@ -74,12 +74,15 @@ the session). No notifications outside working hours (`work_hours`, Mon–Fri): 
 notify at the start of the next working day. Past 3 notifications in one poll (typically that morning
 catch-up), a single summary replaces them. Changes waiting on the same reviewer notify once ("3 CLs waiting on
 Alice", opening their `attention:` query in Gerrit). The daemon fixes nothing: clicking opens the change in Gerrit.
-After editing `watch.py`, restart it: `launchctl kickstart -k gui/$(id -u)/<launchd_label>`.
+After editing `watch.py`, restart it: `launchctl kickstart -k gui/$(id -u)/<launchd_label>`. Its heartbeat
+carries its version: when it differs from the menu's, the SwiftBar menu shows `Daemon vX ≠ menu vY` with a
+"Restart the daemon" item.
 
 ## On each wake-up
 
-The output is `{"status": "events", "events": [...]}`. After the first new event, the watcher waits 90 s
-more and delivers everything that arrived meanwhile in a single wake-up (reply + vote + zuul verdict).
+The output is `{"status": "events", "events": [...]}`. When a new event is one that comes in bursts
+(`message`, `review_reply`, `review_new_patch_set`), the watcher waits 90 s more and delivers everything
+that arrived meanwhile in a single wake-up (reply + vote + zuul verdict); the other kinds wake at once.
 The events come most urgent first, as in the sweep: when many arrive at once (a snooze ending, the morning
 catch-up), present them as the same briefing. Each item has a `kind`:
 `message` (comment/vote/zuul verdict: `author`, `author_username`, text; a zuul failure also carries
@@ -91,8 +94,14 @@ before this verdict, and `known_flaky` = `{job: {week, month, last}}` from the l
 below), `ready_to_submit` / `submit_blocked` (+ `requirements`) ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
 `review_requested` / `review_new_patch_set` / `review_reply` ("Other people's reviews" section).
 The watcher never gives up on Gerrit being unreachable (VPN off…): it retries with a backoff capped at
-10 min, and the status line shows `?` meanwhile. Only `--pending` returns `status: error` (with `detail`)
-on the first failure → tell the user, run the "Doctor" section, and start the watcher anyway.
+10 min, and the status line shows `?` meanwhile. After 3 failed polls in a row it wakes the session
+**once per outage** with a single `unreachable` event: `detail` (ssh's error), `failures`, `since` (last
+good poll) and `network` = `{dns: {host: resolves}, vpn_tunnel, globalprotect_running}`. Tell the user
+right away, starting with the VPN (GlobalProtect) and DNS as `network` shows them; do not retry or
+diagnose further by hand. Then relaunch the watcher: it keeps retrying in silence and the next events
+come as usual once Gerrit answers. The daemon sends the same alert as one macOS notification, in working
+hours. `--pending` returns `status: error` (with `detail` and `network`) on the first failure → tell the
+user the same way, run the "Doctor" section, and start the watcher anyway.
 
 `threads_error` (at the root of the output and in `status.json`) = the REST call for comment threads
 failed (HTTP password expired or missing) while SSH works. Polling goes on: `threads_awaiting_me` is then
@@ -247,6 +256,12 @@ From the worktree:
 After a push, check that the returned change number is the right one (otherwise the Change-Id was lost:
 restore it and push again), then my draft list must be empty if the replies were meant to go.
 
+The `pre-push` hook (`pre_push.py`, installed by `macos/install.sh` or `python3 <skill>/pre_push.py --install`,
+which keeps an existing hook as `pre-push.local` and runs it first) catches that before Gerrit does: from
+a linked worktree holding one of my open changes, a `refs/for/*` push stops when a commit of mine has no
+Change-Id, several, or one that is none of my open changes (a new change would open). Fix the trailer and
+push again; `GERRIT_BABYSIT_NEW_CHANGE=1` only when the user wants a new change. Never `--no-verify`.
+
 ## Submit
 
 `ready_to_submit` = on the current patch set: Code-Review +2 without a negative vote, every `ci_labels`
@@ -329,7 +344,10 @@ green" only on a red base), a "Snoozed" section and a line per red branch linkin
 `python3 <skill>/doctor.py`. Read-only; it prints JSON and exits 1 when SSH or HTTP fails:
 `config` (path, host, user, `repo_ok`), `ssh` / `http` (`ok`, `detail`; `http` also has `source` =
 `gerrit_mcp_config` or `netrc`, and fails when the password belongs to another account than `ssh_user`),
-`zuul`, `daemon` (`running`, `last_poll_age_s`, `error`), `state` (each cache file: `bytes`, `entries`,
+`zuul`, `daemon` (`running`, `last_poll_age_s`, `error`, `version`), `versions` (`doctor`, `plugin` = the
+install Claude Code uses, `daemon`, `swiftbar`, `match`: false = the daemon or the menu runs another
+install; restart the daemon or rerun `macos/install.sh`), `pre_push_hook` (installed or not), `network` when
+SSH or zuul fails (same as the `unreachable` event: check the VPN and DNS first), `state` (each cache file: `bytes`, `entries`,
 `age_s`, `corrupt`) and `prunable`: crashed temp files, prereviews of closed changes or of an old patch set,
 the private `refs/gerrit-babysit/changes|review/<n>` of closed changes, snoozes of closed changes. Summarize
 what is broken and how to fix it. `--prune` deletes what `prunable` lists, local only, so no "yes" needed

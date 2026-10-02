@@ -2,7 +2,6 @@
 """Block until one of my open Gerrit changes gets a new actionable event, print it as JSON, exit."""
 import argparse
 import concurrent.futures
-import importlib.util
 import json
 import os
 import pathlib
@@ -16,10 +15,13 @@ import ci
 import events
 import gerrit
 import known_failures
+import network
 import procs
 import repo
 import snooze
 from config import CACHE, SESSION, SKILL_DIR, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write, read_json
+from config import DAEMON_POLL, VERSION, launched_skill_dir
+from i18n import t
 from memo import PollMemo
 
 QUERY = "owner:self status:open"
@@ -28,12 +30,15 @@ ATTENTION_QUERY = "attention:self status:open"
 DRAFTS_QUERY = "has:draft status:open"
 STATE = CACHE / "seen.json"
 DAEMON_STATE = CACHE / "daemon-seen.json"
-DAEMON_POLL = CACHE / "daemon-poll.json"
 FLAKY = CACHE / "flaky.json"
 FLAKY_RETENTION_S = 90 * 86400
 # Longer than the daemon's interval, so the session sees at least one newer poll before reporting.
 SETTLE_S = 90
+# Only these come in bursts: a reply, its vote and zuul's verdict, or a push followed by its replies.
+CLUSTERED = frozenset({"message", "review_reply", "review_new_patch_set"})
 MAX_BACKOFF_S = 600
+# Consecutive failed polls before a lasting outage is reported, once, instead of only retried.
+UNREACHABLE_AFTER = 3
 SEEN_RETENTION_S = 30 * 86400
 
 
@@ -222,7 +227,7 @@ def daemon_alive():
 
 def write_daemon_poll(result=None, error=None):
     previous = read_json(DAEMON_POLL)
-    atomic_write(DAEMON_POLL, {"attempt": time.time(), "error": error,
+    atomic_write(DAEMON_POLL, {"attempt": time.time(), "error": error, "version": VERSION, "skill_dir": str(SKILL_DIR),
                                "poll": result if error is None else previous.get("poll")})
 
 
@@ -387,16 +392,35 @@ def superseded():
     launcher = os.environ.get("GERRIT_BABYSIT_LAUNCHER")
     if not launcher or not pathlib.Path(launcher).is_file():
         return False
-    spec = importlib.util.spec_from_file_location("gerrit_babysit_launch", launcher)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.skill_dir().resolve() != SKILL_DIR
+    return launched_skill_dir(launcher) != SKILL_DIR
+
+
+def outage_key():
+    """One per outage: while polls fail, the snapshot's `updated` stays at the last success."""
+    return f"unreachable:{read_json(STATUS).get('updated') or 0}"
+
+
+def unreachable_event(detail, failures):
+    return {"kind": "unreachable", "detail": detail, "failures": failures, "since": read_json(STATUS).get("updated"),
+            "network": network.checks()}
+
+
+def notify_unreachable(detail, now):
+    """Once per outage, in working hours: past them, the next working day's first failed poll tells."""
+    seen = load_seen(DAEMON_STATE)
+    key = outage_key()
+    if events.is_quiet(now) or key in seen:
+        return
+    swiftbar("notify", plugin=SWIFTBAR_PLUGIN, title=t("unreachable", host=gerrit.HOST),
+             body=t("unreachable_body", detail=detail))
+    save_seen({**seen, key: now}, DAEMON_STATE)
 
 
 def daemon(interval):
     """Status snapshot + notifications with no Claude session; clicking a notification opens one."""
     first_run = not DAEMON_STATE.exists()
     last_error = None
+    failures = 0
 
     def failed(error, expected):
         """Logged once per distinct error: a VPN left off overnight would otherwise add a line a minute."""
@@ -419,9 +443,15 @@ def daemon(interval):
         # A bug on one odd change must not turn into a silent launchd crash loop.
         except Exception as error:  # noqa: BLE001
             expected = isinstance(error, (subprocess.SubprocessError, OSError, ValueError))
-            write_daemon_poll(error=failed(error, expected))
+            detail = failed(error, expected)
+            write_daemon_poll(error=detail)
+            failures = failures + 1 if expected else 0
+            # Not on a first install: a seen file saved now would turn the first good poll into a notification flood.
+            if failures >= UNREACHABLE_AFTER and not first_run:
+                notify_unreachable(detail, time.time())
             pause()
             continue
+        failures = 0
         try:
             daemon_round(result, first_run)
             first_run = False
@@ -524,13 +554,20 @@ def main():
             current = awake(events.events(result, now), snoozed) | cleanup
             failures = 0
         except (subprocess.SubprocessError, OSError, ValueError, DaemonError) as error:
+            detail = gerrit.error_detail(error)
             if not isinstance(error, DaemonError):
-                write_status(error=gerrit.error_detail(error))
+                write_status(error=detail)
             if args.pending:
-                print(json.dumps({"status": "error", "detail": gerrit.error_detail(error)}))
+                print(json.dumps({"status": "error", "detail": detail, "network": network.checks()}))
                 return 1
-            # Never gives up: a VPN off over lunch or overnight must not end the babysitting.
+            # Never gives up: a VPN off over lunch or overnight must not end the babysitting. A lasting outage
+            # wakes the session once, so it can say so, then the relaunched watcher retries in silence.
             failures += 1
+            if failures >= UNREACHABLE_AFTER and outage_key() not in (seen := load_seen()):
+                report = {"status": "events", "events": [unreachable_event(detail, failures)], "nudges": [],
+                          "threads_error": None}
+                save_seen({**seen, outage_key(): time.time()})
+                return emit(report)
             time.sleep(min(args.interval * failures, MAX_BACKOFF_S))
             continue
 
@@ -542,8 +579,8 @@ def main():
             return emit(report)
 
         fresh = {key: current[key] for key in current.keys() - seen.keys()}
-        if fresh and not settling:
-            # A reply, its vote and zuul's verdict often land a minute apart: wait once to wake for all of them.
+        if not settling and any(event["kind"] in CLUSTERED for event in fresh.values()):
+            # Wait once to wake for the whole burst; the other kinds have nothing following them, so they go now.
             settling = fresh
             time.sleep(SETTLE_S)
             continue

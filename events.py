@@ -227,9 +227,9 @@ def review_wait(change, patch_set, attention, now):
     return (unreviewed, [], dismissed) if unreviewed and not holders else None
 
 
-# Work left halfway first, then what blocks my changes (a red base explains the CI failures after it), what one
-# click unblocks, what others wait from me, then what only waits.
-URGENCY = ("unfinished", "base_red", "merge_conflict", "parent_merged", "pending", "message", "submit_blocked",
+# An outage hides everything else, then work left halfway, what blocks my changes (a red base explains the CI
+# failures after it), what one click unblocks, what others wait from me, then what only waits.
+URGENCY = ("unreachable", "unfinished", "base_red", "merge_conflict", "parent_merged", "pending", "message", "submit_blocked",
            "ready_to_submit", "parent_updated", "ci_stuck", "review_reply", "review_requested", "review_new_patch_set",
            "waiting_for_review", "cleanup_candidate")
 
@@ -435,6 +435,7 @@ def status_rows(result, flakes, worktrees, now):
         outdated = result.get("outdated_parents", {}).get(number)
         rows.append({
             "number": number,
+            "change_id": change["id"],
             "patch_set": patch_set.get("number"),
             "subject": change["subject"],
             "url": change["url"],

@@ -9,10 +9,13 @@ import time
 
 import ci
 import gerrit
+import network
+import pre_push
 import repo
 import snooze
 import watch
-from config import CACHE, CONFIG, REPO, config_path, read_json
+from config import (CACHE, CONFIG, LAUNCHER, REPO, SKILL_DIR, SWIFTBAR_PLUGIN, VERSION, config_path,
+                    launched_skill_dir, read_json, version_of)
 
 # An older temp file is a write that crashed halfway, not one in flight.
 TEMP_GRACE_S = 3600
@@ -53,7 +56,36 @@ def daemon_state(now):
     if not heartbeat:
         return {"running": False}
     age = int(now - heartbeat.get("attempt", 0))
-    return {"running": age <= watch.STALE_AFTER_S, "last_poll_age_s": age, "error": heartbeat.get("error")}
+    return {"running": age <= watch.STALE_AFTER_S, "last_poll_age_s": age, "error": heartbeat.get("error"),
+            "version": heartbeat.get("version")}
+
+
+def swiftbar_install(installed):
+    """The install the SwiftBar menu runs: the launcher's for the stub install.sh writes, the target of an older
+    symlink; None without SwiftBar or the plugin."""
+    try:
+        folder = subprocess.run(["defaults", "read", "com.ameba.SwiftBar", "PluginDirectory"], capture_output=True,
+                                text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    stub = pathlib.Path(folder).expanduser() / f"{SWIFTBAR_PLUGIN}.30s.py" if folder else None
+    if not stub or not (stub.is_file() or stub.is_symlink()):
+        return None
+    if stub.is_symlink():
+        return stub.resolve().parents[1]
+    return installed if str(LAUNCHER) in stub.read_text(errors="replace") else None
+
+
+def versions(daemon):
+    """Each piece's version; `match` is false when the daemon or the menu runs another install than Claude Code."""
+    installed = launched_skill_dir(LAUNCHER) if LAUNCHER.is_file() else SKILL_DIR
+    menu = swiftbar_install(installed)
+    found = {"doctor": VERSION, "plugin": version_of(installed),
+             # A running daemon that does not say predates the versioned heartbeat.
+             "daemon": (daemon.get("version") or "?") if daemon["running"] else None,
+             "swiftbar": version_of(menu) if menu else None}
+    found["match"] = len({v for v in found.values() if v is not None}) <= 1
+    return found
 
 
 def state_files(now):
@@ -116,7 +148,10 @@ def main():
     report = {"config": {"path": str(config_path()) if config_path() else None, "gerrit_host": gerrit.HOST,
                          "user": gerrit.USER, "repo": str(REPO), "repo_ok": (REPO / ".git").exists()},
               "ssh": check_ssh(), "http": check_http(), "zuul": check_zuul(), "daemon": daemon_state(now),
-              "state": state_files(now)}
+              "pre_push_hook": pre_push.installed(), "state": state_files(now)}
+    report["versions"] = versions(report["daemon"])
+    if not report["ssh"]["ok"] or (report["zuul"] and not report["zuul"]["ok"]):
+        report["network"] = network.checks()
     open_changes = None
     if report["ssh"]["ok"]:
         try:

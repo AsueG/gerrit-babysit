@@ -7,6 +7,7 @@
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 # <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 import datetime
+import os
 import pathlib
 import re
 import shlex
@@ -21,7 +22,8 @@ sys.path.insert(0, str(SELF.parents[1]))
 import ci  # noqa: E402
 import snapshot  # noqa: E402
 import snooze  # noqa: E402
-from config import CI_STUCK_S, COMMAND, CONFIG, REPO, STATUS, SWIFTBAR_PLUGIN, USER_DIR, read_json  # noqa: E402
+from config import (CI_STUCK_S, COMMAND, CONFIG, DAEMON_POLL, REPO, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN,  # noqa: E402
+                    USER_DIR, VERSION, read_json)
 from i18n import t  # noqa: E402
 
 DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{CONFIG['gerrit_host']}/dashboard/self"
@@ -270,8 +272,22 @@ def copy(text):
     notify(t("bar_copied"), text)
 
 
+def daemon_version(now):
+    """The running daemon's version when it differs from this menu's ("?" for a daemon too old to say), else None."""
+    heartbeat = read_json(DAEMON_POLL)
+    if not heartbeat or now - heartbeat.get("attempt", 0) > STALE_AFTER_S:
+        return None
+    version = heartbeat.get("version") or "?"
+    return version if version != VERSION else None
+
+
+def restart_daemon():
+    subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{CONFIG['launchd_label']}"], capture_output=True)
+    refresh()
+
+
 ACTIONS = {"submit": submit, "worktree": open_worktree, "investigate": investigate, "copy": copy,
-           "recheck": recheck, "snooze": snooze_change, "wake": wake}
+           "recheck": recheck, "snooze": snooze_change, "wake": wake, "restart_daemon": restart_daemon}
 
 
 def handle(args):
@@ -394,6 +410,11 @@ def main():
         print(f"--{error.replace('|', '¦')} | disabled=true")
     else:
         print(f"{t('bar_active')} | sfimage=dot.radiowaves.left.and.right")
+    drifted = daemon_version(now)
+    if drifted:
+        print(f"{t('bar_version_mismatch', daemon=drifted, menu=VERSION or '?')} | color=orange "
+              "sfimage=exclamationmark.arrow.circlepath")
+        print(f"--{t('bar_restart_daemon')} | {action('restart_daemon')} sfimage=arrow.clockwise")
     if OPEN_CLAUDE.exists():
         print(f"{t('bar_open_claude', command=COMMAND)} | href={OPEN_CLAUDE.as_uri()} sfimage=sparkles")
     print(f"{t('bar_dashboard')} | href={DASHBOARD} sfimage=eye")

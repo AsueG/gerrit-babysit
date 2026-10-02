@@ -55,6 +55,8 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "daemon: $LABEL (log: $CACHE/daemon.log)"
 
+$PY "$SKILL/pre_push.py" --install
+
 PLUGINS=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || true)
 if [[ -n $PLUGINS ]]; then
   STUB=${PLUGINS/#\~/$HOME}/gerrit.30s.py

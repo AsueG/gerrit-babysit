@@ -438,5 +438,39 @@ class NeverPolledTest(SnapshotTest):
         self.assertIn("no route to host", out.getvalue())
 
 
+class VersionDriftTest(SnapshotTest):
+    def menu(self, heartbeat):
+        self.write([])
+        poll = self.status.with_name("daemon-poll.json")
+        poll.write_text(json.dumps(heartbeat))
+        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "DAEMON_POLL", poll), \
+                mock.patch.object(plugin, "VERSION", "1.7.0"), contextlib.redirect_stdout(io.StringIO()) as out:
+            plugin.main()
+        return out.getvalue()
+
+    def test_a_daemon_on_another_version_offers_its_restart(self):
+        # When
+        found = [self.menu({"attempt": time.time(), "version": v}) for v in ("1.6.1", None)]
+        # Then
+        self.assertIn("Daemon v1.6.1 ≠ menu v1.7.0", found[0])
+        self.assertIn('param1="restart_daemon"', found[0])
+        self.assertIn("Daemon v? ≠ menu v1.7.0", found[1])
+
+    def test_nothing_shows_for_the_same_version_or_a_stopped_daemon(self):
+        # When
+        found = [self.menu({"attempt": time.time(), "version": "1.7.0"}),
+                 self.menu({"attempt": time.time() - 3600, "version": "1.6.1"})]
+        # Then
+        self.assertEqual([False, False], ["restart_daemon" in menu for menu in found])
+
+    def test_the_restart_kicks_the_launchd_job(self):
+        # When
+        with mock.patch.object(plugin.subprocess, "run") as run:
+            plugin.handle(["restart_daemon"])
+        # Then
+        self.assertEqual(["launchctl", "kickstart", "-k"], run.call_args_list[0].args[0][:3])
+        self.assertTrue(run.call_args_list[0].args[0][3].endswith("/" + config.CONFIG["launchd_label"]))
+
+
 if __name__ == "__main__":
     unittest.main()
