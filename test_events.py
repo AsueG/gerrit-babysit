@@ -419,6 +419,43 @@ def kinds(c):
     return [e["kind"] for _, e in events.review_events(c, DAY)]
 
 
+RED_CI = [approval(label, -1, "zuul") for label in events.CI_LABELS]
+
+
+class ReviewTriageTest(unittest.TestCase):
+    def test_a_request_says_why_it_is_not_worth_reading_yet(self):
+        # Given
+        cases = [review(), review(patch_sets=[patch_set(1, *RED_CI)]),
+                 review(patch_sets=[patch_set(1, approval("Code-Review", -1, "r0"))], reviewers=2)]
+        # When
+        found = [dict(events.review_events(c, DAY))[f"1:review_requested:{DAY}"]["blocked_by"] for c in cases]
+        # Then
+        self.assertEqual([None, "ci_failed", "rejected"], found)
+
+    def test_reviewable_requests_come_before_the_ones_that_will_move(self):
+        # Given
+        reported = [{"kind": "review_requested", "change": 1, "blocked_by": "ci_failed"},
+                    {"kind": "review_requested", "change": 2, "blocked_by": None},
+                    {"kind": "message", "change": 3}]
+        # When
+        ordered = [e["change"] for e in events.by_urgency(reported)]
+        # Then
+        self.assertEqual([3, 2, 1], ordered)
+
+    def test_rows_list_what_waits_on_me_reviewable_first_then_oldest(self):
+        # Given
+        reviews = [review(patch_sets=[patch_set(1, created=300)], number=1),
+                   review(patch_sets=[patch_set(1, *RED_CI, created=100)], number=2),
+                   review(patch_sets=[patch_set(1, created=200)], number=3),
+                   review(patch_sets=[patch_set(1, approval("Code-Review", 1, gerrit.USER))], number=4),
+                   review(wip=True, number=5)]
+        # When
+        rows = events.review_rows(poll_result(reviews=reviews))
+        # Then
+        self.assertEqual([(3, None), (1, None), (2, "ci_failed")], [(r["number"], r["blocked_by"]) for r in rows])
+        self.assertEqual("Owner", rows[0]["owner"])
+
+
 class ReviewEventsTest(unittest.TestCase):
     def test_recorded_change_where_my_plus_two_is_current(self):
         # Given

@@ -235,9 +235,22 @@ URGENCY = ("unreachable", "unfinished", "base_red", "merge_conflict", "parent_me
 
 
 def by_urgency(reported):
-    """Stable: events of one kind keep their order."""
+    """Stable: events of one kind keep their order, the reviews worth reading now before the ones that will move."""
     rank = {kind: i for i, kind in enumerate(URGENCY)}
-    return sorted(reported, key=lambda event: rank.get(event["kind"], len(URGENCY)))
+    return sorted(reported, key=lambda event: (rank.get(event["kind"], len(URGENCY)), bool(event.get("blocked_by"))))
+
+
+def review_blocker(change):
+    """Why a change I review is not worth reading yet: its CI is red, its base is stale or someone already voted
+    it down, so its owner will push again first. None when it is reviewable now."""
+    _, votes, state, _ = ci_reading(change)
+    if state == "failed":
+        return "ci_failed"
+    if state == "stale_base":
+        return "stale_base"
+    if code_review_score(votes) < 0:
+        return "rejected"
+    return None
 
 
 def nudges(reported):
@@ -362,6 +375,18 @@ def is_new_patch_set_notice(message):
     return text.startswith("Uploaded patch set") or " was rebased" in text.split("\n\n", 1)[0]
 
 
+def my_review_votes(change):
+    """[(patch set, value)] of my Code-Review votes on a change I review."""
+    return [(int(ps["number"]), int(a["value"]))
+            for ps in change.get("patchSets", []) for a in ps.get("approvals", [])
+            if a["by"].get("username") == USER and a["type"] == "Code-Review"]
+
+
+def human_reviewers(change):
+    owner = change.get("owner", {}).get("username")
+    return [r for r in change.get("allReviewers", []) if r.get("username", "") not in {owner, *BOT_USERS}]
+
+
 def review_events(change, day, needs_my_attention=False):
     """Changes I review: signal only, never fixed — they are someone else's code.
 
@@ -372,24 +397,23 @@ def review_events(change, day, needs_my_attention=False):
     current = change.get("currentPatchSet", {}).get("number", 0)
     comments = change.get("comments", [])
     mine = [m for m in comments if m["reviewer"].get("username") == USER]
-    my_votes = [(int(ps["number"]), int(a["value"]))
-                for ps in change.get("patchSets", []) for a in ps.get("approvals", [])
-                if a["by"].get("username") == USER and a["type"] == "Code-Review"]
-    humans = [r for r in change.get("allReviewers", []) if r.get("username", "") not in {owner, *BOT_USERS}]
+    my_votes = my_review_votes(change)
+    humans = human_reviewers(change)
+    blocked_by = review_blocker(change)
 
     last_seen_ps = max([ps for ps, _ in my_votes] + [patch_set_of(m) for m in mine], default=0)
     if not change.get("wip") and len(humans) <= MAX_REVIEWERS:
         # Untouched requests come back each working day; once I took part, it is not a request anymore.
         key = f"{number}:review_requested" if last_seen_ps else f"{number}:review_requested:{day}"
         yield key, {**base, "kind": "review_requested", "reviewers": len(humans), "participated": bool(last_seen_ps),
-                    "current_ref": change.get("currentPatchSet", {}).get("ref")}
+                    "current_ref": change.get("currentPatchSet", {}).get("ref"), "blocked_by": blocked_by}
 
     # A vote Gerrit copied onto the current patch set (trivial rebase) means nothing needs re-reviewing.
     if last_seen_ps and last_seen_ps < current and not any(ps == current for ps, _ in my_votes):
         last_vote = max(my_votes, default=None)
         refs = {int(ps["number"]): ps.get("ref") for ps in change.get("patchSets", [])}
         yield f"{number}:review_ps:{current}", {
-            **base, "kind": "review_new_patch_set", "since_patch_set": last_seen_ps,
+            **base, "kind": "review_new_patch_set", "since_patch_set": last_seen_ps, "blocked_by": blocked_by,
             "since_ref": refs.get(last_seen_ps), "current_ref": refs.get(int(current)),
             "my_last_vote": {"patch_set": last_vote[0], "value": last_vote[1]} if last_vote else None}
 
@@ -401,6 +425,22 @@ def review_events(change, day, needs_my_attention=False):
         replied = author == owner or (needs_my_attention and (author or "") not in NOT_ME)
         if message["timestamp"] > my_last and replied and not is_new_patch_set_notice(message):
             yield f'{number}:review_reply:{message["timestamp"]}', message_event(base, message, "review_reply")
+
+
+def review_rows(result):
+    """The changes waiting on my review, for the menu: the ones worth reading now first, then the longest waiting.
+    A change I already voted on in its current patch set, a WIP or a group addition waits on nobody in particular."""
+    rows = []
+    for change in result.get("reviews", []):
+        patch_set = change.get("currentPatchSet", {})
+        current = int(patch_set.get("number") or 0)
+        if (change.get("wip") or len(human_reviewers(change)) > MAX_REVIEWERS
+                or any(ps == current for ps, _ in my_review_votes(change))):
+            continue
+        rows.append({"number": change["number"], "patch_set": current, "subject": change["subject"],
+                     "url": change["url"], "owner": change.get("owner", {}).get("name", ""),
+                     "since": patch_set.get("createdOn"), "blocked_by": review_blocker(change)})
+    return sorted(rows, key=lambda row: (bool(row["blocked_by"]), row["since"] or 0))
 
 
 def pending_events(result, now=None, current=None):

@@ -336,9 +336,19 @@ vote without an explicit request.
   reviewer wrote while Gerrit put me in the change's attention set (query `attention:self`), typically
   because they answered one of my threads.
 
+`review_requested` and `review_new_patch_set` carry `blocked_by` = why the change is not worth reading yet,
+since its owner will push again first: `ci_failed`, `stale_base` (Merge Failed) or `rejected` (someone
+already voted it down); `null` = reviewable now. They come reviewable first. When `blocked_by` is set, say
+so in one line ("CI red, wait") and do not start the pre-review: it would review a patch set about to be
+replaced.
+
 Present: link, owner, what changed (`interdiff.stat`; open a file's diff only to go into detail), and for
 `review_reply` the threads concerned. Optionally offer a detailed review; what follows (vote, reply) is
 decided with the user.
+
+The snapshot's `reviews` lists the changes waiting on my review (no vote of mine on the current patch set,
+WIP and group additions left out), reviewable ones first then the longest waiting, with `owner`, `since`
+and `blocked_by`. The SwiftBar menu shows them under "To review", the blocked ones greyed out with why.
 
 ## Snooze
 

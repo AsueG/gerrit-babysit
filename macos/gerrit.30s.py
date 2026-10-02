@@ -385,6 +385,20 @@ def print_snoozed(change, entry):
     print(f"--{t('bar_wake')} | {action('wake', change['number'])} sfimage=bell")
 
 
+def print_review(review, now):
+    """Reviewable now in plain text; one its owner will rework first greyed out with why."""
+    waited = age(now - review["since"]) if review.get("since") else "?"
+    owner = review["owner"].replace("|", "¦")
+    if review["blocked_by"]:
+        print(f"{review['number']}  {scope(review['subject'])} — {owner} · {t('bar_review_' + review['blocked_by'])} | "
+              f"href={review['url']} sfimage=hourglass sfcolor=gray")
+    else:
+        print(f"{review['number']}  {scope(review['subject'])} — {owner} · {t('bar_review_waiting', age=waited)} | "
+              f"href={review['url']} sfimage=eyeglasses")
+    print(f"--{review['subject'].replace('|', '¦')} | disabled=true")
+    print(f"--{t('bar_open_gerrit')} | href={review['url']} sfimage=safari")
+
+
 def main():
     if not STATUS.exists():
         print(f"– | {ICON}")
@@ -429,6 +443,12 @@ def main():
         for change in changes:
             if change["number"] in snoozed:
                 print_snoozed(change, snoozed[change["number"]])
+    reviews = [r for r in status.get("reviews", []) if r["number"] not in snoozed]
+    if reviews:
+        print("---")
+        print(f"{t('bar_reviews_section', count=sum(not r['blocked_by'] for r in reviews))} | disabled=true")
+        for review in reviews:
+            print_review(review, now)
     print("---")
     data_age = age(now - status["updated"]) if status.get("updated") else "?"
     if stopped:

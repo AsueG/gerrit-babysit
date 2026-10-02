@@ -212,6 +212,27 @@ class InvestigateTest(SnapshotTest):
             self.assertIn(part, command)
 
 
+class ReviewsMenuTest(SnapshotTest):
+    def test_the_review_section_greys_out_what_its_owner_will_rework(self):
+        # Given
+        reviews = [{"number": 3, "patch_set": 1, "subject": "fix(lint): a", "url": "https://review/3", "owner": "Simon",
+                    "since": time.time() - 3600, "blocked_by": None},
+                   {"number": 4, "patch_set": 2, "subject": "feat(cart): b", "url": "https://review/4", "owner": "Ana",
+                    "since": time.time(), "blocked_by": "ci_failed"}]
+        self.write([], reviews=reviews)
+        out = io.StringIO()
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), contextlib.redirect_stdout(out):
+            plugin.main()
+        # Then
+        lines = out.getvalue().splitlines()
+        self.assertIn(f"{i18n.t('bar_reviews_section', count=1)} | disabled=true", lines)
+        self.assertIn(f"3  lint — Simon · {i18n.t('bar_review_waiting', age="60 min")} | href=https://review/3 "
+                      "sfimage=eyeglasses", lines)
+        self.assertIn(f"4  cart — Ana · {i18n.t('bar_review_ci_failed')} | href=https://review/4 sfimage=hourglass "
+                      "sfcolor=gray", lines)
+
+
 class DiagnosisMenuTest(unittest.TestCase):
     def test_a_red_change_names_its_failure_categories_and_links_each_log(self):
         # Given

@@ -364,13 +364,13 @@ def write_status(result=None, error=None, listing=None):
     try:
         diagnoses = diagnose_red(result)
     # The why of a red change is a bonus: a bug there must not leave the menu without a snapshot.
-    except Exception as error:  # noqa: BLE001
-        print(f"gerrit-babysit: CI diagnosis skipped: {type(error).__name__}: {error}", file=sys.stderr)
+    except Exception as failure:  # noqa: BLE001
+        print(f"gerrit-babysit: CI diagnosis skipped: {type(failure).__name__}: {failure}", file=sys.stderr)
         diagnoses = {}
     rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(listing), now, diagnoses)
     atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None,
                           "threads_error": result.get("threads_error"), "changes": rows,
-                          "base_health": result.get("base_health", {})})
+                          "reviews": events.review_rows(result), "base_health": result.get("base_health", {})})
 
 
 def snoozed_changes(result, now):
