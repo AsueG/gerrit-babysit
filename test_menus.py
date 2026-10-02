@@ -228,7 +228,7 @@ class ReviewsMenuTest(SnapshotTest):
         # Then
         lines = out.getvalue().splitlines()
         self.assertIn(f"{i18n.t('bar_reviews_section', count=1)} | disabled=true", lines)
-        self.assertIn(f"3  lint — Simon · {i18n.t('bar_review_waiting', age="60 min")} | href=https://review/3 "
+        self.assertIn(f"3  lint — Simon · {i18n.t('bar_review_waiting', age='60 min')} | href=https://review/3 "
                       "sfimage=eyeglasses", lines)
         self.assertIn(f"4  cart — Ana · {i18n.t('bar_review_ci_failed')} | href=https://review/4 sfimage=hourglass "
                       "sfcolor=gray", lines)

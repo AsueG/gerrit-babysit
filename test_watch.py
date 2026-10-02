@@ -281,7 +281,8 @@ class SessionRetryTest(unittest.TestCase):
         down = watch.DaemonError("Could not resolve hostname")
         # When
         code, (first,), sleeps = self.run_main([], [down] * 3)
-        _, (after,), _ = self.run_main(["--ack", first["id"]], [down] * 4 + [poll_result([change(comments=[message("r", "Patch Set 1:\n\n?", 5)])])] * 2)
+        back = poll_result([change(comments=[message("r", "Patch Set 1:\n\n?", 5)])])
+        _, (after,), _ = self.run_main(["--ack", first["id"]], [down] * 4 + [back] * 2)
         # Then
         self.assertEqual((0, 2), (code, len(sleeps)))
         self.assertEqual({"kind": "unreachable", "detail": "Could not resolve hostname", "failures": 3, "since": 1000.0,
@@ -665,8 +666,8 @@ class PreparedRebasesTest(unittest.TestCase):
     def test_candidates_are_what_a_plain_rebase_unblocks(self):
         # Given
         merge_failed = patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS])
-        changes = [change(1), change(2), change(3), change(4), change(5, current=merge_failed,
-                                                                         comments=[message("zuul", "Patch Set 1: Verified-1\n\nMerge Failed.", 5)])]
+        verdict = message("zuul", "Patch Set 1: Verified-1\n\nMerge Failed.", 5)
+        changes = [change(1), change(2), change(3), change(4), change(5, current=merge_failed, comments=[verdict])]
         result = {**poll_result(changes, conflicts={3: ["A.kt"], 4: ["B.kt"]}, parents={1: 9, 4: 8},
                                 stale={2: {"parent": 7, "old_parent_sha": "old"}}),
                   "outdated_parents": {1: {"parent": 9, "new_parent_sha": "p9"}}}
