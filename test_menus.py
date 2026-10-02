@@ -282,6 +282,16 @@ class SubmitTest(SnapshotTest):
         self.assertIn(plugin.t("bar_submit_unavailable", reason=plugin.t("bar_submit_wait_review")), lines[0][0])
         self.assertIn(plugin.t("bar_submit_unavailable", reason=plugin.t("bar_submit_wait_ci")), lines[1][0])
 
+    def test_a_green_plus_two_held_by_a_thread_names_the_thread(self):
+        # Given
+        changes = [row(7, ci="passed", code_review=2, threads=1), row(8, ci="passed", code_review=2, threads=None)]
+        # When
+        lines = [self.menu(change) for change in changes]
+        # Then
+        self.assertIn(plugin.t("bar_submit_unavailable", reason=plugin.t("bar_submit_wait_threads", count=1)),
+                      lines[0][0])
+        self.assertIn(plugin.t("bar_submit_unavailable", reason=plugin.t("threads_unknown")), lines[1][0])
+
     def test_stale_data_greys_out_even_a_ready_change(self):
         # Given
         change = row(7, ready=True, code_review=2)

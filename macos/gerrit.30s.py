@@ -74,8 +74,19 @@ LABELS = {
 }
 
 
-# The states whose label tells the votes, not what the submit waits for.
-SUBMIT_WAITS = {"ci_running": "bar_submit_wait_ci", "ci_passed": "bar_submit_wait_review"}
+def submit_wait(state, change):
+    """What the submit waits for, when the state's label tells the votes instead."""
+    if state == "ci_running":
+        return t("bar_submit_wait_ci")
+    if state != "ci_passed":
+        return None
+    if change["code_review"] < 2:
+        return t("bar_submit_wait_review")
+    if change.get("threads") is None:
+        return t("threads_unknown")
+    if change["threads"]:
+        return t("bar_submit_wait_threads", count=change["threads"])
+    return t("bar_submit_wait_ready")
 
 
 def label_of(state, change):
@@ -314,8 +325,7 @@ def print_change(change, label, symbol, color, fresh):
             print(f"--{t('bar_submit')} | {action('submit', number, change['patch_set'])} sfimage=paperplane.fill")
         else:
             # Always there, greyed out with what stands in the way, so a missing Submit never needs explaining.
-            reason = (t(SUBMIT_WAITS[state]) if state in SUBMIT_WAITS else label_of(state, change)) if fresh \
-                else t("bar_submit_stale")
+            reason = (submit_wait(state, change) or label_of(state, change)) if fresh else t("bar_submit_stale")
             print(f"--{t('bar_submit_unavailable', reason=reason.replace('|', '¦'))} | disabled=true sfimage=paperplane")
 
 
