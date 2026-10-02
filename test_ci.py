@@ -1,5 +1,6 @@
 """Run from this directory: python3 -m unittest"""
 import concurrent.futures
+import io
 import json
 import os
 import pathlib
@@ -233,7 +234,7 @@ class CiDiagnosisTest(unittest.TestCase):
 
     def test_missing_file_comments_are_not_an_error(self):
         # Given
-        missing = ci.urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        missing = ci.urllib.error.HTTPError("u", 404, "Not Found", {}, io.BytesIO(b""))
         self.addCleanup(missing.close)
         # When
         with mock.patch.object(ci, "http_get", side_effect=missing):
