@@ -246,6 +246,47 @@ class RecheckTest(SnapshotTest):
         self.assertIn('"recheck"', out.getvalue())
 
 
+class SubmitTest(SnapshotTest):
+    def test_submits_the_confirmed_change_and_patch_set(self):
+        # Given
+        self.write([row(7)])
+        confirm = mock.Mock(returncode=0)
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), \
+                mock.patch.object(plugin, "osascript", return_value=confirm), \
+                mock.patch.object(plugin.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            plugin.handle(["submit", "7", "2"])
+        # Then
+        ssh = [c.args[0] for c in run.call_args_list if c.args[0][0] == "ssh"]
+        self.assertEqual([[*gerrit.SSH, "gerrit", "review", "--submit", "7,2"]], ssh)
+
+    def test_cancel_submits_nothing(self):
+        # Given
+        self.write([row(7)])
+        cancel = mock.Mock(returncode=1)
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), \
+                mock.patch.object(plugin, "osascript", return_value=cancel), \
+                mock.patch.object(plugin.subprocess, "run") as run:
+            plugin.handle(["submit", "7", "2"])
+        # Then
+        run.assert_not_called()
+
+    def test_a_failed_submit_shows_an_alert(self):
+        # Given
+        self.write([row(7)])
+        confirm = mock.Mock(returncode=0)
+        failed = mock.Mock(returncode=1, stderr="not mergeable", stdout="")
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), \
+                mock.patch.object(plugin, "osascript", return_value=confirm), \
+                mock.patch.object(plugin, "alert") as alert, mock.patch.object(plugin, "refresh"), \
+                mock.patch.object(plugin.subprocess, "run", return_value=failed):
+            plugin.handle(["submit", "7", "2"])
+        # Then
+        alert.assert_called_once_with(plugin.t("bar_submit_failed", n="7"), "not mergeable")
+
+
 class SnoozeMenuTest(SnapshotTest):
     def setUp(self):
         super().setUp()
