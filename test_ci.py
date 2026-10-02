@@ -12,6 +12,7 @@ os.environ["GERRIT_BABYSIT_CONFIG"] = str(FIXTURES / "config.json")
 os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-babysit-test-"))
 
 import ci  # noqa: E402
+import known_failures  # noqa: E402
 ZUUL = json.loads((FIXTURES / "zuul_messages.json").read_text())
 
 
@@ -95,6 +96,23 @@ class CiDiagnosisTest(unittest.TestCase):
             entry = diagnose_ci(event)[0]
         # Then
         self.assertEqual(("", "emulator died"), (entry["failure"], entry["log_tail"]))
+
+    def test_known_failures_snippet_matches_diagnose_jobs_fingerprint(self):
+        # Given: a Gradle failure and a plain log, so a recorded fix's fingerprint matches its next occurrence.
+        for log in [(FIXTURES / "job-output-unit-test.txt").read_text(),
+                    "2026-09-29 10:00:00.1 | main | emulator died"]:
+            event = {"change": 1, "message": "Patch Set 1: Verified-1\n\n- app-e2e https://z/build/abc : FAILURE"}
+            build = {"log_url": "https://logs/x/", "artifacts": []}
+            answers = {"/build/": json.dumps(build), "job-output.txt": log,
+                       "zuul-file-comments.json": "{}", "/builds?": "[]"}
+            get = lambda url, answers=answers: next(body for marker, body in answers.items() if marker in url)
+            # When
+            with mock.patch.object(ci, "http_get", side_effect=get):
+                entry = diagnose_ci(event)[0]
+                snippet = known_failures.snippet_of("https://logs/x")
+            # Then
+            self.assertEqual(ci.fingerprint(entry.get("failure") or entry.get("log_tail", "")),
+                             ci.fingerprint(snippet))
 
     def test_fingerprints_ignore_ids_hashes_and_numbers(self):
         # Given

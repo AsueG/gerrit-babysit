@@ -19,7 +19,7 @@ def load():
 def snippet_of(log_url):
     """The same excerpt diagnose_job() matches on, so a record and its next occurrence compare like for like."""
     log = ci.http_get(f"{log_url.rstrip('/')}/job-output.txt")
-    return ci.gradle_failure(log) or ci.log_tail(log)
+    return ci.failure_snippet(log)
 
 
 def record(change, patch_set, job, log_url, cause, fix, now=None):

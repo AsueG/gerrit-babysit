@@ -109,6 +109,12 @@ def log_tail(log):
     return "\n".join(reversed(kept))[-3000:]
 
 
+def failure_snippet(log):
+    """The excerpt to fingerprint: a Gradle failure if there is one, else the log tail. Shared with known_failures
+    so a recorded fix's fingerprint matches its next occurrence."""
+    return gradle_failure(log) or log_tail(log)
+
+
 # Build ids, hashes, durations, ports and line numbers differ between two runs of the same breakage.
 FINGERPRINT_NOISE = [(re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"), "<id>"),
                      (re.compile(r"\b[0-9a-f]{7,64}\b"), "<hex>"),
@@ -292,7 +298,7 @@ def diagnose_job(job, event, histories, flaky, known):
         log = http_get(f"{log_url}/job-output.txt")
         entry["failure"] = gradle_failure(log)
         if not entry["failure"]:
-            entry["log_tail"] = log_tail(log)
+            entry["log_tail"] = failure_snippet(log)
         sarif = next((a["url"] for a in build.get("artifacts", []) if a["name"].endswith("lint.sarif")), None)
         errors = lint_errors(json.loads(http_get(sarif))) if sarif else []
         if errors:
