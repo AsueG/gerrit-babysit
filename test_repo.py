@@ -38,6 +38,14 @@ class StaleParentsTest(GitRepoTest):
         # Then
         self.assertEqual([{}, {}], results)
 
+    def test_root_commit_has_no_parent(self):
+        # Given: Gerrit sends parents: [] for a root commit, not a missing key.
+        c = change(current=patch_set(1, parents=()))
+        # When
+        stale = repo.stale_parents([c], {1: (99, "MERGED", {})})
+        # Then
+        self.assertEqual({}, stale)
+
     def test_the_ancestry_check_only_reruns_when_the_branch_moves(self):
         # Given
         parent = self.commit("parent")

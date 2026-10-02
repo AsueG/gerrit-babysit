@@ -112,7 +112,7 @@ def outdated_parents(changes, statuses):
     outdated = {}
     for change in changes:
         parent, status, parent_patch_set = statuses.get(change["number"], (None, None, {}))
-        base = change.get("currentPatchSet", {}).get("parents", [None])[0]
+        base = repo.first_parent(change)
         new = (parent_patch_set or {}).get("revision")
         if status == "NEW" and base and new and base != new:
             outdated[change["number"]] = {"parent": parent, "parent_patch_set": parent_patch_set.get("number"),

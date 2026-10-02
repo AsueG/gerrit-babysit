@@ -352,6 +352,14 @@ class OutdatedParentsTest(unittest.TestCase):
         self.assertEqual({1: {"parent": 9, "parent_patch_set": 3, "parent_ref": "refs/changes/09/9/3",
                               "old_parent_sha": "old", "new_parent_sha": "new"}}, outdated)
 
+    def test_root_commit_has_no_parent(self):
+        # Given: Gerrit sends parents: [] for a root commit, not a missing key.
+        child = change(1, current=patch_set(1, parents=()))
+        # When
+        outdated = watch.outdated_parents([child], {1: (9, "NEW", {"revision": "new"})})
+        # Then
+        self.assertEqual({}, outdated)
+
     def test_merged_parents_are_left_to_stale_parents(self):
         # Given
         child = change(1, current=patch_set(1, parents=("old",)))

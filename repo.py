@@ -119,6 +119,11 @@ def is_ancestor(base, target):
     return {0: True, 1: False}.get(result)
 
 
+def first_parent(change):
+    """The current patch set's base SHA, None for a root commit (Gerrit sends `parents: []` there)."""
+    return (change.get("currentPatchSet", {}).get("parents") or [None])[0]
+
+
 def stale_parents(changes, statuses):
     """{change number: {parent, old_parent_sha}} when the parent merged under another SHA (rebase on submit).
 
@@ -126,7 +131,7 @@ def stale_parents(changes, statuses):
     merged = []
     for change in changes:
         parent, status, _ = statuses.get(change["number"], (None, None, None))
-        base = change.get("currentPatchSet", {}).get("parents", [None])[0]
+        base = first_parent(change)
         if status == "MERGED" and base:
             merged.append((change, parent, base))
     tips = branch_tips({change["branch"] for change, _, _ in merged})
