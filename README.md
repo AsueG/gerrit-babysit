@@ -22,7 +22,8 @@ explicit "yes"**: no push, published comment, vote, recheck or submit.
 On macOS you can add:
 
 - a background daemon that sends notifications, even with no Claude session open;
-- a SwiftBar menu bar item listing your changes, with a guarded one-click submit, a one-click recheck
+- a SwiftBar menu bar item listing your changes, with a guarded one-click submit (greyed out with what it
+  waits for until the change is ready), a one-click recheck
   for known flakes, and a snooze (until a date or the next patch set);
 - a Claude Code status line segment.
 

@@ -247,6 +247,51 @@ class RecheckTest(SnapshotTest):
 
 
 class SubmitTest(SnapshotTest):
+    def menu(self, change, fresh=True):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            plugin.print_change(change, "label", "clock", None, fresh=fresh)
+        return [line for line in out.getvalue().splitlines() if "paperplane" in line]
+
+    def test_a_ready_change_offers_the_submit(self):
+        # Given
+        change = row(7, ready=True, code_review=2)
+        # When
+        lines = self.menu(change)
+        # Then
+        self.assertEqual(1, len(lines))
+        self.assertIn('param1="submit" param2="7" param3="2"', lines[0])
+        self.assertNotIn("disabled=true", lines[0])
+
+    def test_any_other_change_shows_the_submit_greyed_out_with_the_reason(self):
+        # Given
+        change = row(7, ci="failed", ci_failed=["Integration"])
+        # When
+        lines = self.menu(change)
+        # Then
+        reason = plugin.t("bar_ci_failed", labels="Integration")
+        self.assertEqual([f"--{plugin.t('bar_submit_unavailable', reason=reason)} | disabled=true sfimage=paperplane"],
+                         lines)
+
+    def test_a_green_change_without_a_plus_two_says_so(self):
+        # Given
+        changes = [row(7, ci="passed", code_review=1), row(8, ci="running")]
+        # When
+        lines = [self.menu(change) for change in changes]
+        # Then
+        self.assertIn(plugin.t("bar_submit_unavailable", reason=plugin.t("bar_submit_wait_review")), lines[0][0])
+        self.assertIn(plugin.t("bar_submit_unavailable", reason=plugin.t("bar_submit_wait_ci")), lines[1][0])
+
+    def test_stale_data_greys_out_even_a_ready_change(self):
+        # Given
+        change = row(7, ready=True, code_review=2)
+        # When
+        lines = self.menu(change, fresh=False)
+        # Then
+        reason = plugin.t("bar_submit_stale")
+        self.assertEqual([f"--{plugin.t('bar_submit_unavailable', reason=reason)} | disabled=true sfimage=paperplane"],
+                         lines)
+
     def test_submits_the_confirmed_change_and_patch_set(self):
         # Given
         self.write([row(7)])

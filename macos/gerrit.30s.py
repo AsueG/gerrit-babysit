@@ -74,6 +74,10 @@ LABELS = {
 }
 
 
+# The states whose label tells the votes, not what the submit waits for.
+SUBMIT_WAITS = {"ci_running": "bar_submit_wait_ci", "ci_passed": "bar_submit_wait_review"}
+
+
 def label_of(state, change):
     if state == "wip":
         problem = snapshot.problem(change)
@@ -303,9 +307,16 @@ def print_change(change, label, symbol, color, fresh):
         print("-----")
         print(f"--{t('bar_recheck', detail=recheck_reason)} | {action('recheck', number, change['patch_set'])} "
               "sfimage=arrow.clockwise")
-    if fresh and snapshot.state(change) == "ready" and change.get("patch_set"):
+    if change.get("patch_set"):
         print("-----")
-        print(f"--{t('bar_submit')} | {action('submit', number, change['patch_set'])} sfimage=paperplane.fill")
+        state = snapshot.state(change)
+        if fresh and state == "ready":
+            print(f"--{t('bar_submit')} | {action('submit', number, change['patch_set'])} sfimage=paperplane.fill")
+        else:
+            # Always there, greyed out with what stands in the way, so a missing Submit never needs explaining.
+            reason = (t(SUBMIT_WAITS[state]) if state in SUBMIT_WAITS else label_of(state, change)) if fresh \
+                else t("bar_submit_stale")
+            print(f"--{t('bar_submit_unavailable', reason=reason.replace('|', '¦'))} | disabled=true sfimage=paperplane")
 
 
 def print_snoozed(change, entry):
