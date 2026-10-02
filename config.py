@@ -100,7 +100,9 @@ REPO = pathlib.Path(CONFIG["repo"]).expanduser() if CONFIG["repo"] else default_
 
 
 def gerrit_user():
-    return (CONFIG["gerrit_user"] or os.environ.get("GERRIT_USER")
-            or subprocess.run(["git", "-C", str(REPO), "config", "--get", "gitreview.username"],
-                              capture_output=True, text=True).stdout.strip()
-            or getpass.getuser())
+    try:
+        found = subprocess.run(["git", "-C", str(REPO), "config", "--get", "gitreview.username"],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        found = ""
+    return CONFIG["gerrit_user"] or os.environ.get("GERRIT_USER") or found or getpass.getuser()

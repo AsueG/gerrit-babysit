@@ -1,7 +1,9 @@
 """Run from this directory: python3 -m unittest"""
+import getpass
 import json
 import os
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -101,6 +103,17 @@ class ConfigTest(unittest.TestCase):
         # When / Then
         with mock.patch.dict(gerrit.CONFIG, {"gerrit_mcp_config": str(mcp)}), self.assertRaises(KeyError):
             gerrit.http_credentials()
+
+    def test_gerrit_user_falls_back_when_git_config_times_out(self):
+        # Given
+        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("git", 5)), \
+                mock.patch.dict(config.CONFIG, {"gerrit_user": None}), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GERRIT_USER", None)
+            # When
+            user = config.gerrit_user()
+        # Then
+        self.assertEqual(getpass.getuser(), user)
 
     def test_http_credentials_fall_back_to_netrc(self):
         # Given
