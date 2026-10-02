@@ -7,6 +7,7 @@
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 # <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -64,8 +65,14 @@ def cr_label(change):
 
 
 # snapshot.state → snapshot row → label; the others read `bar_<state>` as is.
+def ci_failed_label(change):
+    label = t("bar_ci_failed", labels=", ".join(change["ci_failed"]))
+    categories = sorted({j["category"] for j in change.get("ci_diagnosis") or [] if j.get("category")})
+    return f"{label} · {', '.join(categories)}" if categories else label
+
+
 LABELS = {
-    "ci_failed": lambda c: t("bar_ci_failed", labels=", ".join(c["ci_failed"])),
+    "ci_failed": ci_failed_label,
     "rejected": lambda c: f"CR {c['code_review']}",
     "parent_updated": lambda c: t("bar_parent_updated", parent=c["outdated_parent"]),
     "ci_stuck": lambda c: t("bar_ci_stuck", hours=CI_STUCK_S // 3600),
@@ -256,6 +263,16 @@ def needs_investigation(change):
     return state_of(change)[2] == "red" or bool(change.get("threads"))
 
 
+def diagnosis_text(job):
+    parts = [f"{job['job']} ({job.get('category', '?')})"]
+    if job.get("log_url"):
+        parts.append(job["log_url"])
+    if job.get("excerpt"):
+        parts.append(json.dumps(job["excerpt"], ensure_ascii=False))
+    parts += [t("bar_resembles", change=r["change"], fix=r.get("fix") or "?") for r in job.get("resembles", [])]
+    return " ".join(parts)
+
+
 def investigate(number):
     change = snapshot_row(number)
     if not change:
@@ -264,6 +281,9 @@ def investigate(number):
     if change.get("threads"):
         label += t("bar_threads", count=change["threads"])
     prompt = t("bar_investigate_prompt", n=number, url=change["url"], subject=change["subject"], state=label)
+    jobs = change.get("ci_diagnosis") or []
+    if jobs and change["ci"] == "failed":
+        prompt += " " + t("bar_investigate_diagnosis", jobs="; ".join(diagnosis_text(j) for j in jobs))
     open_terminal(change.get("worktree") or REPO, f"CL {number}", shlex.join([CLAUDE, prompt]))
 
 
@@ -310,6 +330,14 @@ def print_change(change, label, symbol, color, fresh):
         label += t("bar_threads", count=threads)
     print(f"{number}  {scope(change['subject'])} — {label} | href={url} sfimage={symbol}{tint}")
     print(f"--{change['subject'].replace('|', '¦')} | disabled=true")
+    if color == "red":
+        for job in change.get("ci_diagnosis") or []:
+            line = f"{job['job']}: {job.get('category', '?')}"
+            resembles = job.get("resembles") or []
+            if resembles:
+                line += " · " + t("bar_resembles", change=resembles[0]["change"], fix=resembles[0].get("fix") or "?")
+            link = f" href={job['log_url']}" if job.get("log_url") else " disabled=true"
+            print(f"--{line.replace('|', '¦')[:120]} |{link} sfimage=doc.text.magnifyingglass")
     print("-----")
     print(f"--{t('bar_open_gerrit')} | href={url} sfimage=safari")
     if needs_investigation(change):

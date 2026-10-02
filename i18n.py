@@ -57,6 +57,8 @@ MESSAGES = {
         "bar_investigate_prompt": "Change {n} ({url}) — \"{subject}\" — is in state: {state}. Investigate why "
                                   "(CI logs, reviewer comments, conflict), explain the cause and propose a fix. "
                                   "Do not push or post anything on Gerrit without asking me.",
+        "bar_investigate_diagnosis": "The watcher already diagnosed the failed jobs, start from there: {jobs}.",
+        "bar_resembles": "looks like #{change}, fixed by: {fix}",
         "bar_open_worktree": "Open the worktree in a terminal",
         "bar_copy": "Copy the change number",
         "bar_parent_open": "Parent {parent} still open",
@@ -146,6 +148,8 @@ MESSAGES = {
         "bar_investigate_prompt": "La CL {n} ({url}) — « {subject} » — est en état : {state}. Investigue pourquoi "
                                   "(logs CI, commentaires des reviewers, conflit), explique la cause et propose un "
                                   "correctif. Ne pousse rien et ne poste rien sur Gerrit sans me demander.",
+        "bar_investigate_diagnosis": "Le watcher a déjà diagnostiqué les jobs en échec, pars de là : {jobs}.",
+        "bar_resembles": "ressemble à #{change}, corrigé par : {fix}",
         "bar_open_worktree": "Ouvrir le worktree dans un terminal",
         "bar_copy": "Copier le n° de CL",
         "bar_parent_open": "Parente {parent} encore ouverte",

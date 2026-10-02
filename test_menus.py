@@ -197,6 +197,38 @@ class InvestigateTest(SnapshotTest):
         self.assertIn("7", command)
         self.assertIn("Quality", command)
 
+    def test_the_prompt_carries_the_diagnosis_already_made(self):
+        # Given
+        job = {"job": "unit", "category": "unknown", "log_url": "https://logs/1", "excerpt": "boom\nat Foo.kt",
+               "resembles": [{"change": 42, "cause": "stale cache", "fix": "clean build"}]}
+        self.write([row(7, ci="failed", ci_failed=["Verified"], ci_diagnosis=[job])])
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "ORCA", "/nonexistent"), \
+                mock.patch.object(plugin, "osascript") as osascript:
+            plugin.handle(["investigate", "7"])
+        # Then
+        command = osascript.call_args.args[2]
+        for part in ("unit (unknown)", "https://logs/1", r"boom\nat Foo.kt", "#42", "clean build"):
+            self.assertIn(part, command)
+
+
+class DiagnosisMenuTest(unittest.TestCase):
+    def test_a_red_change_names_its_failure_categories_and_links_each_log(self):
+        # Given
+        jobs = [{"job": "lint", "category": "lint", "log_url": "https://logs/l"},
+                {"job": "unit", "category": "unknown", "resembles": [{"change": 42, "fix": "clean build"}]}]
+        change = row(ci="failed", ci_failed=["Verified"], ci_diagnosis=jobs)
+        out = io.StringIO()
+        # When
+        with contextlib.redirect_stdout(out):
+            plugin.print_change(change, *plugin.state_of(change), fresh=True)
+        # Then
+        lines = out.getvalue().splitlines()
+        self.assertIn("· lint, unknown", lines[0])
+        self.assertIn("--lint: lint | href=https://logs/l sfimage=doc.text.magnifyingglass", lines)
+        self.assertTrue(any(line.startswith("--unit: unknown · ") and "#42" in line and "disabled=true" in line
+                            for line in lines))
+
 
 FLAKY_RED = {"ci": "failed", "ci_failed_jobs": [{"job": "unit", "result": "FAILURE"}],
              "flaky": {"unit": {"week": 3, "month": 4, "last": 1}}, "rechecks": 0}

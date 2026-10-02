@@ -661,6 +661,48 @@ class FlakyMemoryTest(unittest.TestCase):
                          (row["ci_failed_jobs"], row["flaky"]["unit"]["month"], row["rechecks"]))
 
 
+class DiagnoseRedTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(watch, "DIAGNOSES", pathlib.Path(tmp.name) / "diagnoses.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def red(self, number, verdict_at):
+        return change(number, current=patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS]),
+                      comments=[zuul_verdict(1, verdict_at, "FAILURE")])
+
+    def test_each_verdict_is_diagnosed_once_and_kept_while_the_change_is_open(self):
+        # Given
+        def diagnose(reported, base=None):
+            for event in reported:
+                event["ci_diagnosis"] = [{"job": "unit", "category": "unknown", "log_url": "https://logs/u",
+                                          "log_tail": "x" * 1000, "others_failing": [3]}]
+            return reported
+
+        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
+                mock.patch.object(watch, "enrich", side_effect=diagnose) as enrich:
+            # When
+            first = watch.diagnose_red(poll_result([self.red(1, 10), change(2)]))
+            again = watch.diagnose_red(poll_result([self.red(1, 10)]))
+            rechecked = watch.diagnose_red(poll_result([self.red(1, 20)]))
+            closed = watch.diagnose_red(poll_result([change(2)]))
+        # Then
+        self.assertEqual([1, 0, 1, 0], [len(c.args[0]) for c in enrich.call_args_list])
+        self.assertEqual({1: [{"job": "unit", "category": "unknown", "log_url": "https://logs/u",
+                               "excerpt": "x" * watch.EXCERPT_CHARS}]}, first)
+        self.assertEqual((first, first), (again, rechecked))
+        self.assertEqual(({}, {}), (closed, json.loads(watch.DIAGNOSES.read_text())))
+
+    def test_nothing_without_zuul(self):
+        # Given / When
+        with mock.patch.object(ci, "ZUUL_API", None):
+            found = watch.diagnose_red(poll_result([self.red(1, 10)]))
+        # Then
+        self.assertEqual({}, found)
+
+
 class SnoozeFilterTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

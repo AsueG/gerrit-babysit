@@ -423,8 +423,10 @@ def pending_events(result, now=None, current=None):
             yield event
 
 
-def status_rows(result, flakes, worktrees, now):
-    """The snapshot rows read by the SwiftBar plugin and the status line; `worktrees` is {Change-Id: path}."""
+def status_rows(result, flakes, worktrees, now, diagnoses=None):
+    """The snapshot rows read by the SwiftBar plugin and the status line; `worktrees` is {Change-Id: path},
+    `diagnoses` {change number: [failed job summary]} for the red ones."""
+    diagnoses = diagnoses or {}
     blockers = result.get("submit_blockers") or {}
     rows = []
     for change in result["changes"]:
@@ -444,6 +446,7 @@ def status_rows(result, flakes, worktrees, now):
             "ci": state,
             "ci_failed": failed_ci_labels(votes),
             "ci_failed_jobs": failed_jobs,
+            "ci_diagnosis": diagnoses.get(number, []) if verdict else [],
             "flaky": ci.flaky_counts(flakes, [j["job"] for j in failed_jobs], now),
             # Every recheck on the patch set, also after the verdict: one may already be running.
             "rechecks": my_rechecks(change, patch_set, float("inf")),

@@ -31,6 +31,8 @@ DRAFTS_QUERY = "has:draft status:open"
 STATE = CACHE / "seen.json"
 DAEMON_STATE = CACHE / "daemon-seen.json"
 FLAKY = CACHE / "flaky.json"
+DIAGNOSES = CACHE / "diagnoses.json"
+EXCERPT_CHARS = 300
 FLAKY_RETENTION_S = 90 * 86400
 # Longer than the daemon's interval, so the session sees at least one newer poll before reporting.
 SETTLE_S = 90
@@ -265,6 +267,47 @@ def diagnose_failures(failures, base):
                 event["base_build"] = base.get(event["branch"])
 
 
+def job_summary(entry):
+    """What the menu and the Investigate prompt show of one failed job's diagnosis."""
+    summary = {key: entry[key] for key in ("job", "category", "log_url") if entry.get(key)}
+    excerpt = (entry.get("failure") or entry.get("log_tail") or "").strip()
+    if excerpt:
+        summary["excerpt"] = excerpt[:EXCERPT_CHARS]
+    if entry.get("resembles"):
+        summary["resembles"] = [{key: r.get(key) for key in ("change", "cause", "fix")} for r in entry["resembles"]]
+    return summary
+
+
+def red_verdicts(changes):
+    """{"<change>:<patch set>:<verdict time>": (change, verdict)} of my changes whose current patch set failed: a
+    recheck's new verdict is diagnosed again."""
+    red = {}
+    for change in changes:
+        patch_set, _, _, verdict = events.ci_reading(change)
+        if verdict:
+            red[f"{change['number']}:{patch_set.get('number')}:{verdict['timestamp']}"] = (change, verdict)
+    return red
+
+
+def diagnose_red(result):
+    """{change number: [job summary]} of my red changes, each verdict diagnosed once and kept while the change is
+    open: the snapshot then tells why a change is red, not only that it is."""
+    if not ci.ZUUL_API:
+        return {}
+    stored = read_json(DIAGNOSES)
+    red = red_verdicts(result["changes"])
+    missing = [(key, {**events.event_base(change), "kind": "ci_red", "ci_verdict": verdict["message"]})
+               for key, (change, verdict) in red.items() if key not in stored]
+    enrich([event for _, event in missing], result.get("base_health"))
+    found = {key: {"diagnosed_at": time.time(), "jobs": [job_summary(d) for d in event.get("ci_diagnosis", [])]}
+             for key, event in missing}
+    open_changes = {str(c["number"]) for c in result["changes"]}
+    kept = {key: entry for key, entry in {**stored, **found}.items() if key.split(":", 1)[0] in open_changes}
+    if kept != stored:
+        atomic_write(DIAGNOSES, dict(sorted(kept.items())))
+    return {int(key.split(":", 1)[0]): kept[key]["jobs"] for key in red}
+
+
 def rebase(event):
     try:
         return {"rebase": repo.prepare_rebase(event)}
@@ -318,7 +361,13 @@ def write_status(result=None, error=None, listing=None):
         previous = read_json(STATUS)
         atomic_write(STATUS, {**previous, "last_attempt": now, "last_error": error})
         return
-    rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(listing), now)
+    try:
+        diagnoses = diagnose_red(result)
+    # The why of a red change is a bonus: a bug there must not leave the menu without a snapshot.
+    except Exception as error:  # noqa: BLE001
+        print(f"gerrit-babysit: CI diagnosis skipped: {type(error).__name__}: {error}", file=sys.stderr)
+        diagnoses = {}
+    rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(listing), now, diagnoses)
     atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None,
                           "threads_error": result.get("threads_error"), "changes": rows,
                           "base_health": result.get("base_health", {})})

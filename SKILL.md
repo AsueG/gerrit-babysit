@@ -67,6 +67,10 @@ relaunch cannot loop. To stop on purpose, delete `session.json` **before** endin
 The snapshot `~/.cache/gerrit-babysit/status.json` (per change: votes, `ci` =
 `running`/`passed`/`failed`/`stale_base` (Merge Failed), `ci_failed`, conflict, `open_parent`, worktree,
 patch set, `branch`, `base_red`; plus `last_attempt`/`last_error` and `base_health` = `{branch: base_build}`) feeds the status line segment and the SwiftBar menu.
+A red change's row also carries `ci_diagnosis` (when `zuul_api` is set): per failed job `job`, `category`,
+`log_url`, `excerpt` and `resembles`, worked out once per zuul verdict and kept in `diagnoses.json` while the
+change is open. The menu shows the categories next to "CI failed", one line per job linking its log, and its
+"Investigate with Claude" prompt hands that diagnosis over, so start from it instead of downloading the logs again.
 
 When installed (`macos/install.sh`), a LaunchAgent runs `watch.py --daemon` permanently: fresh snapshot +
 one macOS notification per new event, with its own state (`daemon-seen.json`) and SSH failures logged to
