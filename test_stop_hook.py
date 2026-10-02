@@ -41,7 +41,7 @@ class StopHookTest(unittest.TestCase):
         read = stop_hook.SESSION
         # Then
         self.assertEqual(written, read)
-        self.assertIn(str(read), stop_hook.REASON)
+        self.assertIn(str(read), stop_hook.reason())
 
     def test_blocks_the_babysit_session_without_a_watcher(self):
         # Given
@@ -96,6 +96,48 @@ class StopHookTest(unittest.TestCase):
         verdict = self.run_hook(processes)
         # Then
         self.assertEqual("block", verdict["decision"])
+
+    def plugin_versions(self):
+        """cache/<marketplace>/<plugin>/{1.0.0,1.1.0}/watch.py, the hook running from 1.0.0."""
+        cache = pathlib.Path(self.session.parent).resolve() / "cache"
+        old, new = (cache / "market" / "gerrit-babysit" / version / "watch.py" for version in ("1.0.0", "1.1.0"))
+        for path in (old, new):
+            path.parent.mkdir(parents=True)
+            path.touch()
+        for name, value in (("PLUGIN_CACHE", cache), ("WATCH_PY", old)):
+            patcher = mock.patch.object(stop_hook, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return old, new
+
+    def test_a_watcher_of_a_newer_plugin_version_counts(self):
+        # Given
+        _, new = self.plugin_versions()
+        processes = {300: (HOOK, f"python3 {new}")}
+        # When
+        verdict = self.run_hook(processes)
+        # Then
+        self.assertIsNone(verdict)
+
+    def test_a_sibling_skill_of_a_cloned_install_does_not_count(self):
+        # Given
+        _, new = self.plugin_versions()
+        stop_hook_outside_cache = mock.patch.object(stop_hook, "PLUGIN_CACHE", pathlib.Path("/nowhere"))
+        processes = {300: (HOOK, f"python3 {new}")}
+        # When
+        with stop_hook_outside_cache:
+            verdict = self.run_hook(processes)
+        # Then
+        self.assertEqual("block", verdict["decision"])
+
+    def test_the_relaunch_points_at_the_latest_install(self):
+        # Given
+        _, new = self.plugin_versions()
+        # When
+        with mock.patch.object(stop_hook.launch, "skill_dir", return_value=new.parent):
+            verdict = self.run_hook()
+        # Then
+        self.assertIn(f"python3 {new}`", verdict["reason"])
 
     def test_a_watcher_of_another_session_does_not_count(self):
         # Given
