@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import subprocess
 import tempfile
 import time
 import unittest
@@ -9,6 +10,7 @@ from unittest import mock
 
 # First: points the config at the fixtures before any module reads it.
 from fakes import GitRepoTest
+import ci
 import doctor
 import gerrit
 import repo
@@ -103,6 +105,45 @@ class CheckHttpTest(unittest.TestCase):
         # Then
         self.assertFalse(check["ok"])
         self.assertIn("no ~/.netrc entry", check["detail"])
+
+
+class CheckSshTest(unittest.TestCase):
+    def test_a_reachable_gerrit_reports_its_version(self):
+        # Given
+        with mock.patch.object(gerrit, "ssh", return_value=mock.Mock(stdout="2026.1.0\n")) as ssh:
+            # When
+            check = doctor.check_ssh()
+        # Then
+        self.assertEqual({"ok": True, "detail": "2026.1.0"}, check)
+        ssh.assert_called_once_with("gerrit", "version", timeout=30, check=True)
+
+    def test_an_unreachable_gerrit_says_why(self):
+        # Given
+        error = subprocess.CalledProcessError(255, ["ssh"], stderr="ssh: Could not resolve hostname\n")
+        with mock.patch.object(gerrit, "ssh", side_effect=error):
+            # When
+            check = doctor.check_ssh()
+        # Then
+        self.assertEqual({"ok": False, "detail": "ssh: Could not resolve hostname"}, check)
+
+
+class CheckZuulTest(unittest.TestCase):
+    def test_a_reachable_zuul_is_ok(self):
+        # Given
+        with mock.patch.object(ci, "http_get", return_value="[]") as http_get:
+            # When
+            check = doctor.check_zuul()
+        # Then
+        self.assertEqual({"ok": True}, check)
+        http_get.assert_called_once_with(f"{ci.ZUUL_API}/builds?limit=1")
+
+    def test_an_unreachable_zuul_says_why(self):
+        # Given
+        with mock.patch.object(ci, "http_get", side_effect=OSError("Could not resolve hostname")):
+            # When
+            check = doctor.check_zuul()
+        # Then
+        self.assertEqual({"ok": False, "detail": "Could not resolve hostname"}, check)
 
 
 class MainTest(unittest.TestCase):

@@ -60,5 +60,58 @@ class KnownFailuresTest(unittest.TestCase):
         self.assertEqual({}, json.loads(known_failures.KNOWN.read_text()))
 
 
+class MainTest(unittest.TestCase):
+    """One test per invocation documented in SKILL.md ("Remember a failure diagnosed by hand")."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(known_failures, "KNOWN", pathlib.Path(tmp.name) / "known_failures.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_main(self, *argv):
+        out = []
+        with mock.patch("sys.argv", ["known_failures.py", *argv]), \
+                mock.patch("builtins.print", side_effect=out.append):
+            code = known_failures.main()
+        return code, out
+
+    def test_record(self):
+        # When
+        with mock.patch.object(ci, "http_get", return_value=LOG):
+            code, out = self.run_main("record", "9", "2", "app-e2e", "--log-url", "https://logs/x/",
+                                      "--cause", "emulator OOM", "--fix", "bump the heap")
+        # Then
+        self.assertEqual(0, code)
+        printed = json.loads(out[0])
+        self.assertNotIn("fingerprint", printed)
+        self.assertEqual(("emulator OOM", "bump the heap"), (printed["cause"], printed["fix"]))
+        self.assertEqual("emulator OOM", known_failures.load()["9:2:app-e2e"]["cause"])
+
+    def test_forget(self):
+        # Given
+        with mock.patch.object(ci, "http_get", return_value=LOG):
+            known_failures.record(9, 2, "app-e2e", "https://logs/x/", "emulator OOM", "bump the heap")
+        # When
+        found = self.run_main("forget", "9", "2", "app-e2e")[0]
+        missing = self.run_main("forget", "9", "2", "app-e2e")[0]
+        # Then
+        self.assertEqual((0, 1), (found, missing))
+        self.assertEqual({}, known_failures.load())
+
+    def test_no_argument_lists_the_records(self):
+        # Given
+        with mock.patch.object(ci, "http_get", return_value=LOG):
+            known_failures.record(9, 2, "app-e2e", "https://logs/x/", "emulator OOM", "bump the heap")
+        # When
+        code, out = self.run_main()
+        # Then
+        self.assertEqual(0, code)
+        printed = json.loads(out[0])
+        self.assertNotIn("fingerprint", printed["9:2:app-e2e"])
+        self.assertEqual("emulator OOM", printed["9:2:app-e2e"]["cause"])
+
+
 if __name__ == "__main__":
     unittest.main()

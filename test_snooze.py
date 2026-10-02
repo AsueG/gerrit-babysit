@@ -1,5 +1,6 @@
 """Run from this directory: python3 -m unittest"""
 import datetime
+import json
 import os
 import pathlib
 import tempfile
@@ -88,6 +89,71 @@ class SnoozeTest(unittest.TestCase):
         snooze.forget({1, 9})
         # Then
         self.assertEqual({2: {"patch_set": 4}}, snooze.load())
+
+
+class MainTest(unittest.TestCase):
+    """One test per invocation documented in SKILL.md's Snooze section."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(snooze, "SNOOZE", pathlib.Path(tmp.name) / "snooze.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_main(self, *argv):
+        out = []
+        with mock.patch("sys.argv", ["snooze.py", *argv]), mock.patch("builtins.print", side_effect=out.append):
+            code = snooze.main()
+        return code, out
+
+    def test_until_a_date(self):
+        # When
+        code, _ = self.run_main("12345", "--until", "2026-10-05")
+        # Then
+        self.assertEqual(0, code)
+        self.assertEqual({"until": snooze.parse_date("2026-10-05")}, snooze.load()[12345])
+
+    def test_days_from_now(self):
+        # Given
+        with mock.patch.object(snooze.time, "time", return_value=local(2026, 10, 1, 10)):
+            # When
+            code, _ = self.run_main("12345", "--days", "1")
+        # Then
+        self.assertEqual(0, code)
+        self.assertEqual({"until": snooze.in_days(1, local(2026, 10, 1, 10))}, snooze.load()[12345])
+
+    def test_patch_set(self):
+        # When
+        code, _ = self.run_main("12345", "--patch-set", "7")
+        # Then
+        self.assertEqual(0, code)
+        self.assertEqual({"patch_set": 7}, snooze.load()[12345])
+
+    def test_base_green(self):
+        # When
+        code, _ = self.run_main("12345", "--base-green")
+        # Then
+        self.assertEqual(0, code)
+        self.assertEqual({"base_green": True}, snooze.load()[12345])
+
+    def test_clear_wakes_it_up(self):
+        # Given
+        snooze.set_snooze(12345, patch_set=1)
+        # When
+        code, _ = self.run_main("12345", "--clear")
+        # Then
+        self.assertEqual(0, code)
+        self.assertEqual({}, snooze.load())
+
+    def test_no_argument_lists_the_snoozes(self):
+        # Given
+        snooze.set_snooze(12345, patch_set=1)
+        # When
+        code, out = self.run_main()
+        # Then
+        self.assertEqual(0, code)
+        self.assertEqual({"12345": {"patch_set": 1}}, json.loads(out[0]))
 
 
 if __name__ == "__main__":
