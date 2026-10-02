@@ -231,7 +231,7 @@ def review_wait(change, patch_set, attention, now):
 # failures after it), what one click unblocks, what others wait from me, then what only waits.
 URGENCY = ("unreachable", "unfinished", "base_red", "merge_conflict", "parent_merged", "pending", "message", "submit_blocked",
            "ready_to_submit", "parent_updated", "ci_stuck", "review_reply", "review_requested", "review_new_patch_set",
-           "waiting_for_review", "cleanup_candidate")
+           "waiting_for_review", "cleanup_candidate", "failure_fixed")
 
 
 def by_urgency(reported):

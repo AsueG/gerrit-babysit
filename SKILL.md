@@ -101,7 +101,7 @@ before this verdict, and `known_flaky` = `{job: {week, month, last}}` from the l
 `parent_updated` (+ `parent`, `parent_patch_set`, `old_parent_sha`, `new_parent_sha`, `rebase`), `ci_stuck` (+ `idle_since`, `zuul_queue`), `waiting_for_review` (+ `working_days`,
 `reviewers`, `waiting_on`, `dismissed`), `base_red` (no `change`: `branch`, `changes`, see `base_build`
 below), `ready_to_submit` / `submit_blocked` (+ `requirements`) ("Submit" section), `cleanup_candidate` ("Cleanup" section) or
-`review_requested` / `review_new_patch_set` / `review_reply` ("Other people's reviews" section).
+`review_requested` / `review_new_patch_set` / `review_reply` ("Other people's reviews" section) or `failure_fixed` (below "Remember a failure diagnosed by hand").
 The watcher never gives up on Gerrit being unreachable (VPN off…): it retries with a backoff capped at
 10 min, and the status line shows `?` meanwhile. After 3 failed polls in a row it wakes the session
 **once per outage** with a single `unreachable` event: `detail` (ssh's error), `failures`, `since` (last
@@ -211,6 +211,13 @@ verdicts then wait until the base recovers.
 `~/.cache/gerrit-babysit/known_failures.json` (180 days); the next look-alike failure carries `resembles`.
 No argument lists the records, `forget <change> <patch_set> <job>` drops a wrong one. Local only, nothing
 is published, so no approval is needed.
+
+**`failure_fixed`** (session watcher, needs `zuul_api`) = an `unknown` failure of `job` on `failed_patch_set`
+that a newer patch set of the change got past (CI green now), with `failed_ref`, `fixed_ref`, `log_url` and
+`excerpt`; emitted once, and not when it is already recorded. Fetch both refs into `refs/gerrit-babysit/`,
+read `git diff <failed> <fixed>` next to the excerpt: when the diff explains the failure, record it as above
+(one-line `--cause` / `--fix`) and say so in one line; when it does not (a pure rebase, a flake), skip it and
+say why. Delete the refs afterwards.
 
 ### 2. Move into the change's worktree
 

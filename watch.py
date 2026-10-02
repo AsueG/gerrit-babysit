@@ -2,6 +2,7 @@
 """Block until one of my open Gerrit changes gets a new actionable event, print it as JSON, exit."""
 import argparse
 import concurrent.futures
+import itertools
 import json
 import os
 import pathlib
@@ -306,6 +307,32 @@ def diagnose_red(result):
     if kept != stored:
         atomic_write(DIAGNOSES, dict(sorted(kept.items())))
     return {int(key.split(":", 1)[0]): kept[key]["jobs"] for key in red}
+
+
+def change_ref(number, patch_set):
+    return f"refs/changes/{number % 100:02d}/{number}/{patch_set}"
+
+
+def fixed_failures(result):
+    """(key, event) per `unknown` failure a newer patch set of the change got past: the diff between the two is how
+    it was fixed, worth remembering for its next look-alike. Read from the diagnoses kept in diagnoses.json."""
+    known = known_failures.load()
+    changes = {c["number"]: c for c in result["changes"]}
+    for key, entry in sorted(read_json(DIAGNOSES).items()):
+        number, failed, _ = (int(part) if part.isdigit() else part for part in key.split(":", 2))
+        change = changes.get(number)
+        if not change:
+            continue
+        patch_set, _, state, _ = events.ci_reading(change)
+        current = int(patch_set.get("number") or 0)
+        if state != "passed" or current <= failed:
+            continue
+        for job in entry.get("jobs", []):
+            if job.get("category") == "unknown" and f"{number}:{failed}:{job['job']}" not in known:
+                yield f"{number}:fixed:{failed}:{job['job']}", {
+                    **events.event_base(change), "kind": "failure_fixed", "job": job["job"], "failed_patch_set": failed,
+                    "failed_ref": change_ref(number, failed), "fixed_ref": patch_set.get("ref"),
+                    "log_url": job.get("log_url"), "excerpt": job.get("excerpt")}
 
 
 def rebase(event):
@@ -624,7 +651,7 @@ def main():
     while True:
         try:
             result, now, snoozed, cleanup = session_poll()
-            current = awake(events.events(result, now), snoozed) | cleanup
+            current = awake(itertools.chain(events.events(result, now), fixed_failures(result)), snoozed) | cleanup
             failures = 0
         except (subprocess.SubprocessError, OSError, ValueError, DaemonError) as error:
             detail = gerrit.error_detail(error)

@@ -702,6 +702,24 @@ class DiagnoseRedTest(unittest.TestCase):
         # Then
         self.assertEqual({}, found)
 
+    def test_an_unknown_failure_a_newer_patch_set_got_past_is_offered_for_the_memory(self):
+        # Given
+        jobs = [{"job": "unit", "category": "unknown", "log_url": "https://logs/u", "excerpt": "boom"},
+                {"job": "lint", "category": "lint"}]
+        watch.DIAGNOSES.write_text(json.dumps({"101:1:10": {"jobs": jobs}, "102:1:10": {"jobs": jobs},
+                                               "103:1:10": {"jobs": jobs}, "104:3:10": {"jobs": jobs}}))
+        green = patch_set(2, *GREEN_CI)
+        changes = [change(101, current=green), change(102, current=green), self.red(103, 20),
+                   change(104, current=patch_set(3, *GREEN_CI))]
+        with mock.patch.object(watch.known_failures, "load", return_value={"102:1:unit": {}}):
+            # When
+            found = dict(watch.fixed_failures(poll_result(changes)))
+        # Then
+        self.assertEqual(["101:fixed:1:unit"], list(found))
+        self.assertEqual({"kind": "failure_fixed", "job": "unit", "failed_patch_set": 1, "failed_ref": "refs/changes/01/101/1",
+                          "fixed_ref": "refs/changes/01/1/2", "log_url": "https://logs/u", "excerpt": "boom"},
+                         {k: v for k, v in found["101:fixed:1:unit"].items() if k not in events.event_base(changes[0])})
+
 
 class SnoozeFilterTest(unittest.TestCase):
     def setUp(self):
