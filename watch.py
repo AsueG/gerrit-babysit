@@ -213,6 +213,13 @@ def daemon_poll():
     return with_int_keys(heartbeat["poll"])
 
 
+def daemon_alive():
+    """True once the daemon's heartbeat looks fresh again. A daemon stuck in fetch retries can outlast
+    STALE_AFTER_S yet still be working: re-checked right before a session's own poll persists, so a daemon that
+    finishes and publishes in the meantime is not clobbered by the session's now-stale fallback."""
+    return time.time() - read_json(DAEMON_POLL).get("attempt", 0) <= STALE_AFTER_S
+
+
 def write_daemon_poll(result=None, error=None):
     previous = read_json(DAEMON_POLL)
     atomic_write(DAEMON_POLL, {"attempt": time.time(), "error": error,
@@ -458,7 +465,8 @@ def session_poll():
         result = poll()
     # One listing for the snapshot and the cleanup check.
     listing = repo.worktree_listing()
-    if own_poll:
+    # A slow-but-alive daemon may have finished and published while our own poll ran; its write wins.
+    if own_poll and not daemon_alive():
         write_status(result, listing=listing)
         record_flaky(result)
     cleanup = dict(repo.cleanup_candidates(frozenset(c["id"] for c in result["changes"]), listing))

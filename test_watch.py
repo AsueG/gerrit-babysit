@@ -291,6 +291,51 @@ class SessionRetryTest(unittest.TestCase):
         self.assertEqual(["unfinished", "pending", "ready_to_submit"], [e["kind"] for e in out[0]["events"]])
 
 
+class SessionPollTest(unittest.TestCase):
+    def test_a_slow_but_alive_daemon_wins_the_write(self):
+        # Given
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        result = poll_result([change()])
+
+        def slow_poll():
+            # The daemon's own round, stuck in fetch retries past STALE_AFTER_S, finishes and publishes while
+            # the session is still running its fallback poll.
+            watch.write_daemon_poll(result)
+            return result
+
+        with mock.patch.object(watch, "DAEMON_POLL", pathlib.Path(tmp.name) / "daemon-poll.json"), \
+                mock.patch.object(watch, "daemon_poll", return_value=None), \
+                mock.patch.object(watch, "poll", side_effect=slow_poll), \
+                mock.patch.object(repo, "worktree_listing", return_value=[]), \
+                mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
+                mock.patch.object(watch, "write_status") as write_status, \
+                mock.patch.object(watch, "record_flaky") as record_flaky:
+            # When
+            watch.session_poll()
+        # Then
+        write_status.assert_not_called()
+        record_flaky.assert_not_called()
+
+    def test_a_genuinely_dead_daemon_still_falls_back(self):
+        # Given
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        result = poll_result([change()])
+        with mock.patch.object(watch, "DAEMON_POLL", pathlib.Path(tmp.name) / "daemon-poll.json"), \
+                mock.patch.object(watch, "daemon_poll", return_value=None), \
+                mock.patch.object(watch, "poll", return_value=result), \
+                mock.patch.object(repo, "worktree_listing", return_value=[]), \
+                mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
+                mock.patch.object(watch, "write_status") as write_status, \
+                mock.patch.object(watch, "record_flaky") as record_flaky:
+            # When
+            watch.session_poll()
+        # Then
+        write_status.assert_called_once_with(result, listing=[])
+        record_flaky.assert_called_once_with(result)
+
+
 class UnfinishedEventsTest(unittest.TestCase):
     def test_local_work_and_drafts_merge_per_change(self):
         # Given
