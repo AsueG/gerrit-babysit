@@ -5,6 +5,7 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import time
@@ -297,6 +298,56 @@ class RecheckTest(SnapshotTest):
             plugin.main()
         # Then
         self.assertIn('"recheck"', out.getvalue())
+
+
+class PushRebaseTest(SnapshotTest):
+    READY = {"sha": "f" * 40, "patch_set": 2, "parent": None}
+
+    def menu(self, change, fresh=True):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            plugin.print_change(change, "label", "clock", None, fresh=fresh)
+        return [line for line in out.getvalue().splitlines() if "push_rebase" in line]
+
+    def test_offered_only_on_fresh_data_for_the_patch_set_it_was_made_from(self):
+        # Given
+        cases = [(row(7, branch="main", rebase_ready=self.READY), True),
+                 (row(7, branch="main", rebase_ready=self.READY), False),
+                 (row(7, branch="main", rebase_ready={**self.READY, "patch_set": 1}), True),
+                 (row(7, branch="main", rebase_ready={**self.READY, "parent": 9}), True)]
+        # When
+        lines = [self.menu(change, fresh) for change, fresh in cases]
+        # Then
+        self.assertEqual([1, 0, 0, 1], [len(found) for found in lines])
+        self.assertIn(plugin.t("bar_push_rebase", onto="main"), lines[0][0])
+        self.assertIn(plugin.t("bar_push_rebase", onto=plugin.t("bar_onto_parent", parent=9)), lines[3][0])
+
+    def push(self, ref_sha, answer=True):
+        self.write([row(7, branch="main", worktree="/wt", rebase_ready=self.READY)])
+        pushed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(plugin, "STATUS", self.status), \
+                mock.patch.object(plugin, "confirmed", return_value=answer) as confirmed, \
+                mock.patch.object(plugin, "notify"), mock.patch.object(plugin, "refresh"), \
+                mock.patch("repo.git", return_value=ref_sha + "\n"), \
+                mock.patch("repo.git_run", return_value=pushed) as git_run:
+            plugin.handle(["push_rebase", "7", "2"])
+        return confirmed, git_run
+
+    def test_pushes_the_prepared_commit_after_a_confirmation_that_warns_about_the_worktree(self):
+        # When
+        confirmed, git_run = self.push("f" * 40)
+        # Then
+        self.assertIn("/wt", confirmed.call_args.args[1])
+        git_run.assert_called_once_with("push", "origin", f"{'f' * 40}:refs/for/main", timeout=180)
+
+    def test_nothing_without_a_yes_or_when_the_ref_moved(self):
+        # When
+        _, declined = self.push("f" * 40, answer=False)
+        confirmed, moved = self.push("e" * 40)
+        # Then
+        declined.assert_not_called()
+        moved.assert_not_called()
+        confirmed.assert_not_called()
 
 
 class SubmitTest(SnapshotTest):

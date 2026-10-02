@@ -21,7 +21,7 @@ from config import (CACHE, CONFIG, LAUNCHER, REPO, SKILL_DIR, SWIFTBAR_PLUGIN, V
 TEMP_GRACE_S = 3600
 OPEN_QUERY = "(owner:self OR reviewer:self) status:open"
 # Fetched per change and never reused once it closes; the branch tips next to them are reused by every poll.
-CHANGE_REFS = [f"{repo.FETCH_NAMESPACE}/{kind}/" for kind in ("changes", "review")]
+CHANGE_REFS = [f"{repo.FETCH_NAMESPACE}/{kind}/" for kind in ("changes", "review", "rebased")]
 
 
 def check_ssh():

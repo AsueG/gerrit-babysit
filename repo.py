@@ -289,6 +289,41 @@ def prepare_rebase(event):
             "commits": int(git("rev-list", "--count", f"{onto}..HEAD", cwd=worktree).strip() or 0)}
 
 
+REBASED = f"{FETCH_NAMESPACE}/rebased"
+_replay_memo = PollMemo()
+
+
+def replay(revision, onto):
+    """The patch set's commit cherry-picked onto `onto` with no worktree: a merge-tree, then a commit keeping its
+    message (so its Change-Id) and its author. "" on a conflict; None when a commit is missing (unknown)."""
+    parent = git_run("rev-parse", "--verify", "--quiet", f"{revision}^")
+    if parent.returncode or git_run("cat-file", "-e", f"{onto}^{{commit}}").returncode:
+        return None
+    merged = git_run("merge-tree", "--write-tree", f"--merge-base={parent.stdout.strip()}", onto, revision)
+    if merged.returncode == 1:
+        return ""
+    if merged.returncode:
+        return None
+    name, email, date = git("log", "-1", "--format=%an%x00%ae%x00%ad", "--date=raw", revision).rstrip("\n").split("\0")
+    env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_AUTHOR_DATE": date}
+    message = git("log", "-1", "--format=%B", revision)
+    commit = git_run("commit-tree", merged.stdout.split()[0], "-p", onto, "-F", "-", input=message, env=env)
+    return commit.stdout.strip() if commit.returncode == 0 else None
+
+
+def prepare_replays(wanted):
+    """{change number: rebased SHA} for `wanted` = {change number: (revision, onto)} that replay cleanly. Each one is
+    kept under refs/gerrit-babysit/rebased/<n>, so gc cannot drop it before it is pushed."""
+    prepared = {}
+    with _replay_memo.poll() as memo:
+        for number, (revision, onto) in sorted(wanted.items()):
+            sha = memo.get((revision, onto), replay, revision, onto)
+            if sha:
+                git_run("update-ref", f"{REBASED}/{number}", sha)
+                prepared[number] = sha
+    return prepared
+
+
 _worktrees_memo = LatestMemo()
 
 

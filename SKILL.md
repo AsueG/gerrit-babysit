@@ -79,7 +79,14 @@ session watcher reuses it instead of querying Gerrit and fetching again (only th
 the session). No notifications outside working hours (`work_hours`, Mon–Fri): events stay unseen and
 notify at the start of the next working day. Past 3 notifications in one poll (typically that morning
 catch-up), a single summary replaces them. Changes waiting on the same reviewer notify once ("3 CLs waiting on
-Alice", opening their `attention:` query in Gerrit). The daemon fixes nothing: clicking opens the change in Gerrit.
+Alice", opening their `attention:` query in Gerrit). The daemon fixes nothing: clicking opens the change in Gerrit. The one thing it prepares is a plain rebase,
+as a commit and never in a worktree: for a change whose open parent got a new patch set (onto it), or whose
+parent merged, which got Merge Failed or conflicts (onto the branch tip, unless it sits on an open parent), it
+replays the patch set with `git merge-tree` + `git commit-tree`, keeping its message and author, under
+`refs/gerrit-babysit/rebased/<n>`. Only when it applies cleanly, and not when the change's worktree holds
+unpushed or half-done work. The snapshot row then has `rebase_ready` = `{sha, patch_set, parent}`, and the
+SwiftBar menu offers "Push the rebase onto …" behind a confirmation dialog (the user's "yes"), warning that
+the worktree stays on the old patch set. Nothing is pushed otherwise.
 After editing `watch.py`, restart it: `launchctl kickstart -k gui/$(id -u)/<launchd_label>`. Its heartbeat
 carries its version: when it differs from the menu's, the SwiftBar menu shows `Daemon vX ≠ menu vY` with a
 "Restart the daemon" item.
@@ -376,7 +383,7 @@ install Claude Code uses, `daemon`, `swiftbar`, `match`: false = the daemon or t
 install; restart the daemon or rerun `macos/install.sh`), `pre_push_hook` (installed or not), `network` when
 SSH or zuul fails (same as the `unreachable` event: check the VPN and DNS first), `state` (each cache file: `bytes`, `entries`,
 `age_s`, `corrupt`) and `prunable`: crashed temp files, prereviews of closed changes or of an old patch set,
-the private `refs/gerrit-babysit/changes|review/<n>` of closed changes, snoozes of closed changes. Summarize
+the private `refs/gerrit-babysit/changes|review|rebased/<n>` of closed changes, snoozes of closed changes. Summarize
 what is broken and how to fix it. `--prune` deletes what `prunable` lists, local only, so no "yes" needed
 beyond the user's ask; while Gerrit is unreachable it only drops the temp files.
 

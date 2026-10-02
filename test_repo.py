@@ -238,6 +238,54 @@ class InterdiffTest(GitRepoTest):
         self.assertEqual("", self.git("for-each-ref", f"{repo.FETCH_NAMESPACE}/review"))
 
 
+class ReplayTest(GitRepoTest):
+    """A change editing A.kt on top of `base`, while `main` moved on: the change then needs a rebase."""
+
+    def write_commit(self, files, message, author=None):
+        for name, text in files.items():
+            (self.repo / name).write_text(text)
+            self.git("add", name)
+        self.git("commit", "-q", "-m", message, *(["--author", author] if author else []))
+        return self.git("rev-parse", "HEAD")
+
+    def setUp(self):
+        super().setUp()
+        repo._replay_memo = repo.PollMemo()
+        self.base = self.write_commit({"A.kt": "a\n", "B.kt": "b\n"}, "base")
+        self.change = self.write_commit({"A.kt": "a changed\n"}, f"feat: a\n\nChange-Id: {CHANGE_ID}",
+                                        author="Ann <ann@x>")
+        self.git("reset", "-q", "--hard", self.base)
+
+    def test_replays_the_change_onto_the_new_base_keeping_its_message_and_author(self):
+        # Given
+        tip = self.write_commit({"B.kt": "b moved\n"}, "upstream")
+        # When
+        sha = repo.replay(self.change, tip)
+        # Then
+        self.assertEqual(tip, self.git("rev-parse", f"{sha}^"))
+        self.assertEqual(("a changed", "b moved"), (self.git("show", f"{sha}:A.kt"), self.git("show", f"{sha}:B.kt")))
+        self.assertEqual(f"feat: a\n\nChange-Id: {CHANGE_ID}", self.git("log", "-1", "--format=%B", sha))
+        self.assertEqual("Ann <ann@x>", self.git("log", "-1", "--format=%an <%ae>", sha))
+
+    def test_a_conflict_or_a_missing_commit(self):
+        # Given
+        tip = self.write_commit({"A.kt": "a upstream\n"}, "upstream")
+        # When
+        found = (repo.replay(self.change, tip), repo.replay(self.change, "0" * 40))
+        # Then
+        self.assertEqual(("", None), found)
+
+    def test_prepared_replays_are_kept_under_a_private_ref(self):
+        # Given
+        tip = self.write_commit({"B.kt": "b moved\n"}, "upstream")
+        conflicting = self.write_commit({"A.kt": "a upstream\n"}, "upstream 2")
+        # When
+        prepared = repo.prepare_replays({7: (self.change, tip), 8: (self.change, conflicting)})
+        # Then
+        self.assertEqual([7], list(prepared))
+        self.assertEqual(prepared[7], self.git("rev-parse", f"{repo.REBASED}/7"))
+
+
 class PrepareRebaseTest(GitRepoTest):
     """A stack parent → child in a linked worktree; the parent then gets a new patch set on `main`."""
 

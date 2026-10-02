@@ -661,6 +661,35 @@ class FlakyMemoryTest(unittest.TestCase):
                          (row["ci_failed_jobs"], row["flaky"]["unit"]["month"], row["rechecks"]))
 
 
+class PreparedRebasesTest(unittest.TestCase):
+    def test_candidates_are_what_a_plain_rebase_unblocks(self):
+        # Given
+        merge_failed = patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS])
+        changes = [change(1), change(2), change(3), change(4), change(5, current=merge_failed,
+                                                                         comments=[message("zuul", "Patch Set 1: Verified-1\n\nMerge Failed.", 5)])]
+        result = {**poll_result(changes, conflicts={3: ["A.kt"], 4: ["B.kt"]}, parents={1: 9, 4: 8},
+                                stale={2: {"parent": 7, "old_parent_sha": "old"}}),
+                  "outdated_parents": {1: {"parent": 9, "new_parent_sha": "p9"}}}
+        # When
+        with mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}):
+            found = {n: (onto, parent) for n, (_, onto, parent) in watch.rebase_candidates(result).items()}
+        # Then
+        self.assertEqual({1: ("p9", 9), 2: ("tip", None), 3: ("tip", None), 5: ("tip", None)}, found)
+
+    def test_a_change_with_work_left_in_its_worktree_is_not_prepared(self):
+        # Given
+        result = poll_result([change(1), change(2)], conflicts={1: ["A.kt"], 2: ["A.kt"]})
+        with mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}), \
+                mock.patch.object(repo, "unfinished_work", return_value={1: {"worktree": "/wt1"}}), \
+                mock.patch.object(repo, "worktrees_by_change_id", return_value={"I1": "/wt1", "I2": "/wt2"}), \
+                mock.patch.object(repo, "prepare_replays", side_effect=lambda wanted: {n: "new" for n in wanted}) as replays:
+            # When
+            found = watch.prepared_rebases(result)
+        # Then
+        replays.assert_called_once_with({2: ("rev1", "tip")})
+        self.assertEqual({2: {"sha": "new", "patch_set": 1, "parent": None}}, found)
+
+
 class DiagnoseRedTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

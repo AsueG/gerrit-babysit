@@ -190,6 +190,37 @@ def recheck(number, patch_set):
         review(number, patch_set, ["--message", comment], subject, "bar_rechecked", "bar_recheck_failed")
 
 
+def rebase_onto(change):
+    parent = (change.get("rebase_ready") or {}).get("parent")
+    return t("bar_onto_parent", parent=parent) if parent else change.get("branch", "?")
+
+
+def push_rebase(number, patch_set):
+    """Pushes the rebase the watcher prepared, after a confirmation: only while the snapshot still shows the patch set
+    it was made from and the private ref still holds it."""
+    # Imported on use: the menu redraws every 30 s and only this action needs git.
+    import repo
+    row = snapshot_row(number)
+    prepared = row.get("rebase_ready") or {}
+    if str(row.get("patch_set")) != patch_set or str(prepared.get("patch_set")) != patch_set:
+        return
+    sha = repo.git("rev-parse", "--verify", "--quiet", f"{repo.REBASED}/{number}").strip()
+    if not sha or sha != prepared.get("sha"):
+        return
+    detail = row.get("subject", "")
+    if row.get("worktree"):
+        detail += "\n\n" + t("bar_push_rebase_worktree", path=row["worktree"], ps=patch_set, n=number)
+    if not confirmed(t("bar_push_rebase_confirm", n=number, ps=patch_set, onto=rebase_onto(row)), detail,
+                     t("bar_push_button")):
+        return
+    result = repo.git_run("push", "origin", f"{sha}:refs/for/{row['branch']}", timeout=180)
+    if result.returncode == 0:
+        notify(t("bar_pushed", n=number), row.get("subject", ""))
+    else:
+        alert(t("bar_push_failed", n=number), result.stderr.strip() or result.stdout.strip())
+    refresh()
+
+
 # A plain text field: on macOS 26 osascript gets SIGKILLed as soon as it builds an AppKit NSDatePicker.
 DATE_PROMPT = ('on run argv\n'
                'text returned of (display dialog (item 1 of argv) default answer (item 4 of argv) '
@@ -307,7 +338,8 @@ def restart_daemon():
 
 
 ACTIONS = {"submit": submit, "worktree": open_worktree, "investigate": investigate, "copy": copy,
-           "recheck": recheck, "snooze": snooze_change, "wake": wake, "restart_daemon": restart_daemon}
+           "recheck": recheck, "snooze": snooze_change, "wake": wake, "restart_daemon": restart_daemon,
+           "push_rebase": push_rebase}
 
 
 def handle(args):
@@ -362,6 +394,11 @@ def print_change(change, label, symbol, color, fresh):
         print("-----")
         print(f"--{t('bar_recheck', detail=recheck_reason)} | {action('recheck', number, change['patch_set'])} "
               "sfimage=arrow.clockwise")
+    prepared = change.get("rebase_ready")
+    if fresh and prepared and prepared.get("patch_set") == change.get("patch_set"):
+        print("-----")
+        print(f"--{t('bar_push_rebase', onto=rebase_onto(change))} | "
+              f"{action('push_rebase', number, change['patch_set'])} sfimage=arrow.triangle.branch")
     if change.get("patch_set"):
         print("-----")
         state = snapshot.state(change)

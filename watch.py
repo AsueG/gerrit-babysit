@@ -309,6 +309,40 @@ def diagnose_red(result):
     return {int(key.split(":", 1)[0]): kept[key]["jobs"] for key in red}
 
 
+def rebase_candidates(result):
+    """{change number: (change, onto SHA, parent number or None)} for my changes a plain rebase would unblock: a
+    parent with a new patch set (onto it), or a merged parent, Merge Failed or a conflict (onto the branch tip). A
+    change stacked on an open parent is left to the session: a branch-tip rebase would drop that parent."""
+    tips = repo.branch_tips({c["branch"] for c in result["changes"]})
+    outdated = result.get("outdated_parents", {})
+    found = {}
+    for change in result["changes"]:
+        number = change["number"]
+        if number in outdated:
+            found[number] = (change, outdated[number]["new_parent_sha"], outdated[number]["parent"])
+        elif number not in result["parents"] and (
+                number in result.get("stale_parents", {}) or number in result["conflicts"]
+                or events.ci_reading(change)[2] == "stale_base"):
+            if tips.get(change["branch"]):
+                found[number] = (change, tips[change["branch"]], None)
+    return found
+
+
+def prepared_rebases(result, listing=None):
+    """{change number: {sha, patch_set, parent}}: each candidate replayed onto its new base without a worktree, for
+    the menu to push after a confirmation. A change whose worktree holds unpushed or half-done work is skipped:
+    pushing past it would leave that work on the old patch set."""
+    candidates = rebase_candidates(result)
+    if not candidates:
+        return {}
+    busy = {w["worktree"] for w in repo.unfinished_work([c for c, _, _ in candidates.values()]).values()}
+    worktrees = repo.worktrees_by_change_id(listing)
+    wanted = {n: (c["currentPatchSet"]["revision"], onto) for n, (c, onto, _) in candidates.items()
+              if c.get("currentPatchSet", {}).get("revision") and worktrees.get(c["id"]) not in busy}
+    return {n: {"sha": sha, "patch_set": candidates[n][0]["currentPatchSet"].get("number"), "parent": candidates[n][2]}
+            for n, sha in repo.prepare_replays(wanted).items()}
+
+
 def change_ref(number, patch_set):
     return f"refs/changes/{number % 100:02d}/{number}/{patch_set}"
 
@@ -378,6 +412,16 @@ def enrich(reported, base=None):
     return reported
 
 
+def bonus(compute, *args, what):
+    """{} when `compute` fails: the why of a red change or a prepared rebase must not leave the menu without a
+    snapshot."""
+    try:
+        return compute(*args)
+    except Exception as failure:  # noqa: BLE001
+        print(f"gerrit-babysit: {what} skipped: {type(failure).__name__}: {failure}", file=sys.stderr)
+        return {}
+
+
 def write_status(result=None, error=None, listing=None):
     """Snapshot read by the SwiftBar plugin and the Claude Code status line, so they never hit Gerrit themselves.
 
@@ -388,13 +432,11 @@ def write_status(result=None, error=None, listing=None):
         previous = read_json(STATUS)
         atomic_write(STATUS, {**previous, "last_attempt": now, "last_error": error})
         return
-    try:
-        diagnoses = diagnose_red(result)
-    # The why of a red change is a bonus: a bug there must not leave the menu without a snapshot.
-    except Exception as failure:  # noqa: BLE001
-        print(f"gerrit-babysit: CI diagnosis skipped: {type(failure).__name__}: {failure}", file=sys.stderr)
-        diagnoses = {}
+    diagnoses = bonus(diagnose_red, result, what="CI diagnosis")
+    rebases = bonus(prepared_rebases, result, listing, what="rebase preparation")
     rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(listing), now, diagnoses)
+    for row in rows:
+        row["rebase_ready"] = rebases.get(row["number"])
     atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None,
                           "threads_error": result.get("threads_error"), "changes": rows,
                           "reviews": events.review_rows(result), "base_health": result.get("base_health", {})})
