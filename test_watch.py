@@ -6,6 +6,7 @@ import json
 import pathlib
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -599,6 +600,22 @@ class BaseHealthTest(unittest.TestCase):
         self.assertEqual({"main": {"branch": "main"}, "release": {"branch": "release"}}, found)
         self.assertEqual(2, base_health.call_count)
         self.assertEqual({}, unset)
+
+    def test_target_branches_are_asked_side_by_side(self):
+        # Given
+        changes = [change(1), change(2), change(3, branch="release")]
+        barrier = threading.Barrier(2, timeout=5)
+
+        def fetch(branch):
+            barrier.wait()
+            return {"branch": branch}
+        # When
+        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
+                mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
+                mock.patch.object(ci, "base_health", side_effect=fetch):
+            found = watch.base_health(changes)
+        # Then: both branches reached the barrier, so neither call waited on the other to start.
+        self.assertEqual({"main": {"branch": "main"}, "release": {"branch": "release"}}, found)
 
     def test_a_red_base_is_announced_once_for_all_its_changes(self):
         # Given

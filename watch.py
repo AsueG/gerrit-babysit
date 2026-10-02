@@ -150,10 +150,15 @@ def threads_or_error(changes):
 
 def base_health(changes):
     """{branch: periodic build health} for the branches my changes target, zuul unreachable included: the red base
-    is watched on every poll, not only once a change of mine fails."""
+    is watched on every poll, not only once a change of mine fails. Each branch is its own zuul round trip, so poll()
+    does not pay N x their latency."""
     if not (ci.ZUUL_API and ci.PERIODIC_BUILD):
         return {}
-    return {branch: ci.base_health(branch) for branch in sorted({c["branch"] for c in changes})}
+    branches = sorted({c["branch"] for c in changes})
+    if len(branches) < 2:
+        return {branch: ci.base_health(branch) for branch in branches}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(branches)) as pool:
+        return dict(zip(branches, pool.map(ci.base_health, branches)))
 
 
 def poll():
