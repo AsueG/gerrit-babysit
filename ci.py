@@ -153,11 +153,15 @@ def lint_errors(sarif):
         # Android Lint leaves `level` off its results: the severity is the rule's default configuration.
         defaults = {rule["id"]: rule.get("defaultConfiguration", {}).get("level")
                     for rule in run.get("tool", {}).get("driver", {}).get("rules", [])}
-        errors += [{"rule": r["ruleId"],
-                    "file": r["locations"][0]["physicalLocation"]["artifactLocation"].get("uri"),
-                    "line": r["locations"][0]["physicalLocation"].get("region", {}).get("startLine"),
-                    "message": r["message"]["text"][:300]}
-                   for r in run.get("results", []) if (r.get("level") or defaults.get(r["ruleId"])) == "error"]
+        for r in run.get("results", []):
+            if (r.get("level") or defaults.get(r["ruleId"])) != "error":
+                continue
+            # SARIF allows locationless results (e.g. a project-wide rule): keep them without a file/line.
+            location = r["locations"][0]["physicalLocation"] if r.get("locations") else {}
+            errors.append({"rule": r["ruleId"],
+                           "file": location.get("artifactLocation", {}).get("uri"),
+                           "line": location.get("region", {}).get("startLine"),
+                           "message": r["message"]["text"][:300]})
     return errors
 
 

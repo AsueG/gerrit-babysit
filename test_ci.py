@@ -166,6 +166,15 @@ class CiDiagnosisTest(unittest.TestCase):
         # Then
         self.assertEqual([("PriceFormat", "m")], [(e["rule"], e["message"]) for e in errors])
 
+    def test_lint_errors_keep_locationless_results(self):
+        # Given
+        sarif = {"runs": [{"results": [
+            {"ruleId": "UnusedResources", "level": "error", "locations": [], "message": {"text": "m"}}]}]}
+        # When
+        errors = ci.lint_errors(sarif)
+        # Then
+        self.assertEqual([{"rule": "UnusedResources", "file": None, "line": None, "message": "m"}], errors)
+
     def test_categories(self):
         # Given
         cases = {
