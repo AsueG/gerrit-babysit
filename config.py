@@ -18,6 +18,8 @@ SESSION = CACHE / "session.json"
 DAEMON_POLL = CACHE / "daemon-poll.json"
 # Written by macos/install.sh; outlives plugin updates.
 LAUNCHER = USER_DIR / "launch.py"
+# The session watcher's last report until `--ack` confirms it was read: a relaunch replays it, the Stop hook quotes it.
+INBOX = CACHE / "inbox.json"
 # A daemon loop can take interval + fetch timeout + ssh timeout before it writes again.
 STALE_AFTER_S = 360
 CI_STUCK_S = 2 * 3600

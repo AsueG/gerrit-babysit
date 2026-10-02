@@ -21,6 +21,10 @@ class StopHookTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.session = pathlib.Path(tmp.name) / "session.json"
         self.session.write_text(json.dumps({"claude_pid": BABYSIT}))
+        self.inbox = pathlib.Path(tmp.name) / "inbox.json"
+        patcher = mock.patch.object(stop_hook, "INBOX", self.inbox)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_hook(self, extra_processes=(), hook_input=None, hook_parent=HOOK):
         table = {BABYSIT: (1, "claude"), OTHER: (1, "claude"), HOOK: (BABYSIT, "zsh"), 250: (OTHER, "zsh"),
@@ -50,6 +54,16 @@ class StopHookTest(unittest.TestCase):
         verdict = self.run_hook(processes)
         # Then
         self.assertEqual("block", verdict["decision"])
+
+    def test_an_unacknowledged_report_is_named_with_its_ack(self):
+        # Given
+        report = {"status": "events", "events": [{"change": 604537, "kind": "review_requested"}, {"kind": "base_red"}]}
+        self.inbox.write_text(json.dumps({"id": "1759400000000", "report": report}))
+        # When
+        verdict = self.run_hook()
+        # Then
+        self.assertIn("604537 review_requested, base_red", verdict["reason"])
+        self.assertIn("--ack 1759400000000", verdict["reason"])
 
     def test_a_corrupt_session_lock_lets_the_turn_end(self):
         # Given

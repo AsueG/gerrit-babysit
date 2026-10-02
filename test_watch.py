@@ -199,6 +199,7 @@ class SettleTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         out = []
         with mock.patch.object(watch, "STATE", pathlib.Path(tmp.name) / "seen.json"), \
+                mock.patch.object(watch, "INBOX", pathlib.Path(tmp.name) / "inbox.json"), \
                 mock.patch.object(watch, "CACHE", pathlib.Path(tmp.name)), \
                 mock.patch.object(watch, "write_session_lock"), \
                 mock.patch.object(watch, "daemon_poll", side_effect=[first, second]), \
@@ -220,6 +221,7 @@ class SettleTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         state = pathlib.Path(tmp.name) / "seen.json"
         with mock.patch.object(watch, "STATE", state), \
+                mock.patch.object(watch, "INBOX", pathlib.Path(tmp.name) / "inbox.json"), \
                 mock.patch.object(watch, "write_session_lock"), \
                 mock.patch.object(watch, "daemon_poll", return_value=result), \
                 mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
@@ -248,6 +250,7 @@ class SessionRetryTest(unittest.TestCase):
         with mock.patch.object(watch, "STATE", self.cache / "seen.json"), \
                 mock.patch.object(watch, "STATUS", self.cache / "status.json"), \
                 mock.patch.object(watch.network, "checks", return_value=NETWORK), \
+                mock.patch.object(watch, "INBOX", self.cache / "inbox.json"), \
                 mock.patch.object(watch, "write_session_lock"), \
                 mock.patch.object(watch, "write_status"), \
                 mock.patch.object(watch, "daemon_poll", side_effect=polls), \
@@ -278,7 +281,7 @@ class SessionRetryTest(unittest.TestCase):
         down = watch.DaemonError("Could not resolve hostname")
         # When
         code, (first,), sleeps = self.run_main([], [down] * 3)
-        _, (after,), _ = self.run_main([], [down] * 4 + [poll_result([change(comments=[message("r", "Patch Set 1:\n\n?", 5)])])] * 2)
+        _, (after,), _ = self.run_main(["--ack", first["id"]], [down] * 4 + [poll_result([change(comments=[message("r", "Patch Set 1:\n\n?", 5)])])] * 2)
         # Then
         self.assertEqual((0, 2), (code, len(sleeps)))
         self.assertEqual({"kind": "unreachable", "detail": "Could not resolve hostname", "failures": 3, "since": 1000.0,
@@ -288,10 +291,10 @@ class SessionRetryTest(unittest.TestCase):
     def test_a_new_outage_is_reported_again(self):
         # Given
         down = watch.DaemonError("Could not resolve hostname")
-        self.run_main([], [down] * 3)
+        _, (first,), _ = self.run_main([], [down] * 3)
         (self.cache / "status.json").write_text(json.dumps({"updated": 2000.0}))
         # When
-        _, (again,), _ = self.run_main([], [down] * 3)
+        _, (again,), _ = self.run_main(["--ack", first["id"]], [down] * 3)
         # Then
         self.assertEqual(("unreachable", 2000.0), (again["events"][0]["kind"], again["events"][0]["since"]))
 
@@ -302,6 +305,18 @@ class SessionRetryTest(unittest.TestCase):
         _, (out,), sleeps = self.run_main([], [poll_result([change(current=ps)], threads={1: []})])
         # Then
         self.assertEqual((["ready_to_submit"], []), ([e["kind"] for e in out["events"]], sleeps))
+    def test_a_report_comes_back_until_it_is_acknowledged(self):
+        # Given
+        why = message("reviewer", "Patch Set 1:\n\nwhy?", 10)
+        later = poll_result([change(comments=[why, message("reviewer", "Patch Set 1:\n\nok?", 20)])])
+        _, (first,), _ = self.run_main([], [poll_result([change(comments=[why])])] * 2)
+        # When
+        _, (again,), _ = self.run_main([], [])
+        _, (after_ack,), _ = self.run_main(["--ack", first["id"]], [later, later])
+        # Then
+        self.assertEqual((first["id"], True, first["events"]), (again["id"], again["replayed"], again["events"]))
+        self.assertEqual(["Patch Set 1:\n\nok?"], [e["message"] for e in after_ack["events"]])
+        self.assertNotIn("replayed", after_ack)
 
     def test_the_pending_sweep_reports_the_first_failure(self):
         # Given

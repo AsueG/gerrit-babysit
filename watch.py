@@ -19,7 +19,7 @@ import network
 import procs
 import repo
 import snooze
-from config import CACHE, SESSION, SKILL_DIR, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write, read_json
+from config import CACHE, INBOX, SESSION, SKILL_DIR, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write, read_json
 from config import DAEMON_POLL, VERSION, launched_skill_dir
 from i18n import t
 from memo import PollMemo
@@ -533,6 +533,25 @@ def emit(report):
     return 0
 
 
+def deliver(report, now):
+    """Kept in the inbox before the events are marked seen: a session that relaunches without reading the output
+    gets the report again instead of losing it."""
+    report = {**report, "id": str(int(now * 1000))}
+    atomic_write(INBOX, {"id": report["id"], "reported_at": now, "report": report})
+    return report
+
+
+def unacknowledged(ack):
+    """The inbox's report unless `ack` names it; an acknowledged one is dropped."""
+    inbox = read_json(INBOX)
+    if not inbox:
+        return None
+    if inbox.get("id") == ack:
+        INBOX.unlink(missing_ok=True)
+        return None
+    return {**inbox["report"], "replayed": True}
+
+
 def main():
     if not gerrit.HOST:
         sys.exit("gerrit-babysit: set gerrit_host in config.json (see config.example.json)")
@@ -541,11 +560,16 @@ def main():
     parser.add_argument("--pending", action="store_true",
                         help="print what needs me now, mark everything current as seen and exit")
     parser.add_argument("--daemon", action="store_true", help="run forever: status snapshot + macOS notifications")
+    parser.add_argument("--ack", help="id of the last report, handled: without it, that report is printed again")
     args = parser.parse_args()
     if args.daemon:
         return daemon(args.interval)
 
     write_session_lock()
+    if not args.pending:
+        replay = unacknowledged(args.ack)
+        if replay:
+            return emit(replay)
     failures = 0
     settling = {}
     while True:
@@ -566,6 +590,7 @@ def main():
             if failures >= UNREACHABLE_AFTER and outage_key() not in (seen := load_seen()):
                 report = {"status": "events", "events": [unreachable_event(detail, failures)], "nudges": [],
                           "threads_error": None}
+                report = deliver(report, time.time())
                 save_seen({**seen, outage_key(): time.time()})
                 return emit(report)
             time.sleep(min(args.interval * failures, MAX_BACKOFF_S))
@@ -587,7 +612,7 @@ def main():
         settling = {key: current.get(key, event) for key, event in settling.items()} | fresh
         if settling:
             # Enriched before being marked seen: a crash in the extras must not swallow the events.
-            report = events_report(settling, result)
+            report = deliver(events_report(settling, result), now)
             save_seen(remember(seen, settling.keys(), result, current, now))
             return emit(report)
         time.sleep(args.interval)

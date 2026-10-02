@@ -48,7 +48,9 @@ no vote, no recheck. Everything else (worktree, fix, local amend, tests) happens
    waits, cleanup). Keep that order, one short line per change, grouped under those headings, and give the
    counts at the top. Then handle them in that order.
 2. **Start the watcher** with `Bash` and `run_in_background: true`: `python3 <skill>/watch.py`.
-   End the turn. The process exit notification is the wake-up — never poll its output.
+   End the turn. The process exit notification is the wake-up — read its output then, never poll it before.
+   If it exits at once with `"replayed": true`, that is the last report of an earlier launch nobody
+   acknowledged: handle what is still relevant, as below.
 
 The watcher writes `~/.cache/gerrit-babysit/session.json` (PID of the `claude` process +
 `ORCA_TERMINAL_HANDLE`). Only `macos/open-babysit.sh` reads it, to focus this session instead of opening
@@ -58,9 +60,9 @@ Stop (`/gerrit-babysit stop` or "stop watching"): `TaskStop` on the watcher task
 `rm ~/.cache/gerrit-babysit/session.json`.
 
 If the `Stop` hook (`stop_hook.py`) is installed, it refuses to end a turn of this session while no session
-`watch.py` (neither `--daemon` nor `--pending`) runs under its `claude` process. Other sessions are left
-alone, and it blocks only once per turn so a failing relaunch cannot loop. To stop on purpose, delete
-`session.json` **before** ending the turn.
+`watch.py` (neither `--daemon` nor `--pending`) runs under its `claude` process, and names what the last
+unacknowledged report holds. Other sessions are left alone, and it blocks only once per turn so a failing
+relaunch cannot loop. To stop on purpose, delete `session.json` **before** ending the turn.
 
 The snapshot `~/.cache/gerrit-babysit/status.json` (per change: votes, `ci` =
 `running`/`passed`/`failed`/`stale_base` (Merge Failed), `ci_failed`, conflict, `open_parent`, worktree,
@@ -80,7 +82,10 @@ carries its version: when it differs from the menu's, the SwiftBar menu shows `D
 
 ## On each wake-up
 
-The output is `{"status": "events", "events": [...]}`. When a new event is one that comes in bursts
+The output is `{"status": "events", "id": …, "events": [...]}`. The watcher marks the events seen as it
+prints them, but keeps the report in `~/.cache/gerrit-babysit/inbox.json` until a relaunch passes its `id`
+to `--ack`: relaunched without it, it prints that same report again at once (`"replayed": true`) instead of
+losing it. When a new event is one that comes in bursts
 (`message`, `review_reply`, `review_new_patch_set`), the watcher waits 90 s more and delivers everything
 that arrived meanwhile in a single wake-up (reply + vote + zuul verdict); the other kinds wake at once.
 The events come most urgent first, as in the sweep: when many arrive at once (a snooze ending, the morning
@@ -126,7 +131,8 @@ draft's `in_reply_to`: no need to list the comments again.
 (merged, abandoned) for 30 days: a change restored within that window does not replay its history.
 
 **Relaunch the watcher in the background before ending the turn**, even while an approval is pending —
-otherwise the next events are lost.
+otherwise the next events are lost: `python3 <skill>/watch.py --ack <id>`, with the `id` of the report just
+read. Never pass the `id` of a report whose output you did not read.
 
 ### 1. Qualify each touched change
 

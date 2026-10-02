@@ -6,7 +6,7 @@ import os
 import pathlib
 import sys
 
-from config import SESSION, read_json
+from config import INBOX, SESSION, read_json
 from procs import descends_from, processes
 
 WATCH_PY = pathlib.Path(__file__).resolve().parent / "watch.py"
@@ -17,12 +17,28 @@ launch = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(launch)
 
 
+INBOX_SUMMARY_MAX = 10
+
+
+def unread_report():
+    """A line naming what the watcher's last report holds, when no `--ack` confirmed it was handled."""
+    inbox = read_json(INBOX)
+    if not inbox:
+        return ""
+    events = inbox.get("report", {}).get("events", [])
+    items = [f"{e['change']} {e['kind']}" if e.get("change") else e["kind"] for e in events[:INBOX_SUMMARY_MAX]]
+    more = f" and {len(events) - INBOX_SUMMARY_MAX} more" if len(events) > INBOX_SUMMARY_MAX else ""
+    return (f" Its last report (id {inbox['id']}: {', '.join(items) or inbox['report'].get('status')}{more}) is not "
+            f"acknowledged yet: once handled, relaunch with `--ack {inbox['id']}`; without it the relaunch prints "
+            "that report again at once.")
+
+
 def reason():
     """Points at the latest install: a session keeps the hook of the plugin version it started on."""
     watch_py = launch.skill_dir(WATCH_PY.parent) / "watch.py"
     return (f"The gerrit-babysit watcher is no longer running in this session. Relaunch `python3 {watch_py}` "
-            "with run_in_background before ending the turn. If watching should stop (stop requested), "
-            f"delete {SESSION} instead.")
+            f"with run_in_background before ending the turn.{unread_report()} If watching should stop (stop "
+            f"requested), delete {SESSION} instead.")
 
 
 def is_watch_py(path):
