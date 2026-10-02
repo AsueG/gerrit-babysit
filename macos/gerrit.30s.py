@@ -6,6 +6,7 @@
 # <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 # <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
+import datetime
 import pathlib
 import re
 import shlex
@@ -165,36 +166,28 @@ def recheck(number, patch_set):
         review(number, patch_set, ["--message", comment], subject, "bar_rechecked", "bar_recheck_failed")
 
 
-# osascript is a background process: without the accessory policy and a floating level the alert opens hidden.
-DATE_PICKER = '''use framework "AppKit"
-use scripting additions
-on run argv
-    set ca to current application
-    set picker to ca's NSDatePicker's alloc()'s initWithFrame:{{0, 0}, {139, 148}}
-    picker's setDatePickerStyle:(ca's NSDatePickerStyleClockAndCalendar)
-    picker's setDatePickerElements:(ca's NSDatePickerElementFlagYearMonthDay)
-    set tomorrow to ca's NSDate's dateWithTimeIntervalSinceNow:86400
-    picker's setMinDate:tomorrow
-    picker's setDateValue:tomorrow
-    set alert to ca's NSAlert's alloc()'s init()
-    alert's setMessageText:(item 1 of argv)
-    alert's addButtonWithTitle:(item 3 of argv)
-    alert's addButtonWithTitle:(item 2 of argv)
-    alert's setAccessoryView:picker
-    set theApp to ca's NSApplication's sharedApplication()
-    theApp's setActivationPolicy:(ca's NSApplicationActivationPolicyAccessory)
-    theApp's activateIgnoringOtherApps:true
-    alert's |window|()'s setLevel:(ca's NSFloatingWindowLevel)
-    if (alert's runModal()) is not (ca's NSAlertFirstButtonReturn) then return ""
-    set fmt to ca's NSDateFormatter's alloc()'s init()
-    fmt's setDateFormat:"yyyy-MM-dd"
-    return (fmt's stringFromDate:(picker's dateValue())) as text
-end run'''
+# A plain text field: on macOS 26 osascript gets SIGKILLed as soon as it builds an AppKit NSDatePicker.
+DATE_PROMPT = ('on run argv\n'
+               'text returned of (display dialog (item 1 of argv) default answer (item 4 of argv) '
+               'buttons {item 2 of argv, item 3 of argv} default button 2 cancel button 1 with title "Gerrit")\n'
+               'end run')
 
 
 def ask_date(number):
-    answer = osascript(DATE_PICKER, t("bar_snooze_prompt", n=number), t("bar_cancel"), t("bar_snooze_button"))
-    return snooze.parse_date(answer.stdout) if answer.returncode == 0 and answer.stdout.strip() else None
+    today = datetime.date.today()
+    answer = osascript(DATE_PROMPT, t("bar_snooze_prompt", n=number), t("bar_cancel"), t("bar_snooze_button"),
+                       (today + datetime.timedelta(days=1)).isoformat())
+    if answer.returncode != 0:
+        return None
+    text = answer.stdout.strip()
+    try:
+        day = datetime.date.fromisoformat(text)
+    except ValueError:
+        day = None
+    if day is None or day <= today:
+        alert(t("bar_snooze_bad_date"), text)
+        return None
+    return snooze.morning(day)
 
 
 def snooze_change(number, mode, value=None):

@@ -284,6 +284,35 @@ class SnoozeMenuTest(SnapshotTest):
             statusline_segment.main()
         self.assertEqual("⎇ 0", out.getvalue())
 
+    def snooze_until(self, typed):
+        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "notify"), \
+                mock.patch.object(plugin, "refresh"), mock.patch.object(plugin, "alert") as alert, \
+                mock.patch.object(plugin, "osascript", return_value=mock.Mock(returncode=0, stdout=f"{typed}\n")) as ask:
+            plugin.handle(["snooze", "4", "date"])
+        return ask, alert
+
+    def test_snoozing_until_a_typed_date_from_the_menu(self):
+        # Given
+        self.write([row(4)])
+        tomorrow = (plugin.datetime.date.today() + plugin.datetime.timedelta(days=1)).isoformat()
+        # When
+        ask, alert = self.snooze_until("2099-01-05")
+        # Then
+        self.assertNotIn("NSDatePicker", ask.call_args.args[0])
+        self.assertEqual(tomorrow, ask.call_args.args[-1])
+        self.assertEqual({4: {"until": plugin.snooze.parse_date("2099-01-05")}}, plugin.snooze.load())
+        alert.assert_not_called()
+
+    def test_a_past_or_malformed_date_snoozes_nothing(self):
+        # Given
+        self.write([row(4)])
+        for typed in ("2020-01-01", "demain", plugin.datetime.date.today().isoformat()):
+            # When
+            _, alert = self.snooze_until(typed)
+            # Then
+            self.assertEqual({}, plugin.snooze.load(), typed)
+            alert.assert_called_once()
+
     def test_a_red_base_is_shown_and_offers_a_snooze_until_green(self):
         # Given
         red = {"result": "FAILURE", "log_url": "https://logs/p/", "red_since": "2026-09-29T10:00:00"}
