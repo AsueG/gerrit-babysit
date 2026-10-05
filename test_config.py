@@ -63,6 +63,18 @@ class ConfigTest(unittest.TestCase):
         # Then
         self.assertEqual((["Verified"], "zuul"), (loaded["ci_labels"], loaded["ci_user"]))
 
+    def test_the_configured_dashboard_wins_over_gerrits_own(self):
+        # Given
+        configs = [{"gerrit_host": "h", "review_dashboard_url": "https://h/dashboard/team"},
+                   {"gerrit_host": "h", "review_dashboard_url": None}]
+        # When
+        found = []
+        for settings in configs:
+            with mock.patch.dict(config.CONFIG, settings):
+                found.append(config.dashboard_url())
+        # Then
+        self.assertEqual(["https://h/dashboard/team", "https://h/dashboard/self"], found)
+
     def test_a_skill_cloned_into_the_repo_watches_that_repo(self):
         # Given
         skill = self.dir / "repo" / ".claude" / "skills" / "gerrit-babysit"

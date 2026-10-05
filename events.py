@@ -6,7 +6,7 @@ import time
 import urllib.parse
 
 import ci
-from config import CI_STUCK_S, CONFIG
+from config import CI_STUCK_S, CONFIG, dashboard_url
 from i18n import t
 from gerrit import BOT_USERS, CI_USER, HOST, NOT_ME, USER
 
@@ -19,7 +19,7 @@ WORK_HOURS = tuple(CONFIG["work_hours"])
 UNREVIEWED_WORKING_DAYS = 2
 # Past this many notifications in one poll (typically the morning flush), a single summary replaces them.
 DIGEST_OVER = 3
-DASHBOARD = f"https://{HOST}/dashboard/self"
+DASHBOARD = dashboard_url()
 
 CI_NEGATIVE_VOTE = re.compile(rf"\b(?:{'|'.join(CI_LABELS)})-[12]\b")
 POSITIVE_VOTES_ONLY = re.compile(r"^Patch Set \d+:(?: [\w-]+\+[12])+$")

@@ -123,6 +123,10 @@ CONFIG = load()
 REPO = pathlib.Path(CONFIG["repo"]).expanduser() if CONFIG["repo"] else default_repo()
 
 
+def dashboard_url():
+    return CONFIG["review_dashboard_url"] or f"https://{CONFIG['gerrit_host']}/dashboard/self"
+
+
 def gerrit_user():
     try:
         found = subprocess.run(["git", "-C", str(REPO), "config", "--get", "gitreview.username"],

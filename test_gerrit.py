@@ -63,15 +63,25 @@ class UsesContentMergeTest(unittest.TestCase):
     def setUp(self):
         self.addCleanup(gerrit._content_merge.clear)
 
-    def test_reads_the_project_setting_once(self):
+    def test_reads_the_project_setting_once_within_the_hour(self):
         # Given
         config = {"use_content_merge": {"configured_value": "FALSE", "inherited_value": False}}
         # When
         with mock.patch.object(gerrit, "rest_get", return_value=config) as rest_get:
-            answers = [gerrit.uses_content_merge("android/app") for _ in range(2)]
+            answers = [gerrit.uses_content_merge("android/app", now=now) for now in (0, 3599)]
         # Then
         self.assertEqual([False, False], answers)
-        rest_get.assert_called_once_with("/projects/android%2Fapp/config")
+        rest_get.assert_called_once_with("/projects/android%2Fapp/config", timeout=10)
+
+    def test_a_setting_changed_on_gerrit_is_seen_after_the_hour(self):
+        # Given
+        configs = [{"use_content_merge": {"configured_value": "FALSE"}},
+                   {"use_content_merge": {"configured_value": "TRUE"}}]
+        # When
+        with mock.patch.object(gerrit, "rest_get", side_effect=configs):
+            answers = [gerrit.uses_content_merge("app", now=now) for now in (0, 3600)]
+        # Then
+        self.assertEqual([False, True], answers)
 
     def test_false_booleans_missing_from_the_json_read_as_false(self):
         # Given
@@ -82,14 +92,14 @@ class UsesContentMergeTest(unittest.TestCase):
         # Then
         self.assertEqual([True, False, True, False, True], answers)
 
-    def test_an_unreadable_setting_counts_as_on_and_is_asked_again(self):
+    def test_an_unreadable_setting_counts_as_on_and_is_asked_again_after_a_few_minutes(self):
         # Given
         failures = [KeyError("no ~/.netrc entry"), OSError("offline")]
         # When
         with mock.patch.object(gerrit, "rest_get", side_effect=failures) as rest_get:
-            answers = [gerrit.uses_content_merge("app") for _ in range(2)]
+            answers = [gerrit.uses_content_merge("app", now=now) for now in (0, 60, 600)]
         # Then
-        self.assertEqual([True, True], answers)
+        self.assertEqual([True, True, True], answers)
         self.assertEqual(2, rest_get.call_count)
 
 

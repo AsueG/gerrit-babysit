@@ -72,7 +72,7 @@ def merge_conflicts(changes):
     fetch_refs(sorted(refspecs))
 
     tips = branch_tips({c["branch"] for c, _ in candidates})
-    # Once per project, not per change: an unreadable setting is asked again, each time paying REST's timeout.
+    # Once per project, not per change.
     content_merges = {project: gerrit.uses_content_merge(project) for project in {c["project"] for c, _ in candidates}}
     conflicts = {}
     with _conflicts_memo.poll() as memo:
@@ -313,7 +313,8 @@ def replay(revision, onto):
 
 def prepare_replays(wanted):
     """{change number: rebased SHA} for `wanted` = {change number: (revision, onto)} that replay cleanly. Each one is
-    kept under refs/gerrit-babysit/rebased/<n>, so gc cannot drop it before it is pushed."""
+    kept under refs/gerrit-babysit/rebased/<n>, so gc cannot drop it before it is pushed; the others are deleted, so
+    a rebase no longer needed does not pin its objects."""
     prepared = {}
     with _replay_memo.poll() as memo:
         for number, (revision, onto) in sorted(wanted.items()):
@@ -321,17 +322,21 @@ def prepare_replays(wanted):
             if sha:
                 git_run("update-ref", f"{REBASED}/{number}", sha)
                 prepared[number] = sha
+    kept = {f"{REBASED}/{number}" for number in prepared}
+    unused = [ref for ref in git("for-each-ref", "--format=%(refname)", f"{REBASED}/").split() if ref not in kept]
+    if unused:
+        git_run("update-ref", "--stdin", input="".join(f"delete {ref}\n" for ref in unused))
     return prepared
 
 
 _worktrees_memo = LatestMemo()
 
 
-def unfinished_work(changes):
+def unfinished_work(changes, listing=None):
     """{change number: {worktree, unpushed, busy}} for my open changes whose worktree holds work Gerrit has not
     seen: a commit never pushed (an amend, a prepared rebase) or edits and an operation halfway through. A worktree
     holding a stack is reported once, on the change at its HEAD when there is one."""
-    worktrees = worktrees_by_change_id()
+    worktrees = worktrees_by_change_id(listing)
     by_worktree = {}
     for change in changes:
         path = worktrees.get(change["id"])

@@ -88,6 +88,22 @@ class StatusLineTest(SnapshotTest):
         # Then
         self.assertEqual("⎇ 1 · ?", found)
 
+    def test_an_unreachable_gerrit_shows_a_question_mark(self):
+        # Given
+        self.write([row(1, ci="failed")], last_error="Could not resolve hostname")
+        # When
+        found = self.segment()
+        # Then
+        self.assertEqual("⎇ 1 · ?", found)
+
+    def test_unreadable_threads_are_flagged(self):
+        # Given
+        self.write([row(1, ready=True)], threads_error="401 Unauthorized")
+        # When
+        found = self.segment()
+        # Then
+        self.assertEqual(f"⎇ 1 · 1✓ · {i18n.t('threads_unknown')}", found)
+
     def test_no_language_lookup_without_a_string_to_translate(self):
         # Given
         self.write([row(1)])
@@ -125,6 +141,18 @@ class MenuStateTest(unittest.TestCase):
         found = [plugin.scope("Fix A | B"), plugin.scope("feat(a|b): x")]
         # Then
         self.assertEqual(["Fix A ¦ B", "a¦b"], found)
+
+    def test_a_pipe_in_any_menu_text_is_escaped(self):
+        # Given
+        change = row(7, code_review=2, ci="passed", submit_blocked=["Owners|Lint"])
+        out = io.StringIO()
+        # When
+        with contextlib.redirect_stdout(out):
+            plugin.print_change(change, *plugin.state_of(change), fresh=True)
+        # Then
+        title = out.getvalue().splitlines()[0]
+        self.assertEqual(1, title.count("|"))
+        self.assertIn("Owners¦Lint", title)
 
     def test_ready_is_green_only_without_an_open_parent(self):
         # Given
@@ -415,7 +443,7 @@ class SubmitTest(SnapshotTest):
 
     def test_submits_the_confirmed_change_and_patch_set(self):
         # Given
-        self.write([row(7)])
+        self.write([row(7, ready=True, code_review=2)])
         confirm = mock.Mock(returncode=0)
         # When
         with mock.patch.object(plugin, "STATUS", self.status), \
@@ -425,6 +453,21 @@ class SubmitTest(SnapshotTest):
         # Then
         ssh = [c.args[0] for c in run.call_args_list if c.args[0][0] == "ssh"]
         self.assertEqual([[*gerrit.SSH, "gerrit", "review", "--submit", "7,2"]], ssh)
+
+    def test_no_submit_once_the_snapshot_says_otherwise(self):
+        # Given
+        snapshots = [([row(7, code_review=-1)], {}),
+                     ([row(7, ready=True, code_review=2, patch_set=3)], {}),
+                     ([row(7, ready=True, code_review=2)], {"last_error": "offline"})]
+        for changes, extra in snapshots:
+            self.write(changes, **extra)
+            # When
+            with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "osascript") as osascript, \
+                    mock.patch.object(plugin.subprocess, "run") as run:
+                plugin.handle(["submit", "7", "2"])
+            # Then
+            osascript.assert_not_called()
+            run.assert_not_called()
 
     def test_cancel_submits_nothing(self):
         # Given
@@ -440,7 +483,7 @@ class SubmitTest(SnapshotTest):
 
     def test_a_failed_submit_shows_an_alert(self):
         # Given
-        self.write([row(7)])
+        self.write([row(7, ready=True, code_review=2)])
         confirm = mock.Mock(returncode=0)
         failed = mock.Mock(returncode=1, stderr="not mergeable", stdout="")
         # When

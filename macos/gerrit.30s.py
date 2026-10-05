@@ -24,12 +24,12 @@ import ci  # noqa: E402
 import snapshot  # noqa: E402
 import snooze  # noqa: E402
 from config import (CI_STUCK_S, COMMAND, CONFIG, DAEMON_POLL, REPO, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN,  # noqa: E402
-                    USER_DIR, VERSION, read_json)
+                    USER_DIR, VERSION, dashboard_url, read_json)
 from i18n import t  # noqa: E402
 
 GATE_LABEL = CONFIG["gate_label"]
 HASHTAGS = {"auto_submit": CONFIG["auto_submit_hashtag"], "claude_review": CONFIG["claude_review_hashtag"]}
-DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{CONFIG['gerrit_host']}/dashboard/self"
+DASHBOARD = dashboard_url()
 ICON = "sfimage=arrow.triangle.pull"
 # Built by macos/install.sh outside the plugin folder, which each update replaces.
 OPEN_CLAUDE = USER_DIR / "GerritBabysit.app"
@@ -39,10 +39,14 @@ CLAUDE = shutil.which("claude") or str(pathlib.Path.home() / ".local/bin/claude"
 ORDER = {"red": 0, "green": 1, "orange": 2, None: 3, "gray": 4}
 
 
+def menu_text(text):
+    # A `|` would end SwiftBar's title and turn the rest into parameters.
+    return str(text).replace("|", "¦")
+
+
 def scope(subject):
     match = re.match(r"^(?:\[WIP\]\s*)?\w+\(([^)]+)\)", subject)
-    # A `|` would end SwiftBar's title and turn the rest into parameters.
-    return (match.group(1) if match else subject[:30]).replace("|", "¦")
+    return menu_text(match.group(1) if match else subject[:30])
 
 
 # snapshot.state → (sf symbol, color); red is exactly snapshot.PROBLEMS.
@@ -165,15 +169,25 @@ def review(number, patch_set, option, subject, done, failed, **params):
     refresh()
 
 
+def fresh_snapshot():
+    """The rows behind a public action, or None when they may hide a -1 or a push that arrived since."""
+    status = read_json(STATUS)
+    return None if status.get("last_error") or snapshot.is_stopped(status, time.time()) else status
+
+
 def submit(number, patch_set):
-    subject = snapshot_row(number).get("subject", "")
+    row = snapshot_row(number)
+    if (not fresh_snapshot() or row.get("gate") is not None or str(row.get("patch_set")) != patch_set
+            or snapshot.state(row) != "ready"):
+        return
+    subject = row.get("subject", "")
     if confirmed(t("bar_submit_confirm", n=number, ps=patch_set), subject, t("bar_submit_button")):
         review(number, patch_set, ["--submit"], subject, "bar_submitted", "bar_submit_failed")
 
 
 def vote_gate(number, patch_set):
     row = snapshot_row(number)
-    if row.get("gate") != "vote" or str(row.get("patch_set")) != patch_set:
+    if row.get("gate") != "vote" or str(row.get("patch_set")) != patch_set or not fresh_snapshot():
         return
     subject = row.get("subject", "")
     if confirmed(t("bar_gate_confirm", label=GATE_LABEL, n=number, ps=patch_set), subject, t("bar_gate_button")):
@@ -184,7 +198,7 @@ def vote_gate(number, patch_set):
 def add_hashtag(number, kind):
     tag = HASHTAGS.get(kind)
     row = snapshot_row(number)
-    if not tag or not row or tag in row.get("hashtags", []):
+    if not tag or not row or tag in row.get("hashtags", []) or not fresh_snapshot():
         return
     subject = row.get("subject", "")
     if not confirmed(t(f"bar_{kind}_confirm", tag=tag, n=number), subject, t("bar_hashtag_button")):
@@ -216,7 +230,7 @@ def recheck(number, patch_set):
     comment = CONFIG["recheck_comment"]
     row = snapshot_row(number)
     # The comment goes through Gerrit's SSH command line: only a plain recheck variant.
-    if not ci.RECHECK.fullmatch(comment) or str(row.get("patch_set")) != patch_set:
+    if not ci.RECHECK.fullmatch(comment) or str(row.get("patch_set")) != patch_set or not fresh_snapshot():
         return
     subject = row.get("subject", "")
     if confirmed(t("bar_recheck_confirm", comment=comment, n=number, ps=patch_set), subject, t("bar_recheck_button")):
@@ -235,7 +249,7 @@ def push_rebase(number, patch_set):
     import repo
     row = snapshot_row(number)
     prepared = row.get("rebase_ready") or {}
-    if str(row.get("patch_set")) != patch_set or str(prepared.get("patch_set")) != patch_set:
+    if str(row.get("patch_set")) != patch_set or str(prepared.get("patch_set")) != patch_set or not fresh_snapshot():
         return
     sha = repo.git("rev-parse", "--verify", "--quiet", f"{repo.REBASED}/{number}").strip()
     if not sha or sha != prepared.get("sha"):
@@ -397,8 +411,8 @@ def print_change(change, label, symbol, color, fresh):
     threads = change.get("threads", 0)
     if threads:
         label += t("bar_threads", count=threads)
-    print(f"{number}  {scope(change['subject'])} — {label} | href={url} sfimage={symbol}{tint}")
-    print(f"--{change['subject'].replace('|', '¦')} | disabled=true")
+    print(f"{number}  {scope(change['subject'])} — {menu_text(label)} | href={url} sfimage={symbol}{tint}")
+    print(f"--{menu_text(change['subject'])} | disabled=true")
     if color == "red":
         for job in change.get("ci_diagnosis") or []:
             line = f"{job['job']}: {job.get('category', '?')}"
@@ -406,7 +420,7 @@ def print_change(change, label, symbol, color, fresh):
             if resembles:
                 line += " · " + t("bar_resembles", change=resembles[0]["change"], fix=resembles[0].get("fix") or "?")
             link = f" href={job['log_url']}" if job.get("log_url") else " disabled=true"
-            print(f"--{line.replace('|', '¦')[:120]} |{link} sfimage=doc.text.magnifyingglass")
+            print(f"--{menu_text(line)[:120]} |{link} sfimage=doc.text.magnifyingglass")
     print("-----")
     print(f"--{t('bar_open_gerrit')} | href={url} sfimage=safari")
     if needs_investigation(change):
@@ -451,7 +465,7 @@ def print_change(change, label, symbol, color, fresh):
             reason = (submit_wait(state, change) or label_of(state, change)) if fresh else t("bar_submit_stale")
             unavailable = t("bar_gate_unavailable", label=GATE_LABEL, reason=reason) if gated \
                 else t("bar_submit_unavailable", reason=reason)
-            print(f"--{unavailable.replace('|', '¦')} | disabled=true sfimage=paperplane")
+            print(f"--{menu_text(unavailable)} | disabled=true sfimage=paperplane")
 
 
 def print_hashtags(change, number, fresh):
@@ -480,14 +494,14 @@ def print_snoozed(change, entry):
 def print_review(review, now):
     """Reviewable now in plain text; one its owner will rework first greyed out with why."""
     waited = age(now - review["since"]) if review.get("since") else "?"
-    owner = review["owner"].replace("|", "¦")
+    owner = menu_text(review["owner"])
     if review["blocked_by"]:
         print(f"{review['number']}  {scope(review['subject'])} — {owner} · {t('bar_review_' + review['blocked_by'])} | "
               f"href={review['url']} sfimage=hourglass sfcolor=gray")
     else:
         print(f"{review['number']}  {scope(review['subject'])} — {owner} · {t('bar_review_waiting', age=waited)} | "
               f"href={review['url']} sfimage=eyeglasses")
-    print(f"--{review['subject'].replace('|', '¦')} | disabled=true")
+    print(f"--{menu_text(review['subject'])} | disabled=true")
     print(f"--{t('bar_open_gerrit')} | href={review['url']} sfimage=safari")
 
 
@@ -523,7 +537,7 @@ def main():
     for branch, health in sorted(status.get("base_health", {}).items()):
         if ci.is_red(health):
             link = f"href={health['log_url']} " if health.get("log_url") else ""
-            print(f"{t('bar_base_red', branch=branch, age=age(ci.red_for_s(health, now)))} | "
+            print(f"{menu_text(t('bar_base_red', branch=branch, age=age(ci.red_for_s(health, now))))} | "
                   f"{link}sfimage=flame.fill sfcolor=red")
     for change, state in rows:
         print_change(change, *state, fresh=not (error or stopped))
@@ -547,7 +561,7 @@ def main():
         print(f"{t('bar_stopped', age=data_age)} | color=orange sfimage=pause.circle")
     elif error:
         print(f"{t('bar_unreachable', age=data_age)} | color=orange sfimage=wifi.exclamationmark")
-        print(f"--{error.replace('|', '¦')} | disabled=true")
+        print(f"--{menu_text(error)} | disabled=true")
     else:
         print(f"{t('bar_active')} | sfimage=dot.radiowaves.left.and.right")
     drifted = daemon_version(now)

@@ -80,11 +80,14 @@ clone free of local edits, so updating is just `git pull`.
 | File | Role |
 |---|---|
 | `SKILL.md` | What Claude does with each event |
-| `watch.py` | Polls Gerrit, turns the state into events, prints them as JSON and exits (session mode) or notifies (`--daemon`) |
+| `watch.py` | Turns each poll into events, prints them as JSON and exits (session mode) or notifies (`--daemon`) |
+| `poll.py` | One poll: Gerrit queries, threads, submit requirements, parents, base health and the local conflict check, side by side |
 | `gerrit.py` | SSH queries (multiplexed over one connection) and the REST API |
 | `repo.py` | Local git work: fetches, conflict checks, prepared rebases, cleanup of merged or abandoned branches |
 | `events.py` | Pure logic: poll rows in, keyed events and notification texts out |
 | `ci.py` | Zuul failure diagnosis: failing jobs, gradle/lint errors, category, flakiness hints |
+| `known_failures.py` | Failures diagnosed by hand and their fix, so the next look-alike points at them |
+| `network.py` | VPN (GlobalProtect) and DNS checks reported when Gerrit or zuul stops answering |
 | `config.py` | Settings and state-file helpers |
 | `i18n.py` | FR/EN strings |
 | `memo.py` | Memo keeping only what the latest poll asked for |
@@ -93,8 +96,13 @@ clone free of local edits, so updating is just `git pull`.
 | `doctor.py` | Checks SSH, the HTTP password, zuul, the daemon and the state files; `--prune` drops what closed changes left behind |
 | `procs.py` | Process-tree lookup: which Claude session a watcher or hook runs under |
 | `stop_hook.py` | Claude Code Stop hook that keeps the watcher running during a babysit session |
+| `pre_push.py` | Git pre-push hook: a push from a babysit worktree must keep its change's Change-Id |
 | `statusline_segment.py` | Status line segment read from the snapshot |
-| `macos/` | LaunchAgent installer, SwiftBar plugin, session launcher |
+| `macos/install.sh` | Installs the LaunchAgent, the SwiftBar plugin, the applet and the pre-push hook |
+| `macos/launch.py` | Stable entry point for launchd, SwiftBar and the applet: runs the latest installed version |
+| `macos/gerrit.30s.py` | SwiftBar menu and its guarded actions (submit, recheck, rebase push, snooze…) |
+| `macos/open-babysit.sh` | Focuses the running babysit session, or opens one |
+| `fakes.py`, `fixtures/` | Test builders and sample Gerrit and zuul payloads |
 | `.claude-plugin/`, `hooks/` | Claude Code plugin manifest, marketplace entry and Stop hook |
 
 State lives in `~/.cache/gerrit-babysit/`. Run the tests with `python3 -m unittest`.

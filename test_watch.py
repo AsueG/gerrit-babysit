@@ -15,6 +15,7 @@ from fakes import ZUUL, NOW, GREEN_CI, approval, patch_set, message, change, pol
 import ci
 import events
 import gerrit
+import poll
 import repo
 import watch
 
@@ -27,16 +28,16 @@ def done(value):
 
 class OpenThreadsTest(unittest.TestCase):
     def setUp(self):
-        watch._threads_memo = watch.PollMemo()
+        poll._threads_memo = poll.PollMemo()
 
     def test_rest_is_only_called_when_the_change_moves(self):
         # Given
         comments = {"A.kt": [inline("a1", "reviewer", "why?", 1)]}
         with mock.patch.object(gerrit, "rest_get", return_value=comments) as rest:
             # When
-            first = watch.open_threads([change(1, lastUpdated=10)])
-            second = watch.open_threads([change(1, lastUpdated=10)])
-            watch.open_threads([change(1, lastUpdated=11)])
+            first = poll.open_threads([change(1, lastUpdated=10)])
+            second = poll.open_threads([change(1, lastUpdated=10)])
+            poll.open_threads([change(1, lastUpdated=11)])
         # Then
         self.assertEqual(first, second)
         self.assertEqual(1, len(first[1]))
@@ -44,14 +45,14 @@ class OpenThreadsTest(unittest.TestCase):
 
     def test_requirements_are_only_asked_for_voted_changes_and_again_when_they_move(self):
         # Given
-        watch._requirements_memo = watch.PollMemo()
+        poll._requirements_memo = poll.PollMemo()
         voted = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
         row = {"submit_requirements": [{"name": "Code-Owners", "status": "UNSATISFIED"}]}
         with mock.patch.object(gerrit, "rest_get", return_value=row) as rest:
             # When
-            first = watch.submit_blockers([change(1, current=voted, lastUpdated=10), change(2, lastUpdated=10)])
-            watch.submit_blockers([change(1, current=voted, lastUpdated=10)])
-            watch.submit_blockers([change(1, current=voted, lastUpdated=11)])
+            first = poll.submit_blockers([change(1, current=voted, lastUpdated=10), change(2, lastUpdated=10)])
+            poll.submit_blockers([change(1, current=voted, lastUpdated=10)])
+            poll.submit_blockers([change(1, current=voted, lastUpdated=11)])
         # Then
         self.assertEqual({1: ["Code-Owners"]}, first)
         self.assertEqual(2, rest.call_count)
@@ -59,26 +60,26 @@ class OpenThreadsTest(unittest.TestCase):
 
     def test_unreadable_requirements_are_unknown(self):
         # Given
-        watch._requirements_memo = watch.PollMemo()
+        poll._requirements_memo = poll.PollMemo()
         voted = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
         with mock.patch.object(gerrit, "rest_get", side_effect=OSError("HTTP Error 401: Unauthorized")):
             # When
-            found = watch.submit_blockers([change(1, current=voted)])
+            found = poll.submit_blockers([change(1, current=voted)])
         # Then
         self.assertIsNone(found)
 
     def test_an_expired_rest_token_does_not_fail_the_poll(self):
         # Given
         ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
-        with mock.patch.object(watch, "fetch_changes", return_value=[change(current=ps)]), \
-                mock.patch.object(watch, "parent_statuses", return_value={}), \
+        with mock.patch.object(poll, "fetch_changes", return_value=[change(current=ps)]), \
+                mock.patch.object(poll, "parent_statuses", return_value={}), \
                 mock.patch.object(repo, "merge_conflicts", return_value={}), \
                 mock.patch.object(repo, "stale_parents", return_value={}), \
-                mock.patch.object(watch, "fetch_reviews", return_value=[]), \
-                mock.patch.object(watch, "fetch_attention", return_value=[]), \
+                mock.patch.object(poll, "fetch_reviews", return_value=[]), \
+                mock.patch.object(poll, "fetch_attention", return_value=[]), \
                 mock.patch.object(gerrit, "rest_get", side_effect=OSError("HTTP Error 401: Unauthorized")):
             # When
-            result = watch.poll()
+            result = poll.poll()
         # Then
         self.assertEqual("HTTP Error 401: Unauthorized", result["threads_error"])
         self.assertEqual([], [e["kind"] for _, e in events.events(result)])
@@ -96,8 +97,8 @@ class OpenThreadsTest(unittest.TestCase):
         # Given
         with mock.patch.object(gerrit, "rest_get", return_value={}) as rest:
             # When
-            watch.open_threads([change(1, lastUpdated=10)])
-            watch.open_threads([change(1, lastUpdated=10)])
+            poll.open_threads([change(1, lastUpdated=10)])
+            poll.open_threads([change(1, lastUpdated=10)])
         # Then
         rest.assert_called_once_with("/changes/1/comments")
 
@@ -190,6 +191,23 @@ class EnrichTest(unittest.TestCase):
 
 
 class SettleTest(unittest.TestCase):
+    def test_a_burst_waits_once_then_goes_out_whole_with_the_latest_versions(self):
+        # Given
+        reply = {"kind": "message", "body": "v1"}
+        verdict = {"kind": "ci_red"}
+        # When
+        first = watch.settle({}, {"a": reply}, {"a": reply})
+        second = watch.settle(first[1], {"b": verdict}, {"a": {**reply, "body": "v2"}, "b": verdict})
+        # Then
+        self.assertEqual((None, {"a": reply}), first)
+        self.assertEqual(({"a": {"kind": "message", "body": "v2"}, "b": verdict}, {}), second)
+
+    def test_other_kinds_go_at_once_and_nothing_new_is_nothing_due(self):
+        # When
+        found = [watch.settle({}, {"b": {"kind": "ci_red"}}, {}), watch.settle({}, {}, {})]
+        # Then
+        self.assertEqual([({"b": {"kind": "ci_red"}}, {}), ({}, {})], found)
+
     def test_events_a_minute_apart_wake_the_session_once(self):
         # Given
         first = poll_result([change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10)])])
@@ -374,6 +392,18 @@ class SessionPollTest(unittest.TestCase):
         write_status.assert_not_called()
         record_flaky.assert_not_called()
 
+    def test_a_failed_cleanup_check_does_not_fail_the_poll(self):
+        # Given
+        result = poll_result([change()])
+        with mock.patch.object(watch, "daemon_poll", return_value=result), \
+                mock.patch.object(repo, "worktree_listing", return_value=""), \
+                mock.patch.object(repo, "cleanup_candidates", side_effect=OSError("ssh timed out")), \
+                mock.patch("sys.stderr", io.StringIO()):
+            # When
+            found, _, _, cleanup = watch.session_poll()
+        # Then
+        self.assertEqual((result, {}), (found, cleanup))
+
     def test_a_genuinely_dead_daemon_still_falls_back(self):
         # Given
         tmp = tempfile.TemporaryDirectory()
@@ -401,9 +431,9 @@ class UnfinishedEventsTest(unittest.TestCase):
         with mock.patch.object(repo, "unfinished_work", return_value=local), \
                 mock.patch.object(gerrit, "query", return_value=drafts) as query:
             # When
-            found = dict(watch.unfinished_events([change(1)], watch.fetch_drafts()))
+            found = dict(watch.unfinished_events([change(1)], poll.fetch_drafts()))
         # Then
-        query.assert_called_once_with(watch.DRAFTS_QUERY)
+        query.assert_called_once_with(poll.DRAFTS_QUERY)
         self.assertEqual([("/wt/1", True, True), (None, False, True)],
                          [(e["worktree"], e["unpushed"], e["drafts"]) for e in found.values()])
         self.assertEqual(["1:unfinished", "5:unfinished"], list(found))
@@ -414,7 +444,7 @@ class UnfinishedEventsTest(unittest.TestCase):
         with mock.patch.object(repo, "unfinished_work", return_value=local), \
                 mock.patch.object(gerrit, "query", side_effect=OSError("offline")):
             # When
-            found = dict(watch.unfinished_events([change(1)], watch.fetch_drafts()))
+            found = dict(watch.unfinished_events([change(1)], poll.fetch_drafts()))
         # Then
         self.assertEqual([(True, False)], [(e["busy"], e["drafts"]) for e in found.values()])
 
@@ -437,7 +467,7 @@ class ParentStatusesTest(unittest.TestCase):
         merged = {"number": 50, "status": "MERGED", "currentPatchSet": {"revision": "r50"}}
         # When
         with mock.patch.object(gerrit, "query", return_value=[merged]) as query:
-            statuses = watch.parent_statuses(changes)
+            statuses = poll.parent_statuses(changes)
         # Then
         self.assertEqual({1: (2, "NEW", patch_set()), 2: (50, "MERGED", {"revision": "r50"})}, statuses)
         query.assert_called_once_with("change:50", "--current-patch-set")
@@ -450,7 +480,7 @@ class OutdatedParentsTest(unittest.TestCase):
         on_top = change(2, current=patch_set(1, parents=("new",)))
         parent_ps = {"number": 3, "revision": "new", "ref": "refs/changes/09/9/3"}
         # When
-        outdated = watch.outdated_parents([child, on_top], {1: (9, "NEW", parent_ps), 2: (9, "NEW", parent_ps)})
+        outdated = poll.outdated_parents([child, on_top], {1: (9, "NEW", parent_ps), 2: (9, "NEW", parent_ps)})
         # Then
         self.assertEqual({1: {"parent": 9, "parent_patch_set": 3, "parent_ref": "refs/changes/09/9/3",
                               "old_parent_sha": "old", "new_parent_sha": "new"}}, outdated)
@@ -459,7 +489,7 @@ class OutdatedParentsTest(unittest.TestCase):
         # Given: Gerrit sends parents: [] for a root commit, not a missing key.
         child = change(1, current=patch_set(1, parents=()))
         # When
-        outdated = watch.outdated_parents([child], {1: (9, "NEW", {"revision": "new"})})
+        outdated = poll.outdated_parents([child], {1: (9, "NEW", {"revision": "new"})})
         # Then
         self.assertEqual({}, outdated)
 
@@ -467,7 +497,7 @@ class OutdatedParentsTest(unittest.TestCase):
         # Given
         child = change(1, current=patch_set(1, parents=("old",)))
         # When
-        outdated = watch.outdated_parents([child], {1: (9, "MERGED", {"revision": "new"})})
+        outdated = poll.outdated_parents([child], {1: (9, "MERGED", {"revision": "new"})})
         # Then
         self.assertEqual({}, outdated)
 
@@ -690,6 +720,29 @@ class PreparedRebasesTest(unittest.TestCase):
         replays.assert_called_once_with({2: ("rev1", "tip")})
         self.assertEqual({2: {"sha": "new", "patch_set": 1, "parent": None}}, found)
 
+    def test_the_worktree_listing_is_reused(self):
+        # Given
+        result = poll_result([change(1)], conflicts={1: ["A.kt"]})
+        with mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}), \
+                mock.patch.object(repo, "worktree_listing") as listing, \
+                mock.patch.object(repo, "change_ids_by_worktree", return_value={}), \
+                mock.patch.object(repo, "prepare_replays", return_value={}):
+            # When
+            watch.prepared_rebases(result, "worktree /repo\n")
+        # Then
+        listing.assert_not_called()
+
+    def test_without_candidates_the_old_rebases_are_still_dropped(self):
+        # Given
+        result = poll_result([change(1)])
+        with mock.patch.object(repo, "branch_tips", return_value={}), \
+                mock.patch.object(repo, "prepare_replays", return_value={}) as replays:
+            # When
+            found = watch.prepared_rebases(result)
+        # Then
+        self.assertEqual({}, found)
+        replays.assert_called_once_with({})
+
 
 class DiagnoseRedTest(unittest.TestCase):
     def setUp(self):
@@ -797,9 +850,9 @@ class MyAttentionSetsTest(unittest.TestCase):
         rows = [{"_number": 7, "attention_set": {"1": alice}}]
         # When
         with mock.patch.object(gerrit, "rest_get", return_value=rows) as rest:
-            found = watch.my_attention_sets()
+            found = poll.my_attention_sets()
         with mock.patch.object(gerrit, "rest_get", side_effect=OSError("HTTP Error 401: Unauthorized")):
-            failed = watch.my_attention_sets()
+            failed = poll.my_attention_sets()
         # Then
         rest.assert_called_once_with("/changes/?q=owner%3Aself%20status%3Aopen&o=DETAILED_ACCOUNTS")
         self.assertEqual(({7: {"holders": [{"username": "alice", "name": "Alice", "since": 1790668800.0, "reason": ""}],
@@ -825,9 +878,9 @@ class BaseHealthTest(unittest.TestCase):
         with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
                 mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
                 mock.patch.object(ci, "base_health", side_effect=lambda branch: {"branch": branch}) as base_health:
-            found = watch.base_health(changes)
+            found = poll.base_health(changes)
         with mock.patch.object(ci, "PERIODIC_BUILD", None):
-            unset = watch.base_health(changes)
+            unset = poll.base_health(changes)
         # Then
         self.assertEqual({"main": {"branch": "main"}, "release": {"branch": "release"}}, found)
         self.assertEqual(2, base_health.call_count)
@@ -845,7 +898,7 @@ class BaseHealthTest(unittest.TestCase):
         with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
                 mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
                 mock.patch.object(ci, "base_health", side_effect=fetch):
-            found = watch.base_health(changes)
+            found = poll.base_health(changes)
         # Then: both branches reached the barrier, so neither call waited on the other to start.
         self.assertEqual({"main": {"branch": "main"}, "release": {"branch": "release"}}, found)
 
@@ -918,18 +971,18 @@ class WithIntKeysTest(unittest.TestCase):
         polls = [{**poll_result(), "attention_sets": {7: {"holders": [], "removed": []}}},
                  {**poll_result(), "attention_sets": None}]
         # When
-        found = [watch.with_int_keys(json.loads(json.dumps(p))) for p in polls]
+        found = [poll.with_int_keys(json.loads(json.dumps(p))) for p in polls]
         # Then
         self.assertEqual(polls, found)
 
     def test_change_numbers_come_back_as_ints(self):
         # Given
-        poll = {**poll_result(conflicts={1: ["A.kt"]}, parents={2: 3}), "outdated_parents": {}, "attention": [4]}
-        payload = json.loads(json.dumps(poll))
+        polled = {**poll_result(conflicts={1: ["A.kt"]}, parents={2: 3}), "outdated_parents": {}, "attention": [4]}
+        payload = json.loads(json.dumps(polled))
         # When
-        result = watch.with_int_keys(payload)
+        result = poll.with_int_keys(payload)
         # Then
-        self.assertEqual(poll, result)
+        self.assertEqual(polled, result)
 
 
 class ClaudePidTest(unittest.TestCase):

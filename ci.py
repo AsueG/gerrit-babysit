@@ -298,7 +298,7 @@ def diagnose_job(job, event, histories, flaky, known):
         log = http_get(f"{log_url}/job-output.txt")
         entry["failure"] = gradle_failure(log)
         if not entry["failure"]:
-            entry["log_tail"] = failure_snippet(log)
+            entry["log_tail"] = log_tail(log)
         sarif = next((a["url"] for a in build.get("artifacts", []) if a["name"].endswith("lint.sarif")), None)
         errors = lint_errors(json.loads(http_get(sarif))) if sarif else []
         if errors:

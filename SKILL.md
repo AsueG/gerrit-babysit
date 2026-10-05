@@ -84,10 +84,10 @@ as a commit and never in a worktree: for a change whose open parent got a new pa
 parent merged, which got Merge Failed or conflicts (onto the branch tip, unless it sits on an open parent), it
 replays the patch set with `git merge-tree` + `git commit-tree`, keeping its message and author, under
 `refs/gerrit-babysit/rebased/<n>`. Only when it applies cleanly, and not when the change's worktree holds
-unpushed or half-done work. The snapshot row then has `rebase_ready` = `{sha, patch_set, parent}`, and the
+unpushed or half-done work; the ref is deleted once the rebase is no longer needed. The snapshot row then has `rebase_ready` = `{sha, patch_set, parent}`, and the
 SwiftBar menu offers "Push the rebase onto …" behind a confirmation dialog (the user's "yes"), warning that
 the worktree stays on the old patch set. Nothing is pushed otherwise.
-After editing `watch.py`, restart it: `launchctl kickstart -k gui/$(id -u)/<launchd_label>`. Its heartbeat
+After editing `watch.py` or `poll.py`, restart it: `launchctl kickstart -k gui/$(id -u)/<launchd_label>`. Its heartbeat
 carries its version: when it differs from the menu's, the SwiftBar menu shows `Daemon vX ≠ menu vY` with a
 "Restart the daemon" item.
 

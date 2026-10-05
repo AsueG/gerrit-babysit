@@ -7,6 +7,7 @@ import pathlib
 import shlex
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -71,21 +72,28 @@ def http_credentials():
     return entry[0], entry[2]
 
 
-_content_merge: dict[str, bool] = {}
+_content_merge: dict[str, tuple[float, bool]] = {}
+CONTENT_MERGE_TTL_S = 3600
+# Short, so a slow Gerrit does not cost every poll a full REST timeout per project.
+CONTENT_MERGE_RETRY_S = 600
 
 
-def uses_content_merge(project):
+def uses_content_merge(project, now=None):
     """Off, Gerrit calls a conflict any file both sides changed, however far apart the edits are.
 
-    Asked once per project; unreadable (no HTTP password, network) counts as on, git's own behavior, and is asked
-    again on the next poll."""
-    if project not in _content_merge:
-        try:
-            config = rest_get(f"/projects/{urllib.parse.quote(project, safe='')}/config")
-        except (OSError, ValueError, KeyError):
-            return True
-        _content_merge[project] = content_merge_of(config.get("use_content_merge"))
-    return _content_merge[project]
+    Asked again hourly, so a project setting changed meanwhile is seen without a daemon restart; unreadable (no HTTP
+    password, network) counts as on, git's own behavior, and is asked again after a few minutes."""
+    now = time.time() if now is None else now
+    cached = _content_merge.get(project)
+    if cached and cached[0] > now:
+        return cached[1]
+    try:
+        config = rest_get(f"/projects/{urllib.parse.quote(project, safe='')}/config", timeout=10)
+    except (OSError, ValueError, KeyError):
+        _content_merge[project] = (now + CONTENT_MERGE_RETRY_S, True)
+        return True
+    _content_merge[project] = (now + CONTENT_MERGE_TTL_S, content_merge_of(config.get("use_content_merge")))
+    return _content_merge[project][1]
 
 
 def content_merge_of(setting):
@@ -117,14 +125,14 @@ def rest_auth(rejected=None):
         return _rest_auth
 
 
-def rest_get(path, retry=True, data=None):
+def rest_get(path, retry=True, data=None, timeout=30):
     auth = rest_auth()
     headers = {"Authorization": f"Basic {auth}"}
     if data is not None:
         headers["Content-Type"] = "application/json; charset=UTF-8"
     request = urllib.request.Request(REST + path, data=data, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             # Gerrit prefixes every JSON body with )]}' against XSSI.
             return json.loads(response.read().decode().split("\n", 1)[1])
     except urllib.error.HTTPError as error:
@@ -133,7 +141,7 @@ def rest_get(path, retry=True, data=None):
         # The token may have been rotated since the daemon started: reread it once.
         error.close()
         rest_auth(rejected=auth)
-        return rest_get(path, retry=False, data=data)
+        return rest_get(path, retry=False, data=data, timeout=timeout)
 
 
 def rest_post(path, payload):

@@ -285,6 +285,16 @@ class ReplayTest(GitRepoTest):
         self.assertEqual([7], list(prepared))
         self.assertEqual(prepared[7], self.git("rev-parse", f"{repo.REBASED}/7"))
 
+    def test_a_rebase_no_longer_needed_drops_its_ref(self):
+        # Given
+        tip = self.write_commit({"B.kt": "b moved\n"}, "upstream")
+        repo.prepare_replays({7: (self.change, tip), 8: (self.change, tip)})
+        # When
+        repo.prepare_replays({8: (self.change, tip)})
+        # Then
+        refs = self.git("for-each-ref", "--format=%(refname)", f"{repo.REBASED}/").split()
+        self.assertEqual([f"{repo.REBASED}/8"], refs)
+
 
 class PrepareRebaseTest(GitRepoTest):
     """A stack parent → child in a linked worktree; the parent then gets a new patch set on `main`."""
