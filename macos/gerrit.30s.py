@@ -350,7 +350,11 @@ def handle(args):
 
 def age(seconds):
     minutes = int(seconds // 60)
-    return f"{minutes} min" if minutes < 120 else f"{minutes // 60} h"
+    if minutes < 120:
+        return f"{minutes} min"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h"
+    return t("age_days", days=minutes // (24 * 60))
 
 
 def print_change(change, label, symbol, color, fresh):

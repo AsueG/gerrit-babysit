@@ -34,6 +34,13 @@ def row(number=1, **extra):
             "conflict": False, "open_parent": None, "ready": False, "worktree": None, **extra}
 
 
+class AgeTest(unittest.TestCase):
+    def test_switches_to_days_past_two_days(self):
+        hour = 3600
+        self.assertEqual(plugin.age(47 * hour), "47 h")
+        self.assertEqual(plugin.age(53 * hour), i18n.t("age_days", days=2))
+
+
 class SnapshotTest(unittest.TestCase):
     def write(self, changes, age=0, **extra):
         now = time.time() - age
