@@ -53,6 +53,9 @@ Missing keys take the defaults of `config.py`.
 | `periodic_build` | `null` | `{"pipeline", "job"}` of a periodic build of the target branch, used to spot a red base (one zuul request per target branch and per poll) |
 | `screenshot_regression_marker` | `null` | Text on the line of a CI message that reports screenshot regressions |
 | `recheck_comment` | `"recheck"` | Comment the SwiftBar menu posts to rerun CI on a known flake (`recheck` or `recheck-<pipeline>`) |
+| `gate_label` | `"Workflow"` | Label whose +1 has zuul merge a change on a gated project (no Submit there); the menu offers that vote instead. `null` = no gated project |
+| `auto_submit_hashtag` | `null` | Hashtag that has Gerrit merge a change once every requirement is met (e.g. `"auto-submit"`); the menu offers to add it |
+| `claude_review_hashtag` | `null` | Hashtag that triggers an automatic Claude review (e.g. `"claude-code-review"`); the menu offers to add it |
 | `protected_branches` | `["main", "master"]` | Long-lived branches never offered for cleanup |
 | `review_dashboard_url` | `https://<host>/dashboard/self` | Link at the bottom of the SwiftBar menu |
 | `max_reviewers` | `10` | Above this many human reviewers, an addition is a group one, not a review request |

@@ -113,7 +113,7 @@ class ReadyToSubmitTest(unittest.TestCase):
         # Given
         ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
         # When
-        ready = events.is_ready_to_submit(ps)
+        ready = events.is_ready_to_submit(change(current=ps))
         # Then
         self.assertTrue(ready)
 
@@ -121,7 +121,7 @@ class ReadyToSubmitTest(unittest.TestCase):
         # Given
         ps = patch_set(1, approval("Code-Review", 2), approval("Code-Review", -1, "other"), *GREEN_CI)
         # When
-        ready = events.is_ready_to_submit(ps)
+        ready = events.is_ready_to_submit(change(current=ps))
         # Then
         self.assertFalse(ready)
 
@@ -129,7 +129,7 @@ class ReadyToSubmitTest(unittest.TestCase):
         # Given
         ps = patch_set(1, approval("Code-Review", 2), *[approval(label, 2, "zuul") for label in events.CI_LABELS])
         # When
-        ready = events.is_ready_to_submit(ps)
+        ready = events.is_ready_to_submit(change(current=ps))
         # Then
         self.assertTrue(ready)
 
@@ -137,9 +137,59 @@ class ReadyToSubmitTest(unittest.TestCase):
         # Given
         ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI[:2])
         # When
-        ready = events.is_ready_to_submit(ps)
+        ready = events.is_ready_to_submit(change(current=ps))
         # Then
         self.assertFalse(ready)
+
+
+def submit_records(*labels):
+    return [{"status": "OK", "labels": [{"label": label, "status": "MAY"} for label in labels]}]
+
+
+GATED = submit_records("Code-Review", "Quality", "Integration", "Workflow")
+
+
+class GatedProjectTest(unittest.TestCase):
+    def gated(self, *approvals):
+        green = [approval(label, 1, "zuul") for label in ("Quality", "Integration")]
+        return change(current=patch_set(1, approval("Code-Review", 2), *green, *approvals), submitRecords=GATED)
+
+    def test_a_ci_label_the_project_lacks_does_not_hold_the_change(self):
+        # Given
+        gated = self.gated()
+        # When
+        ready = events.is_ready_to_submit(gated)
+        # Then
+        self.assertTrue(ready)
+        self.assertEqual("passed", events.ci_reading(gated)[2])
+
+    def test_the_gate_vote_is_what_merges_not_a_blocker(self):
+        # Given
+        changes = [self.gated(), self.gated(approval("Workflow", 1)), self.gated(approval("Workflow", -1))]
+        # When
+        states = [events.gate_state(c) for c in changes]
+        blockers = [events.submit_blockers_of(c, ["Code-Owners", "Workflow"]) for c in changes]
+        # Then
+        self.assertEqual(["vote", "voted", "held"], states)
+        self.assertEqual([["Code-Owners"], ["Code-Owners"], ["Code-Owners", "Workflow"]], blockers)
+
+    def test_an_ungated_project_has_no_gate(self):
+        # Given
+        plain = change(submitRecords=submit_records("Code-Review", *events.CI_LABELS))
+        # When
+        state = events.gate_state(plain)
+        # Then
+        self.assertIsNone(state)
+
+    def test_ready_only_until_the_gate_is_voted(self):
+        # Given
+        changes = [self.gated(), change(2, current=self.gated(approval("Workflow", 1))["currentPatchSet"],
+                                        submitRecords=GATED)]
+        # When
+        kinds = {(e["change"], e["kind"], e.get("gate")) for _, e in events.events(poll_result(changes), NOW)}
+        # Then
+        self.assertIn((1, "ready_to_submit", "vote"), kinds)
+        self.assertNotIn("ready_to_submit", {kind for number, kind, _ in kinds if number == 2})
 
 
 class CiStateTest(unittest.TestCase):

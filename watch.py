@@ -46,11 +46,13 @@ SEEN_RETENTION_S = 30 * 86400
 
 
 def fetch_changes():
-    return gerrit.query(QUERY, "--current-patch-set", "--comments", "--dependencies", "--all-reviewers")
+    return gerrit.query(QUERY, "--current-patch-set", "--comments", "--dependencies", "--all-reviewers",
+                        "--submit-records")
 
 
 def fetch_reviews():
-    return gerrit.query(REVIEW_QUERY, "--current-patch-set", "--all-approvals", "--all-reviewers", "--comments")
+    return gerrit.query(REVIEW_QUERY, "--current-patch-set", "--all-approvals", "--all-reviewers", "--comments",
+                        "--submit-records")
 
 
 def fetch_attention():
@@ -88,8 +90,9 @@ def submit_blockers(changes):
     """{change number: unsatisfied submit requirements} for the changes the votes call ready, None when REST fails.
     SSH queries carry no requirement, and the code-owners plugin only shows up there; asked again when the change
     moves."""
-    keys = {c["number"]: (c["number"], c.get("lastUpdated")) for c in changes
-            if events.is_ready_to_submit(c.get("currentPatchSet", {}))}
+    ready = {c["number"]: c for c in changes if events.is_ready_to_submit(c)}
+    keys = {number: (number, c.get("lastUpdated")) for number, c in ready.items()}
+
     def fetch(key):
         return events.unsatisfied_requirements(gerrit.rest_get(f"/changes/{key[0]}?o=SUBMIT_REQUIREMENTS"))
 
@@ -98,7 +101,7 @@ def submit_blockers(changes):
             requirements = memo.get_all(keys.values(), fetch)
     except (OSError, ValueError, KeyError):
         return None
-    return {number: requirements[key] for number, key in keys.items()}
+    return {number: events.submit_blockers_of(ready[number], requirements[key]) for number, key in keys.items()}
 
 
 def parent_statuses(changes):

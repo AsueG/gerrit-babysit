@@ -45,6 +45,9 @@ DEFAULTS = {
     "launchd_label": "local.gerrit-babysit",
     "language": "auto",
     "recheck_comment": "recheck",
+    "gate_label": "Workflow",
+    "auto_submit_hashtag": None,
+    "claude_review_hashtag": None,
 }
 
 

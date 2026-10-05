@@ -289,7 +289,7 @@ push again; `GERRIT_BABYSIT_NEW_CHANGE=1` only when the user wants a new change.
 ## Submit
 
 `ready_to_submit` = on the current patch set: Code-Review +2 without a negative vote, every `ci_labels`
-label at +1 without -1, and no unresolved thread waiting for my answer. (Gerrit's `submitRecords` can say
+label the project has at +1 without -1, and no unresolved thread waiting for my answer. (Gerrit's `submitRecords` can say
 `OK` on a change voted -1, hence this own computation.) Emitted only once the parent change (`dependsOn`)
 is no longer open, once per patch set and per working day: an unsubmitted change comes back the next
 morning (not on weekends). `ready_since` = timestamp of the +2, worth mentioning ("ready for 3 days").
@@ -312,6 +312,11 @@ requirements (REST down) leave the votes to decide alone, as before.
 4. **Submit failure** (Gerrit rebases on submit, a conflict makes it fail): local rebase from the
    worktree, tests, push again after approval; the new patch set goes through CI again and will trigger
    `ready_to_submit` again if the +2 is kept.
+
+**Gated project** (`gate` = `"vote"` on the event: the project has the `gate_label` label, `Workflow` by
+default): there is no Submit, zuul merges once that label is voted. Same steps, but offer **Workflow+1** and
+run `gerrit review --label Workflow=+1 <n>,<patch_set>` after "yes", then let zuul's gate pipeline merge it
+(no `ready_to_submit` while the vote is in).
 
 "Not now": do nothing — the event comes back on the next working day.
 

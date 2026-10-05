@@ -117,9 +117,12 @@ def rest_auth(rejected=None):
         return _rest_auth
 
 
-def rest_get(path, retry=True):
+def rest_get(path, retry=True, data=None):
     auth = rest_auth()
-    request = urllib.request.Request(REST + path, headers={"Authorization": f"Basic {auth}"})
+    headers = {"Authorization": f"Basic {auth}"}
+    if data is not None:
+        headers["Content-Type"] = "application/json; charset=UTF-8"
+    request = urllib.request.Request(REST + path, data=data, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             # Gerrit prefixes every JSON body with )]}' against XSSI.
@@ -130,4 +133,8 @@ def rest_get(path, retry=True):
         # The token may have been rotated since the daemon started: reread it once.
         error.close()
         rest_auth(rejected=auth)
-        return rest_get(path, retry=False)
+        return rest_get(path, retry=False, data=data)
+
+
+def rest_post(path, payload):
+    return rest_get(path, data=json.dumps(payload).encode())

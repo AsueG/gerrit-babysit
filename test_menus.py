@@ -453,6 +453,108 @@ class SubmitTest(SnapshotTest):
         alert.assert_called_once_with(plugin.t("bar_submit_failed", n="7"), "not mergeable")
 
 
+class GateTest(SnapshotTest):
+    def menu(self, change, fresh=True):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            plugin.print_change(change, "label", "clock", None, fresh=fresh)
+        return [line for line in out.getvalue().splitlines() if "paperplane" in line]
+
+    def test_a_ready_gated_change_offers_the_workflow_vote_not_the_submit(self):
+        # Given
+        change = row(7, ready=True, code_review=2, gate="vote")
+        # When
+        lines = self.menu(change)
+        # Then
+        self.assertEqual(1, len(lines))
+        self.assertIn('param1="vote_gate" param2="7" param3="2"', lines[0])
+
+    def test_a_voted_gate_shows_zuul_at_work(self):
+        # Given
+        change = row(7, ready=True, code_review=2, gate="voted")
+        # When
+        state = plugin.state_of(change)
+        lines = self.menu(change)
+        # Then
+        self.assertEqual(plugin.t("bar_gating", label="Workflow"), state[0])
+        self.assertIn("disabled=true", lines[0])
+
+    def test_votes_the_gate_on_the_confirmed_patch_set(self):
+        # Given
+        self.write([row(7, gate="vote")])
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), \
+                mock.patch.object(plugin, "osascript", return_value=mock.Mock(returncode=0)), \
+                mock.patch.object(plugin.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            plugin.handle(["vote_gate", "7", "2"])
+        # Then
+        ssh = [c.args[0] for c in run.call_args_list if c.args[0][0] == "ssh"]
+        self.assertEqual([[*gerrit.SSH, "gerrit", "review", "--label", "Workflow=+1", "7,2"]], ssh)
+
+    def test_no_vote_once_the_gate_is_no_longer_open(self):
+        # Given
+        self.write([row(7, gate="voted")])
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "osascript") as osascript:
+            plugin.handle(["vote_gate", "7", "2"])
+        # Then
+        osascript.assert_not_called()
+
+
+class HashtagTest(SnapshotTest):
+    TAGS = {"auto_submit": "auto-submit", "claude_review": "claude-code-review"}
+
+    def menu(self, change, fresh=True):
+        out = io.StringIO()
+        with mock.patch.object(plugin, "HASHTAGS", self.TAGS), contextlib.redirect_stdout(out):
+            plugin.print_change(change, "label", "clock", None, fresh=fresh)
+        return [line for line in out.getvalue().splitlines() if "sfimage=number" in line or "checkmark.circle" in line]
+
+    def test_offers_each_hashtag_missing_and_greys_out_the_one_already_there(self):
+        # Given
+        change = row(7, hashtags=["auto-submit"])
+        # When
+        lines = self.menu(change)
+        # Then
+        self.assertEqual(2, len(lines))
+        self.assertIn(plugin.t("bar_auto_submit_on"), lines[0])
+        self.assertIn("disabled=true", lines[0])
+        self.assertIn('param1="hashtag" param2="7" param3="claude_review"', lines[1])
+
+    def test_unconfigured_hashtags_stay_out_of_the_menu(self):
+        # Given
+        change = row(7)
+        # When
+        with mock.patch.object(plugin, "HASHTAGS", {"auto_submit": None, "claude_review": None}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                plugin.print_change(change, "label", "clock", None, fresh=True)
+        # Then
+        self.assertNotIn("hashtag", out.getvalue())
+
+    def test_adds_the_confirmed_hashtag(self):
+        # Given
+        self.write([row(7)])
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "HASHTAGS", self.TAGS), \
+                mock.patch.object(plugin, "osascript", return_value=mock.Mock(returncode=0)), \
+                mock.patch.object(plugin, "refresh"), mock.patch.object(gerrit, "rest_post") as post:
+            plugin.handle(["hashtag", "7", "claude_review"])
+        # Then
+        post.assert_called_once_with("/changes/7/hashtags", {"add": ["claude-code-review"]})
+
+    def test_cancel_adds_nothing(self):
+        # Given
+        self.write([row(7)])
+        # When
+        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "HASHTAGS", self.TAGS), \
+                mock.patch.object(plugin, "osascript", return_value=mock.Mock(returncode=1)), \
+                mock.patch.object(gerrit, "rest_post") as post:
+            plugin.handle(["hashtag", "7", "auto_submit"])
+        # Then
+        post.assert_not_called()
+
+
 class SnoozeMenuTest(SnapshotTest):
     def setUp(self):
         super().setUp()

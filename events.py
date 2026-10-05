@@ -11,6 +11,7 @@ from i18n import t
 from gerrit import BOT_USERS, CI_USER, HOST, NOT_ME, USER
 
 CI_LABELS = tuple(CONFIG["ci_labels"])
+GATE_LABEL = CONFIG["gate_label"]
 # Group additions put dozens of people on a change: not a personal review request.
 MAX_REVIEWERS = CONFIG["max_reviewers"]
 MAX_THREADS = 20
@@ -36,14 +37,46 @@ def is_actionable(message):
     return not (POSITIVE_VOTES_ONLY.match(header.strip()) and not body.strip())
 
 
-def is_ready_to_submit(patch_set):
+def is_ready_to_submit(change):
     # submitRecords can report OK on a change voted -1 (seen on Gerrit 3.x), so read the votes instead.
-    return votes_ready(votes_of(patch_set))
+    return votes_ready(votes_of(change.get("currentPatchSet", {})), ci_labels_of(change))
 
 
-def votes_ready(votes):
+def votes_ready(votes, ci_labels=CI_LABELS):
     code_review = votes.get("Code-Review", [])
-    return 2 in code_review and min(code_review) >= 0 and ci_passed(votes)
+    return 2 in code_review and min(code_review) >= 0 and ci_passed(votes, ci_labels)
+
+
+def labels_of(change):
+    """The labels the change's project defines, from `--submit-records` (unvoted ones too); None without them."""
+    records = change.get("submitRecords")
+    if records is None:
+        return None
+    return {label["label"] for record in records for label in record.get("labels", [])}
+
+
+def ci_labels_of(change):
+    """The `ci_labels` this change's project has: a gated project often lacks one (no Build pipeline)."""
+    labels = labels_of(change)
+    return CI_LABELS if labels is None else tuple(label for label in CI_LABELS if label in labels)
+
+
+def gate_state(change):
+    """None off a gated project (no Submit there: zuul merges once Workflow is voted); else "vote" while nobody
+    voted it, "voted" once zuul has it, "held" on a negative vote (wait, or failed in the gate)."""
+    if not GATE_LABEL or GATE_LABEL not in (labels_of(change) or ()):
+        return None
+    votes = votes_of(change.get("currentPatchSet", {})).get(GATE_LABEL, [0])
+    if min(votes) < 0:
+        return "held"
+    return "voted" if max(votes) > 0 else "vote"
+
+
+def submit_blockers_of(change, requirements):
+    """The Workflow requirement is how a gated change merges, not something in its way, unless voted down."""
+    if gate_state(change) in ("vote", "voted"):
+        return [r for r in requirements if r != GATE_LABEL]
+    return requirements
 
 
 def unsatisfied_requirements(change):
@@ -52,9 +85,9 @@ def unsatisfied_requirements(change):
     return sorted(r["name"] for r in change.get("submit_requirements", []) if r.get("status") in ("UNSATISFIED", "ERROR"))
 
 
-def ci_passed(votes):
+def ci_passed(votes, ci_labels=CI_LABELS):
     # Some CIs vote +2 (e.g. a gate pipeline), not only +1.
-    return all(max(votes.get(label, [0])) >= 1 and min(votes[label]) >= 0 for label in CI_LABELS)
+    return all(max(votes.get(label, [0])) >= 1 and min(votes[label]) >= 0 for label in ci_labels)
 
 
 def votes_of(patch_set):
@@ -80,7 +113,7 @@ def ci_state(change, patch_set, votes, verdict=None):
         verdict = verdict or latest_ci_verdict(change, patch_set)
         # 'Merge Failed.': no job ran, the base is stale.
         return "stale_base" if verdict and "Merge Failed." in verdict["message"] else "failed"
-    if ci_passed(votes):
+    if ci_passed(votes, ci_labels_of(change)):
         return "passed"
     return "running"
 
@@ -319,7 +352,7 @@ def state_events(change, result, day, now):
     blockers = (result.get("submit_blockers") or {}).get(number)
     votes = votes_of(patch_set)
     state = ci_state(change, patch_set, votes)
-    voted = votes_ready(votes)
+    voted = votes_ready(votes, ci_labels_of(change))
     if is_ci_stuck(change, patch_set, state, now):
         yield f'{number}:ci_stuck:{ps}', {**base, "kind": "ci_stuck", "idle_since": ci_idle_since(change, patch_set)}
     if number in stale:
@@ -337,9 +370,10 @@ def state_events(change, result, day, now):
             # The votes are there but Gerrit would refuse the submit: once per patch set and set of blockers.
             yield f'{number}:blocked:{ps}:{"+".join(blockers)}', {
                 **base, "kind": "submit_blocked", "requirements": blockers}
-        else:
+        elif gate_state(change) != "voted":
             # One key per working day: a CL left unsubmitted comes back the next morning.
-            yield f'{number}:ready:{ps}:{day}', {**base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set)}
+            yield f'{number}:ready:{ps}:{day}', {**base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set),
+                                                  "gate": gate_state(change)}
 
     attention_sets = result.get("attention_sets")
     wait = None if attention_sets is None else attention_sets.get(number, {"holders": [], "removed": []})
@@ -496,8 +530,10 @@ def status_rows(result, flakes, worktrees, now, diagnoses=None):
             "open_parent": result["parents"].get(number),
             "outdated_parent": outdated["parent"] if outdated else None,
             # The votes are in and no thread waits on me; an open parent is the reader's call.
-            "ready": votes_ready(votes) and threads == [] and not blockers.get(number),
+            "ready": votes_ready(votes, ci_labels_of(change)) and threads == [] and not blockers.get(number),
             "submit_blocked": blockers.get(number, []),
+            "gate": gate_state(change),
+            "hashtags": change.get("hashtags", []),
             "worktree": worktrees.get(change["id"]),
             "branch": change["branch"],
             "base_red": ci.is_red(result.get("base_health", {}).get(change["branch"])),

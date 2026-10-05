@@ -40,6 +40,8 @@ def state(row):
         return "ci_stuck"
     if row.get("submit_blocked"):
         return "submit_blocked"
+    if row.get("gate") == "voted":
+        return "gating"
     if row["ready"]:
         return "ready_parent" if row.get("open_parent") else "ready"
     return "ci_running" if row["ci"] == "running" else "ci_passed"

@@ -27,6 +27,8 @@ from config import (CI_STUCK_S, COMMAND, CONFIG, DAEMON_POLL, REPO, STALE_AFTER_
                     USER_DIR, VERSION, read_json)
 from i18n import t  # noqa: E402
 
+GATE_LABEL = CONFIG["gate_label"]
+HASHTAGS = {"auto_submit": CONFIG["auto_submit_hashtag"], "claude_review": CONFIG["claude_review_hashtag"]}
 DASHBOARD = CONFIG["review_dashboard_url"] or f"https://{CONFIG['gerrit_host']}/dashboard/self"
 ICON = "sfimage=arrow.triangle.pull"
 # Built by macos/install.sh outside the plugin folder, which each update replaces.
@@ -55,6 +57,7 @@ STYLES = {
     "ready_parent": ("link", "orange"),
     "submit_blocked": ("lock.fill", "orange"),
     "ready":("checkmark.seal.fill", "green"),
+    "gating": ("arrow.triangle.merge", None),
     "ci_running": ("hourglass", "orange"),
     "ci_passed": ("clock", None),
 }
@@ -80,6 +83,7 @@ LABELS = {
     "submit_blocked": lambda c: t("bar_submit_blocked", requirements=", ".join(c["submit_blocked"])),
     "ci_running": lambda c: t("bar_ci_running", cr=cr_label(c)),
     "ci_passed": lambda c: t("bar_ci_passed", cr=cr_label(c)),
+    "gating": lambda c: t("bar_gating", label=GATE_LABEL),
 }
 
 
@@ -149,15 +153,15 @@ def refresh():
     subprocess.run(["open", "-g", f"swiftbar://refreshplugin?name={SWIFTBAR_PLUGIN}"], capture_output=True)
 
 
-def review(number, patch_set, option, subject, done, failed):
+def review(number, patch_set, option, subject, done, failed, **params):
     """`gerrit review` on the confirmed patch set: Gerrit refuses if a newer one was pushed since the snapshot."""
     # Imported on use: resolving the SSH user can run git, and the menu redraws every 30 s.
     import gerrit
     result = gerrit.ssh("gerrit", "review", *option, f"{number},{patch_set}", timeout=120)
     if result.returncode == 0:
-        notify(t(done, n=number), subject)
+        notify(t(done, n=number, **params), subject)
     else:
-        alert(t(failed, n=number), result.stderr.strip() or result.stdout.strip())
+        alert(t(failed, n=number, **params), result.stderr.strip() or result.stdout.strip())
     refresh()
 
 
@@ -165,6 +169,35 @@ def submit(number, patch_set):
     subject = snapshot_row(number).get("subject", "")
     if confirmed(t("bar_submit_confirm", n=number, ps=patch_set), subject, t("bar_submit_button")):
         review(number, patch_set, ["--submit"], subject, "bar_submitted", "bar_submit_failed")
+
+
+def vote_gate(number, patch_set):
+    row = snapshot_row(number)
+    if row.get("gate") != "vote" or str(row.get("patch_set")) != patch_set:
+        return
+    subject = row.get("subject", "")
+    if confirmed(t("bar_gate_confirm", label=GATE_LABEL, n=number, ps=patch_set), subject, t("bar_gate_button")):
+        review(number, patch_set, ["--label", f"{GATE_LABEL}=+1"], subject, "bar_gate_voted", "bar_gate_failed",
+               label=GATE_LABEL)
+
+
+def add_hashtag(number, kind):
+    tag = HASHTAGS.get(kind)
+    row = snapshot_row(number)
+    if not tag or not row or tag in row.get("hashtags", []):
+        return
+    subject = row.get("subject", "")
+    if not confirmed(t(f"bar_{kind}_confirm", tag=tag, n=number), subject, t("bar_hashtag_button")):
+        return
+    # Imported on use: the menu redraws every 30 s and only the actions need it.
+    import gerrit
+    try:
+        gerrit.rest_post(f"/changes/{number}/hashtags", {"add": [tag]})
+    except (OSError, ValueError, KeyError) as error:
+        alert(t("bar_hashtag_failed", tag=tag, n=number), gerrit.error_detail(error))
+    else:
+        notify(t("bar_hashtag_added", tag=tag, n=number), subject)
+    refresh()
 
 
 def recheck_detail(change):
@@ -339,7 +372,7 @@ def restart_daemon():
 
 ACTIONS = {"submit": submit, "worktree": open_worktree, "investigate": investigate, "copy": copy,
            "recheck": recheck, "snooze": snooze_change, "wake": wake, "restart_daemon": restart_daemon,
-           "push_rebase": push_rebase}
+           "push_rebase": push_rebase, "vote_gate": vote_gate, "hashtag": add_hashtag}
 
 
 def handle(args):
@@ -405,13 +438,31 @@ def print_change(change, label, symbol, color, fresh):
               f"{action('push_rebase', number, change['patch_set'])} sfimage=arrow.triangle.branch")
     if change.get("patch_set"):
         print("-----")
+        print_hashtags(change, number, fresh)
         state = snapshot.state(change)
-        if fresh and state == "ready":
+        gated = change.get("gate") is not None
+        if fresh and state == "ready" and gated:
+            print(f"--{t('bar_gate_vote', label=GATE_LABEL)} | {action('vote_gate', number, change['patch_set'])} "
+                  "sfimage=paperplane.fill")
+        elif fresh and state == "ready":
             print(f"--{t('bar_submit')} | {action('submit', number, change['patch_set'])} sfimage=paperplane.fill")
         else:
             # Always there, greyed out with what stands in the way, so a missing Submit never needs explaining.
             reason = (submit_wait(state, change) or label_of(state, change)) if fresh else t("bar_submit_stale")
-            print(f"--{t('bar_submit_unavailable', reason=reason.replace('|', '¦'))} | disabled=true sfimage=paperplane")
+            unavailable = t("bar_gate_unavailable", label=GATE_LABEL, reason=reason) if gated \
+                else t("bar_submit_unavailable", reason=reason)
+            print(f"--{unavailable.replace('|', '¦')} | disabled=true sfimage=paperplane")
+
+
+def print_hashtags(change, number, fresh):
+    """Gerrit's Auto-submit and Claude review buttons: greyed out once the hashtag is on the change."""
+    for kind, tag in HASHTAGS.items():
+        if not tag:
+            continue
+        if tag in change.get("hashtags", []):
+            print(f"--{t(f'bar_{kind}_on')} | disabled=true sfimage=checkmark.circle")
+        elif fresh:
+            print(f"--{t(f'bar_{kind}')} | {action('hashtag', number, kind)} sfimage=number")
 
 
 def print_snoozed(change, entry):
