@@ -82,6 +82,10 @@ class MergeConflictsTest(GitRepoTest):
         patcher = mock.patch.object(gerrit, "uses_content_merge", lambda project: self.content_merge)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Every call fetches the tips here; the throttle has its own test.
+        for patcher in (mock.patch.object(repo, "TIPS_REFRESH_S", 0), mock.patch.dict(repo._tips_fetched_at, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def conflicting_change(self, number, branch, base="base\n", theirs="theirs\n", mine="mine\n"):
         (self.repo / "A.kt").write_text(base)
@@ -164,6 +168,32 @@ class MergeConflictsTest(GitRepoTest):
         missing = repo.missing_objects([present, "0" * 40])
         # Then
         self.assertEqual({"0" * 40}, missing)
+
+    def test_a_branch_tip_is_fetched_again_only_once_the_refresh_is_due(self):
+        # Given
+        c = self.conflicting_change(1, "release")
+        fetches = []
+        # When
+        with mock.patch.object(repo, "TIPS_REFRESH_S", 300), \
+                mock.patch.object(repo, "fetch_refs", side_effect=fetches.append), \
+                mock.patch.object(repo.time, "monotonic", side_effect=[1000, 1100, 1300]):
+            for _ in range(3):
+                repo.merge_conflicts([c])
+        # Then
+        self.assertEqual([[f"+refs/heads/release:{repo.FETCH_NAMESPACE}/release"]] * 2, fetches)
+
+    def test_a_new_patch_set_is_fetched_without_waiting_for_the_tips(self):
+        # Given
+        c = change(1, current={**patch_set(1), "revision": "0" * 40, "ref": "refs/changes/01/1/1"}, branch="release")
+        repo._tips_fetched_at["release"] = 1000
+        fetches = []
+        # When
+        with mock.patch.object(repo, "TIPS_REFRESH_S", 300), \
+                mock.patch.object(repo, "fetch_refs", side_effect=fetches.append), \
+                mock.patch.object(repo.time, "monotonic", return_value=1010):
+            repo.merge_conflicts([c])
+        # Then
+        self.assertEqual([[f"+refs/changes/01/1/1:{repo.FETCH_NAMESPACE}/changes/1"]], fetches)
 
     def test_fetch_failing_for_every_ref_raises(self):
         # Given

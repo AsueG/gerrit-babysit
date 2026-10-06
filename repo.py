@@ -3,6 +3,7 @@ import os
 import pathlib
 import re
 import subprocess
+import time
 
 import gerrit
 from config import CONFIG, REPO
@@ -58,6 +59,10 @@ def branch_tips(branches):
 
 
 _conflicts_memo = PollMemo()
+# A new patch set is fetched on the next poll, a branch tip at most this often: each fetch is an SSH session, and one a
+# network drop cuts lingers on Gerrit, counting against the per-user session cap.
+TIPS_REFRESH_S = 300
+_tips_fetched_at: dict[str, float] = {}
 
 
 def merge_conflicts(changes):
@@ -66,10 +71,14 @@ def merge_conflicts(changes):
     if not candidates:
         return {}
     missing = missing_objects([ps["revision"] for _, ps in candidates])
-    refspecs = {f"+refs/heads/{c['branch']}:{FETCH_NAMESPACE}/{c['branch']}" for c, _ in candidates}
+    now = time.monotonic()
+    due = {c["branch"] for c, _ in candidates if now - _tips_fetched_at.get(c["branch"], float("-inf")) >= TIPS_REFRESH_S}
+    refspecs = {f"+refs/heads/{branch}:{FETCH_NAMESPACE}/{branch}" for branch in due}
     refspecs |= {f"+{ps['ref']}:{FETCH_NAMESPACE}/changes/{c['number']}"
                  for c, ps in candidates if ps["revision"] in missing}
-    fetch_refs(sorted(refspecs))
+    if refspecs:
+        fetch_refs(sorted(refspecs))
+        _tips_fetched_at.update(dict.fromkeys(due, now))
 
     tips = branch_tips({c["branch"] for c, _ in candidates})
     # Once per project, not per change.
