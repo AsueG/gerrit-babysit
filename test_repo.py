@@ -74,6 +74,37 @@ class BranchTipsTest(GitRepoTest):
         self.assertEqual(1, git.call_count)
 
 
+class FetchSourceTest(GitRepoTest):
+    def test_gerrit_over_https_when_an_http_password_is_set(self):
+        # Given
+        self.git("remote", "add", "origin", f"ssh://me@{gerrit.HOST}:29418/team/app")
+        # When
+        with mock.patch.object(gerrit, "http_credentials", return_value=("me", "secret")):
+            options, remote = repo.fetch_source()
+        # Then
+        self.assertEqual(f"https://{gerrit.HOST}/a/team/app", remote)
+        self.assertIn("credential.helper=", options)
+        self.assertNotIn("secret", " ".join(options))
+
+    def test_origin_without_http_password(self):
+        # Given
+        self.git("remote", "add", "origin", f"ssh://me@{gerrit.HOST}:29418/team/app")
+        # When
+        with mock.patch.object(gerrit, "http_credentials", side_effect=KeyError("no ~/.netrc entry")):
+            source = repo.fetch_source()
+        # Then
+        self.assertEqual(([], "origin"), source)
+
+    def test_origin_when_it_is_not_the_gerrit_host(self):
+        # Given
+        self.git("remote", "add", "origin", str(self.repo))
+        # When
+        with mock.patch.object(gerrit, "http_credentials", return_value=("me", "secret")):
+            source = repo.fetch_source()
+        # Then
+        self.assertEqual(([], "origin"), source)
+
+
 class MergeConflictsTest(GitRepoTest):
     def setUp(self):
         super().setUp()

@@ -33,8 +33,8 @@ The interface follows the macOS language (English or French).
 
 - Python 3.9+ (standard library only) and git
 - SSH access to Gerrit (`ssh -p 29418 <user>@<host> gerrit version`)
-- A Gerrit HTTP password, in `~/.netrc` or in a gerrit-mcp-server config: the poll reads Gerrit over REST with it.
-  Without one it queries over SSH, where every session a VPN drop cuts lingers server-side and counts against
+- A Gerrit HTTP password, in `~/.netrc` or in a gerrit-mcp-server config: the poll reads Gerrit over REST and fetches
+  over HTTPS with it. Without one it queries and fetches over SSH, where every session a VPN drop cuts lingers server-side and counts against
   Gerrit's per-user connection cap
 - Optional: zuul, for CI diagnosis
 - Optional: SwiftBar, for the menu bar item

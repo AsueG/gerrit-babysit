@@ -8,6 +8,7 @@ import pathlib
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -306,3 +307,9 @@ def rest_get(path, retry=True, data=None, timeout=30):
 
 def rest_post(path, payload):
     return rest_get(path, data=json.dumps(payload).encode())
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["credential", "get"]:
+    # git credential helper for the HTTPS fetches: the HTTP password stays where http_credentials() reads it.
+    username, password = http_credentials()
+    print(f"username={username}\npassword={password}")

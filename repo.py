@@ -2,8 +2,11 @@
 import os
 import pathlib
 import re
+import shlex
 import subprocess
+import sys
 import time
+import urllib.parse
 
 import gerrit
 from config import CONFIG, REPO
@@ -31,13 +34,29 @@ def missing_objects(shas):
     return {line.split()[0] for line in out.splitlines() if line.endswith(" missing")}
 
 
+def fetch_source():
+    """(git options, remote) to fetch from: Gerrit over HTTPS when an HTTP password is set, since an SSH fetch a network
+    drop cuts lingers on Gerrit against the per-user session cap; else origin as configured."""
+    try:
+        gerrit.http_credentials()
+    except (OSError, ValueError, KeyError):
+        return [], "origin"
+    origin = urllib.parse.urlparse(git_run("remote", "get-url", "origin").stdout.strip())
+    if origin.scheme != "ssh" or origin.hostname != gerrit.HOST:
+        return [], "origin"
+    helper = f"!{shlex.quote(sys.executable)} {shlex.quote(str(pathlib.Path(gerrit.__file__).resolve()))} credential"
+    options = ["-c", "credential.helper=", "-c", f"credential.https://{gerrit.HOST}.helper={helper}"]
+    return options, f"https://{gerrit.HOST}/a{origin.path}"
+
+
 def fetch_refs(refspecs):
     """One fetch for all; when a ref vanished, one per refspec, so it does not blind the whole poll.
 
     Any other failure (network, auth) would only repeat itself once per refspec, each paying the same timeout."""
-    command = ["fetch", "--quiet", "--no-write-fetch-head", "origin"]
-    # Untranslated stderr: the vanished-ref message is matched below.
-    env = {**os.environ, "LC_ALL": "C"}
+    options, remote = fetch_source()
+    command = [*options, "fetch", "--quiet", "--no-write-fetch-head", remote]
+    # Untranslated stderr: the vanished-ref message is matched below. No prompt: the daemon has no terminal.
+    env = {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
     result = git_run(*command, *refspecs, timeout=180, env=env)
     if result.returncode == 0:
         return
