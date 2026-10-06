@@ -2,7 +2,7 @@
 
 A [Claude Code](https://claude.com/claude-code) skill that babysits your Gerrit changes.
 
-A small Python watcher polls Gerrit over SSH and costs no tokens while nothing happens. Claude wakes up
+A small Python watcher polls Gerrit's REST API and costs no tokens while nothing happens. Claude wakes up
 only for something actionable:
 
 - a reviewer comment or a Code-Review -1;
@@ -33,7 +33,9 @@ The interface follows the macOS language (English or French).
 
 - Python 3.9+ (standard library only) and git
 - SSH access to Gerrit (`ssh -p 29418 <user>@<host> gerrit version`)
-- A Gerrit HTTP password, in `~/.netrc` or in a gerrit-mcp-server config, to read comment threads
+- A Gerrit HTTP password, in `~/.netrc` or in a gerrit-mcp-server config: the poll reads Gerrit over REST with it.
+  Without one it queries over SSH, where every session a VPN drop cuts lingers server-side and counts against
+  Gerrit's per-user connection cap
 - Optional: zuul, for CI diagnosis
 - Optional: SwiftBar, for the menu bar item
 
@@ -82,7 +84,7 @@ clone free of local edits, so updating is just `git pull`.
 | `SKILL.md` | What Claude does with each event |
 | `watch.py` | Turns each poll into events, prints them as JSON and exits (session mode) or notifies (`--daemon`) |
 | `poll.py` | One poll: Gerrit queries, threads, submit requirements, parents, base health and the local conflict check, side by side |
-| `gerrit.py` | SSH queries (multiplexed over one connection) and the REST API |
+| `gerrit.py` | Change queries over REST, shaped like `gerrit query` rows (SSH without an HTTP password), and SSH commands |
 | `repo.py` | Local git work: fetches, conflict checks, prepared rebases, cleanup of merged or abandoned branches |
 | `events.py` | Pure logic: poll rows in, keyed events and notification texts out |
 | `ci.py` | Zuul failure diagnosis: failing jobs, gradle/lint errors, category, flakiness hints |

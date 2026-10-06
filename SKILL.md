@@ -6,7 +6,7 @@ argument-hint: "[stop]"
 
 # Gerrit babysit
 
-Event loop: `watch.py` polls Gerrit over SSH every 60 s **without spending tokens** and only returns
+Event loop: `watch.py` polls Gerrit (REST, SSH without an HTTP password) every 60 s **without spending tokens** and only returns
 when an actionable event arrives. (`gerrit stream-events` needs a capability most accounts lack, hence
 the polling.)
 
