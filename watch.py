@@ -36,6 +36,7 @@ SETTLE_S = 90
 # Only these come in bursts: a reply, its vote and zuul's verdict, or a push followed by its replies.
 CLUSTERED = frozenset({"message", "review_reply", "review_new_patch_set"})
 MAX_BACKOFF_S = 600
+SESSION_CAP_BACKOFF_S = 600
 # Consecutive failed polls before a lasting outage is reported, once, instead of only retried.
 UNREACHABLE_AFTER = 3
 SEEN_RETENTION_S = 30 * 86400
@@ -380,6 +381,11 @@ def notify_unreachable(detail, now):
     save_seen({**seen, key: now}, DAEMON_STATE)
 
 
+def session_cap_wait(detail, wait):
+    """Each retry only meets the cap again: the lingering sessions take minutes to time out, not seconds."""
+    return max(wait, SESSION_CAP_BACKOFF_S) if gerrit.SESSION_CAP in detail else wait
+
+
 def daemon(interval):
     """Status snapshot + notifications with no Claude session; clicking a notification opens one."""
     first_run = not DAEMON_STATE.exists()
@@ -401,7 +407,7 @@ def daemon(interval):
     while True:
         started = time.monotonic()
         # The poll's own duration (a slow fetch) comes off the wait, so a round still starts every `interval`.
-        pause = lambda started=started: time.sleep(max(0, interval - (time.monotonic() - started)))
+        pause = lambda every=interval, started=started: time.sleep(max(0, every - (time.monotonic() - started)))
         try:
             result = poll()
         # A bug on one odd change must not turn into a silent launchd crash loop.
@@ -413,7 +419,7 @@ def daemon(interval):
             # Not on a first install: a seen file saved now would turn the first good poll into a notification flood.
             if failures >= UNREACHABLE_AFTER and not first_run:
                 notify_unreachable(detail, time.time())
-            pause()
+            pause(session_cap_wait(detail, interval))
             continue
         failures = 0
         try:
@@ -567,7 +573,7 @@ def main():
                 report = deliver(report, time.time())
                 save_seen({**seen, outage_key(): time.time()})
                 return emit(report)
-            time.sleep(min(args.interval * failures, MAX_BACKOFF_S))
+            time.sleep(session_cap_wait(detail, min(args.interval * failures, MAX_BACKOFF_S)))
             continue
 
         seen = load_seen()

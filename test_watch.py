@@ -518,7 +518,7 @@ class DaemonTest(unittest.TestCase):
         pass
 
     def run_daemon(self, rounds, **patches):
-        sleeps = mock.Mock(side_effect=[None] * (rounds - 1) + [self.Stop()])
+        sleeps = self.sleeps = mock.Mock(side_effect=[None] * (rounds - 1) + [self.Stop()])
         stderr = io.StringIO()
         with mock.patch.object(watch.time, "sleep", sleeps), \
                 mock.patch.object(watch, "swiftbar"), \
@@ -620,6 +620,23 @@ class DaemonTest(unittest.TestCase):
             watch.daemon(60)
         # Then
         sleep.assert_called_once_with(35.0)
+
+    def test_the_ssh_session_cap_waits_for_the_lingering_sessions_to_time_out(self):
+        # Given
+        stderr = "Received disconnect from x port 29418:12: Too many concurrent connections (10)\nDisconnected\n"
+        capped = watch.subprocess.CalledProcessError(255, ["git", "fetch"], stderr=stderr)
+        # When
+        self.run_daemon(2, poll=mock.Mock(side_effect=capped), write_status=mock.Mock())
+        # Then
+        self.assertTrue(all(c.args[0] > 60 * 9 for c in self.sleeps.call_args_list))
+
+    def test_another_failure_retries_on_the_next_round(self):
+        # Given
+        down = watch.subprocess.CalledProcessError(255, ["ssh"], stderr="ssh: Could not resolve hostname\n")
+        # When
+        self.run_daemon(2, poll=mock.Mock(side_effect=down), write_status=mock.Mock())
+        # Then
+        self.assertTrue(all(c.args[0] <= 60 for c in self.sleeps.call_args_list))
 
     def test_a_bug_inside_the_poll_does_not_crash_the_daemon(self):
         # Given
