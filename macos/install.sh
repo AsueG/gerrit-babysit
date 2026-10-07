@@ -52,8 +52,13 @@ cat > "$PLIST" <<PLIST
 </plist>
 PLIST
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "daemon: $LABEL (log: $CACHE/daemon.log)"
+# Paused from the menu = disabled in launchd: a reinstall keeps it paused rather than failing to bootstrap.
+if launchctl print-disabled "gui/$(id -u)" | grep -Eq "\"$LABEL\" => (disabled|true)"; then
+  echo "daemon: $LABEL paused from the menu, not started (resume it there)"
+else
+  launchctl bootstrap "gui/$(id -u)" "$PLIST"
+  echo "daemon: $LABEL (log: $CACHE/daemon.log)"
+fi
 
 $PY "$SKILL/pre_push.py" --install
 

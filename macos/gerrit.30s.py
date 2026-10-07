@@ -37,6 +37,9 @@ ORCA = shutil.which("orca") or "/opt/homebrew/bin/orca"
 CLAUDE = shutil.which("claude") or str(pathlib.Path.home() / ".local/bin/claude")
 # Worst first: the menu lists problems before anything else.
 ORDER = {"red": 0, "green": 1, "orange": 2, None: 3, "gray": 4}
+DOMAIN = f"gui/{os.getuid()}"
+SERVICE = f"{DOMAIN}/{CONFIG['launchd_label']}"
+PLIST = pathlib.Path.home() / "Library/LaunchAgents" / f"{CONFIG['launchd_label']}.plist"
 
 
 def menu_text(text):
@@ -379,13 +382,38 @@ def daemon_version(now):
     return version if version != VERSION else None
 
 
+def launchctl(*args):
+    subprocess.run(["launchctl", *args], capture_output=True)
+
+
 def restart_daemon():
-    subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{CONFIG['launchd_label']}"], capture_output=True)
+    launchctl("kickstart", "-k", SERVICE)
+    refresh()
+
+
+def daemon_paused():
+    """None without a LaunchAgent to toggle. Paused means disabled in launchd, so it stays off across logins."""
+    if not PLIST.exists():
+        return None
+    listed = subprocess.run(["launchctl", "print-disabled", DOMAIN], capture_output=True, text=True).stdout
+    return re.search(rf'"{re.escape(CONFIG["launchd_label"])}" => (disabled|true)', listed) is not None
+
+
+def pause_daemon():
+    launchctl("disable", SERVICE)
+    launchctl("bootout", SERVICE)
+    refresh()
+
+
+def resume_daemon():
+    launchctl("enable", SERVICE)
+    launchctl("bootstrap", DOMAIN, str(PLIST))
     refresh()
 
 
 ACTIONS = {"submit": submit, "worktree": open_worktree, "investigate": investigate, "copy": copy,
            "recheck": recheck, "snooze": snooze_change, "wake": wake, "restart_daemon": restart_daemon,
+           "pause_daemon": pause_daemon, "resume_daemon": resume_daemon,
            "push_rebase": push_rebase, "vote_gate": vote_gate, "hashtag": add_hashtag}
 
 
@@ -525,7 +553,10 @@ def main():
     problems = sum(1 for _, (_, _, color) in rows if color == "red")
     ready = sum(1 for _, (_, _, color) in rows if color == "green")
     title = str(len(active))
-    if error or stopped:
+    paused = daemon_paused()
+    if paused:
+        title += " · ⏸"
+    elif error or stopped:
         title += " · \033[33m?\033[0m"
     elif problems:
         title += f" · \033[31m{problems} ⚠\033[0m"
@@ -557,13 +588,16 @@ def main():
             print_review(review, now)
     print("---")
     data_age = age(now - status["updated"]) if status.get("updated") else "?"
-    if stopped:
+    if paused:
+        print(f"{t('bar_paused', age=data_age)} | {action('resume_daemon')} color=orange sfimage=pause.circle")
+    elif stopped:
         print(f"{t('bar_stopped', age=data_age)} | color=orange sfimage=pause.circle")
     elif error:
         print(f"{t('bar_unreachable', age=data_age)} | color=orange sfimage=wifi.exclamationmark")
         print(f"--{menu_text(error)} | disabled=true")
     else:
-        print(f"{t('bar_active')} | sfimage=dot.radiowaves.left.and.right")
+        pause = f"{action('pause_daemon')} tooltip=\"{t('bar_pause_hint')}\" " if paused is False else ""
+        print(f"{t('bar_active')} | {pause}sfimage=dot.radiowaves.left.and.right")
     drifted = daemon_version(now)
     if drifted:
         print(f"{t('bar_version_mismatch', daemon=drifted, menu=VERSION or '?')} | color=orange "

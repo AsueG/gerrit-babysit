@@ -26,6 +26,7 @@ _spec = importlib.util.spec_from_file_location("swiftbar_plugin", pathlib.Path(_
 assert _spec and _spec.loader
 plugin = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(plugin)
+REAL_DAEMON_PAUSED = plugin.daemon_paused
 
 
 def row(number=1, **extra):
@@ -51,6 +52,9 @@ class SnapshotTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.status = pathlib.Path(tmp.name) / "status.json"
+        paused = mock.patch.object(plugin, "daemon_paused", return_value=False)
+        paused.start()
+        self.addCleanup(paused.stop)
 
 
 class StatusLineTest(SnapshotTest):
@@ -726,6 +730,56 @@ class VersionDriftTest(SnapshotTest):
         # Then
         self.assertEqual(["launchctl", "kickstart", "-k"], run.call_args_list[0].args[0][:3])
         self.assertTrue(run.call_args_list[0].args[0][3].endswith("/" + config.CONFIG["launchd_label"]))
+
+
+class PauseTest(SnapshotTest):
+    def menu(self, paused, age=0):
+        self.write([], age=age)
+        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "daemon_paused", return_value=paused), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            plugin.main()
+        return out.getvalue()
+
+    def test_clicking_the_running_watcher_pauses_it(self):
+        # When
+        found = self.menu(paused=False)
+        # Then
+        line = next(row for row in found.splitlines() if row.startswith("Watcher running"))
+        self.assertIn('param1="pause_daemon"', line)
+
+    def test_a_paused_watcher_says_so_at_once_and_offers_its_resume(self):
+        # When
+        found = [self.menu(paused=True), self.menu(paused=True, age=3600)]
+        # Then
+        for menu in found:
+            self.assertIn("· ⏸", menu.splitlines()[0])
+            line = next(row for row in menu.splitlines() if row.startswith("Watcher paused"))
+            self.assertIn('param1="resume_daemon"', line)
+            self.assertNotIn("Watcher stopped", menu)
+
+    def test_without_a_launch_agent_there_is_nothing_to_toggle(self):
+        # When
+        found = self.menu(paused=None)
+        # Then
+        self.assertNotIn("pause_daemon", found)
+
+    def test_pause_disables_then_unloads_and_resume_does_the_reverse(self):
+        # When
+        with mock.patch.object(plugin.subprocess, "run") as run:
+            plugin.handle(["pause_daemon"])
+            plugin.handle(["resume_daemon"])
+        # Then
+        verbs = [c.args[0][1] for c in run.call_args_list if c.args[0][0] == "launchctl"]
+        self.assertEqual(["disable", "bootout", "enable", "bootstrap"], verbs)
+
+    def test_paused_is_read_from_launchd_disabled_list(self):
+        label = config.CONFIG["launchd_label"]
+        for listed, expected in ((f'"{label}" => disabled', True), (f'"{label}" => true', True),
+                                 (f'"{label}" => enabled', False), ('"other" => disabled', False)):
+            with self.subTest(listed=listed), mock.patch.object(plugin, "PLIST", self.status), \
+                    mock.patch.object(plugin.subprocess, "run", return_value=mock.Mock(stdout=listed)):
+                self.status.write_text("{}")
+                self.assertEqual(expected, REAL_DAEMON_PAUSED())
 
 
 if __name__ == "__main__":
