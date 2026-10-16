@@ -24,7 +24,8 @@ On macOS you can add:
 - a background daemon that sends notifications, even with no Claude session open;
 - a SwiftBar menu bar item listing your changes, with a guarded one-click submit (greyed out with what it
   waits for until the change is ready), a one-click recheck
-  for known flakes, and a snooze (until a date or the next patch set);
+  for known flakes, a snooze (until a date or the next patch set), and a cleanup of the branches and
+  worktrees of merged or abandoned changes;
 - a Claude Code status line segment.
 
 The interface follows the macOS language (English or French).
@@ -102,7 +103,7 @@ clone free of local edits, so updating is just `git pull`.
 | `statusline_segment.py` | Status line segment read from the snapshot |
 | `macos/install.sh` | Installs the LaunchAgent, the SwiftBar plugin, the applet and the pre-push hook |
 | `macos/launch.py` | Stable entry point for launchd, SwiftBar and the applet: runs the latest installed version |
-| `macos/gerrit.30s.py` | SwiftBar menu and its guarded actions (submit, recheck, rebase push, snooze…) |
+| `macos/gerrit.30s.py` | SwiftBar menu and its guarded actions (submit, recheck, rebase push, snooze, cleanup…) |
 | `macos/open-babysit.sh` | Focuses the running babysit session, or opens one |
 | `fakes.py`, `fixtures/` | Test builders and sample Gerrit and zuul payloads |
 | `.claude-plugin/`, `hooks/` | Claude Code plugin manifest, marketplace entry and Stop hook |

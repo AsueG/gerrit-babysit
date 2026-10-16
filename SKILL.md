@@ -326,7 +326,9 @@ run `gerrit review --label Workflow=+1 <n>,<patch_set>` after "yes", then let zu
 abandoned changes (`status` = `merged` / `abandoned`; a local amend made afterwards is not a candidate), with
 its worktree if it is clean and not locked. An abandoned change can still be restored, but its patch sets
 stay on Gerrit (`git review -d <n>` brings it back). `protected_branches` and the main checkout's branch are
-excluded. The watcher is read-only: it deletes nothing.
+excluded. The watcher is read-only: it deletes nothing. The snapshot lists the same candidates (`cleanup`), and
+the SwiftBar menu offers to delete them all in one click: it checks them again live, asks for a confirmation,
+then does steps 2 below itself.
 
 1. Group all the candidates of the wake-up in **one** `AskUserQuestion` question (`multiSelect: true`,
    one option per branch: change + subject + `status` + worktree path).

@@ -411,9 +411,49 @@ def resume_daemon():
     refresh()
 
 
+def cleanup_line(candidate):
+    line = f"{candidate['branch']} — {candidate['change']} {candidate['status']} · {candidate['subject']}"
+    return line + (f"\n    {candidate['worktree']}" if candidate.get("worktree") else "")
+
+
+def remove_candidate(candidate):
+    """The worktree is never forced: one that got files meanwhile keeps them, and its branch with it."""
+    import repo
+    if candidate.get("worktree"):
+        removed = repo.git_run("worktree", "remove", candidate["worktree"])
+        if removed.returncode:
+            return removed.stderr.strip() or removed.stdout.strip()
+    deleted = repo.git_run("branch", "-D", candidate["branch"])
+    return (deleted.stderr.strip() or deleted.stdout.strip()) if deleted.returncode else None
+
+
+def cleanup():
+    """Asked again of git and Gerrit on click: the snapshot may be a poll old, a branch may have moved since."""
+    import gerrit
+    import repo
+    try:
+        candidates = [event for _, event in repo.cleanup_candidates()]
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        alert(t("bar_cleanup_failed"), gerrit.error_detail(error))
+        return
+    if not candidates:
+        notify(t("bar_cleanup_none"), "")
+        refresh()
+        return
+    detail = "\n".join(cleanup_line(c) for c in sorted(candidates, key=lambda c: c["branch"]))
+    if not confirmed(t("bar_cleanup_confirm", count=len(candidates)), detail, t("bar_cleanup_button")):
+        return
+    failures = {c["branch"]: error for c in candidates if (error := remove_candidate(c))}
+    if failures:
+        alert(t("bar_cleanup_failed"), "\n".join(f"{branch}: {error}" for branch, error in sorted(failures.items())))
+    if len(failures) < len(candidates):
+        notify(t("bar_cleaned", count=len(candidates) - len(failures)), "")
+    refresh()
+
+
 ACTIONS = {"submit": submit, "worktree": open_worktree, "investigate": investigate, "copy": copy,
            "recheck": recheck, "snooze": snooze_change, "wake": wake, "restart_daemon": restart_daemon,
-           "pause_daemon": pause_daemon, "resume_daemon": resume_daemon,
+           "pause_daemon": pause_daemon, "resume_daemon": resume_daemon, "cleanup": cleanup,
            "push_rebase": push_rebase, "vote_gate": vote_gate, "hashtag": add_hashtag}
 
 
@@ -587,6 +627,13 @@ def main():
         for review in reviews:
             print_review(review, now)
     print("---")
+    stale_branches = status.get("cleanup") or []
+    if stale_branches:
+        print(f"{t('bar_cleanup', count=len(stale_branches))} | sfimage=trash")
+        for candidate in sorted(stale_branches, key=lambda c: c["branch"]):
+            print(f"--{menu_text(cleanup_line(candidate).splitlines()[0])[:120]} | disabled=true")
+        print("-----")
+        print(f"--{t('bar_cleanup_all')} | {action('cleanup')} sfimage=trash")
     data_age = age(now - status["updated"]) if status.get("updated") else "?"
     if paused:
         print(f"{t('bar_paused', age=data_age)} | {action('resume_daemon')} color=orange sfimage=pause.circle")

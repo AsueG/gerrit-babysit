@@ -284,9 +284,12 @@ def write_status(result=None, error=None, listing=None):
     rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(listing), now, diagnoses)
     for row in rows:
         row["rebase_ready"] = rebases.get(row["number"])
+    cleanup = bonus(repo.cleanup_candidates, frozenset(c["id"] for c in result["changes"]), listing,
+                    what="cleanup check")
     atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None,
                           "threads_error": result.get("threads_error"), "changes": rows,
-                          "reviews": events.review_rows(result), "base_health": result.get("base_health", {})})
+                          "reviews": events.review_rows(result), "base_health": result.get("base_health", {}),
+                          "cleanup": [{k: v for k, v in event.items() if k != "kind"} for _, event in cleanup]})
 
 
 def snoozed_changes(result, now):

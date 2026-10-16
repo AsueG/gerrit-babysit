@@ -389,6 +389,67 @@ class PushRebaseTest(SnapshotTest):
         confirmed.assert_not_called()
 
 
+class CleanupTest(SnapshotTest):
+    OLD = {"branch": "old", "worktree": "/wt/old", "change": 7, "subject": "fix: x", "status": "merged"}
+    BARE = {"branch": "bare", "worktree": None, "change": 8, "subject": "feat: y", "status": "abandoned"}
+
+    def menu(self, cleanup):
+        self.write([], cleanup=cleanup)
+        out = io.StringIO()
+        with mock.patch.object(plugin, "STATUS", self.status), contextlib.redirect_stdout(out):
+            plugin.main()
+        return out.getvalue().splitlines()
+
+    def test_lists_the_branches_and_offers_one_delete_only_when_there_are_some(self):
+        # When
+        empty = self.menu([])
+        lines = self.menu([self.OLD, self.BARE])
+        # Then
+        self.assertFalse([line for line in empty if "trash" in line])
+        start = lines.index(next(line for line in lines if line.startswith(plugin.t("bar_cleanup", count=2))))
+        self.assertEqual(["--bare — 8 abandoned", "--old — 7 merged", "-----"],
+                         [line.split(" ·")[0] for line in lines[start + 1:start + 4]])
+        self.assertIn('param1="cleanup" terminal=false', lines[start + 4])
+
+    def clean(self, candidates, answer=True, refused=()):
+        def git_run(*args, **_):
+            failed = args[0] == "worktree" and args[-1] in refused
+            return subprocess.CompletedProcess(args, int(failed), "", "has untracked files" if failed else "")
+        with mock.patch.object(plugin, "confirmed", return_value=answer) as confirmed, \
+                mock.patch.object(plugin, "notify") as notify, mock.patch.object(plugin, "alert") as alert, \
+                mock.patch.object(plugin, "refresh"), \
+                mock.patch("repo.cleanup_candidates", return_value=[("k", {"kind": "cleanup_candidate", **c})
+                                                                    for c in candidates]), \
+                mock.patch("repo.git_run", side_effect=git_run) as run:
+            plugin.handle(["cleanup"])
+        return confirmed, notify, alert, [call.args for call in run.call_args_list]
+
+    def test_removes_each_worktree_then_its_branch_after_a_confirmation_listing_them(self):
+        # When
+        confirmed, notify, alert, calls = self.clean([self.OLD, self.BARE])
+        # Then
+        self.assertIn("/wt/old", confirmed.call_args.args[1])
+        self.assertEqual([("worktree", "remove", "/wt/old"), ("branch", "-D", "old"), ("branch", "-D", "bare")], calls)
+        alert.assert_not_called()
+        self.assertEqual(plugin.t("bar_cleaned", count=2), notify.call_args.args[0])
+
+    def test_nothing_without_a_yes_and_a_refused_worktree_keeps_its_branch(self):
+        # When
+        _, _, _, declined = self.clean([self.OLD], answer=False)
+        _, _, alert, calls = self.clean([self.OLD, self.BARE], refused=("/wt/old",))
+        # Then
+        self.assertEqual([], declined)
+        self.assertEqual([("worktree", "remove", "/wt/old"), ("branch", "-D", "bare")], calls)
+        self.assertIn("old: has untracked files", alert.call_args.args[1])
+
+    def test_nothing_to_ask_once_the_live_check_finds_none(self):
+        # When
+        confirmed, notify, _, calls = self.clean([])
+        # Then
+        confirmed.assert_not_called()
+        self.assertEqual([], calls)
+        self.assertEqual(plugin.t("bar_cleanup_none"), notify.call_args.args[0])
+
 class SubmitTest(SnapshotTest):
     def menu(self, change, fresh=True):
         out = io.StringIO()

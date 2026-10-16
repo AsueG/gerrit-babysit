@@ -701,7 +701,8 @@ class FlakyMemoryTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         status = pathlib.Path(tmp.name) / "status.json"
         # When
-        with mock.patch.object(watch, "STATUS", status), mock.patch.object(repo, "worktrees_by_change_id", return_value={}):
+        with mock.patch.object(watch, "STATUS", status), mock.patch.object(repo, "worktrees_by_change_id", return_value={}), \
+                mock.patch.object(repo, "cleanup_candidates", return_value=[]):
             watch.write_status(poll_result([red]))
         # Then
         row = json.loads(status.read_text())["changes"][0]
@@ -974,13 +975,29 @@ class BaseHealthTest(unittest.TestCase):
         status = pathlib.Path(tmp.name) / "status.json"
         watch.snooze.set_snooze(1, base_green=True)
         # When
-        with mock.patch.object(watch, "STATUS", status), mock.patch.object(repo, "worktrees_by_change_id", return_value={}):
+        with mock.patch.object(watch, "STATUS", status), mock.patch.object(repo, "worktrees_by_change_id", return_value={}), \
+                mock.patch.object(repo, "cleanup_candidates", return_value=[]):
             watch.write_status(result)
         snapshot = json.loads(status.read_text())
         # Then
         self.assertEqual([True, False], [row["base_red"] for row in snapshot["changes"]])
         self.assertEqual([1], list(watch.snooze.snapshot_active(snapshot, NOW)))
 
+
+    def test_the_snapshot_lists_the_branches_to_clean_up(self):
+        # Given
+        candidate = {"kind": "cleanup_candidate", "branch": "old", "worktree": "/wt/old", "change": 7,
+                     "subject": "fix: x", "status": "merged"}
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        status = pathlib.Path(tmp.name) / "status.json"
+        # When
+        with mock.patch.object(watch, "STATUS", status), mock.patch.object(repo, "worktrees_by_change_id", return_value={}), \
+                mock.patch.object(repo, "cleanup_candidates", return_value=[("cleanup:old:sha", candidate)]) as found:
+            watch.write_status(poll_result([change(1)]), listing="listing")
+        # Then
+        self.assertEqual([{k: v for k, v in candidate.items() if k != "kind"}], json.loads(status.read_text())["cleanup"])
+        self.assertEqual("listing", found.call_args.args[1])
 
 class WithIntKeysTest(unittest.TestCase):
     def test_attention_sets_come_back_with_int_keys_and_none_stays_none(self):
