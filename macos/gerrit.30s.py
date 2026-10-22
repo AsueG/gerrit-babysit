@@ -639,7 +639,8 @@ def main():
     print("---")
     stale_branches = status.get("cleanup") or []
     if stale_branches:
-        print(f"{t('bar_cleanup', count=len(stale_branches))} | sfimage=trash")
+        # SwiftBar greys out a line without an action, even a submenu parent.
+        print(f"{t('bar_cleanup', count=len(stale_branches))} | {action('cleanup')} sfimage=trash")
         for candidate in sorted(stale_branches, key=lambda c: c["branch"]):
             print(f"--{menu_text(cleanup_line(candidate).splitlines()[0])[:120]} | disabled=true")
         print("-----")

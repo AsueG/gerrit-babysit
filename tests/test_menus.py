@@ -407,6 +407,7 @@ class CleanupTest(SnapshotTest):
         # Then
         self.assertFalse([line for line in empty if "trash" in line])
         start = lines.index(next(line for line in lines if line.startswith(plugin.t("bar_cleanup", count=2))))
+        self.assertIn('param1="cleanup" terminal=false', lines[start])
         self.assertEqual(["--bare — 8 abandoned", "--old — 7 merged", "-----"],
                          [line.split(" ·")[0] for line in lines[start + 1:start + 4]])
         self.assertIn('param1="cleanup" terminal=false', lines[start + 4])
