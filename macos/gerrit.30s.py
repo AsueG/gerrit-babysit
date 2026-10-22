@@ -137,8 +137,8 @@ def notify(title, body):
     osascript("on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run", title, body)
 
 
-def snapshot_row(number):
-    changes = read_json(STATUS).get("changes", [])
+def snapshot_row(number, status=None):
+    changes = (read_json(STATUS) if status is None else status).get("changes", [])
     return next((c for c in changes if str(c["number"]) == number), {})
 
 
@@ -178,10 +178,20 @@ def fresh_snapshot():
     return None if status.get("last_error") or snapshot.is_stopped(status, time.time()) else status
 
 
+def fresh_row(number):
+    status = fresh_snapshot()
+    return snapshot_row(number, status) if status else {}
+
+
+def acted_row(number, patch_set):
+    """The row behind a public action on `patch_set`: {} when the snapshot is stale or shows another patch set."""
+    row = fresh_row(number)
+    return row if str(row.get("patch_set")) == patch_set else {}
+
+
 def submit(number, patch_set):
-    row = snapshot_row(number)
-    if (not fresh_snapshot() or row.get("gate") is not None or str(row.get("patch_set")) != patch_set
-            or snapshot.state(row) != "ready"):
+    row = acted_row(number, patch_set)
+    if not row or row.get("gate") is not None or snapshot.state(row) != "ready":
         return
     subject = row.get("subject", "")
     if confirmed(t("bar_submit_confirm", n=number, ps=patch_set), subject, t("bar_submit_button")):
@@ -189,8 +199,8 @@ def submit(number, patch_set):
 
 
 def vote_gate(number, patch_set):
-    row = snapshot_row(number)
-    if row.get("gate") != "vote" or str(row.get("patch_set")) != patch_set or not fresh_snapshot():
+    row = acted_row(number, patch_set)
+    if row.get("gate") != "vote":
         return
     subject = row.get("subject", "")
     if confirmed(t("bar_gate_confirm", label=GATE_LABEL, n=number, ps=patch_set), subject, t("bar_gate_button")):
@@ -200,8 +210,8 @@ def vote_gate(number, patch_set):
 
 def add_hashtag(number, kind):
     tag = HASHTAGS.get(kind)
-    row = snapshot_row(number)
-    if not tag or not row or tag in row.get("hashtags", []) or not fresh_snapshot():
+    row = fresh_row(number)
+    if not tag or not row or tag in row.get("hashtags", []):
         return
     subject = row.get("subject", "")
     if not confirmed(t(f"bar_{kind}_confirm", tag=tag, n=number), subject, t("bar_hashtag_button")):
@@ -231,9 +241,9 @@ def recheck_detail(change):
 
 def recheck(number, patch_set):
     comment = CONFIG["recheck_comment"]
-    row = snapshot_row(number)
+    row = acted_row(number, patch_set)
     # The comment goes through Gerrit's SSH command line: only a plain recheck variant.
-    if not ci.RECHECK.fullmatch(comment) or str(row.get("patch_set")) != patch_set or not fresh_snapshot():
+    if not ci.RECHECK.fullmatch(comment) or not row:
         return
     subject = row.get("subject", "")
     if confirmed(t("bar_recheck_confirm", comment=comment, n=number, ps=patch_set), subject, t("bar_recheck_button")):
@@ -250,9 +260,9 @@ def push_rebase(number, patch_set):
     it was made from and the private ref still holds it."""
     # Imported on use: the menu redraws every 30 s and only this action needs git.
     import repo
-    row = snapshot_row(number)
+    row = acted_row(number, patch_set)
     prepared = row.get("rebase_ready") or {}
-    if str(row.get("patch_set")) != patch_set or str(prepared.get("patch_set")) != patch_set or not fresh_snapshot():
+    if str(prepared.get("patch_set")) != patch_set:
         return
     sha = repo.git("rev-parse", "--verify", "--quiet", f"{repo.REBASED}/{number}").strip()
     if not sha or sha != prepared.get("sha"):

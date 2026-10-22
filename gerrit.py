@@ -177,7 +177,7 @@ def ssh_row(change, options):
         row["allReviewers"] = list({a.get("_account_id"): account(a) for a in people}.values())
     if "--submit-records" in options:
         row["submitRecords"] = [{"status": r.get("status"),
-                                 "labels": [{"label": l["label"], "status": l.get("status")} for l in r.get("labels", [])]}
+                                 "labels": [{"label": lb["label"], "status": lb.get("status")} for lb in r.get("labels", [])]}
                                 for r in change.get("submit_records", [])]
     return row
 

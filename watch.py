@@ -396,6 +396,10 @@ def session_cap_wait(detail, wait):
     return max(wait, SESSION_CAP_BACKOFF_S) if gerrit.SESSION_CAP in detail else wait
 
 
+def log(line):
+    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}", file=sys.stderr, flush=True)
+
+
 def daemon(interval):
     """Status snapshot + notifications with no Claude session; clicking a notification opens one."""
     first_run = not DAEMON_STATE.exists()
@@ -407,8 +411,7 @@ def daemon(interval):
         nonlocal last_error
         detail = gerrit.error_detail(error) if expected else f"{type(error).__name__}: {error}"
         if detail != last_error:
-            log = f"poll failed: {detail}" if expected else traceback.format_exc()
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {log}", file=sys.stderr, flush=True)
+            log(f"poll failed: {detail}" if expected else traceback.format_exc())
             last_error = detail
         write_status(error=detail)
         swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
@@ -436,14 +439,13 @@ def daemon(interval):
             daemon_round(result, first_run)
             first_run = False
             if last_error is not None:
-                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} recovered", file=sys.stderr, flush=True)
+                log("recovered")
                 last_error = None
         except Exception as error:  # noqa: BLE001
             failed(error, expected=False)
         if superseded():
             # launchd's KeepAlive starts it again through the launcher, on the new version.
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} a newer install replaced {SKILL_DIR}: restarting",
-                  file=sys.stderr, flush=True)
+            log(f"a newer install replaced {SKILL_DIR}: restarting")
             return 0
         pause()
 
