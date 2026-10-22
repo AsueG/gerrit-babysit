@@ -1,4 +1,4 @@
-"""Run from this directory: python3 -m unittest"""
+"""Run from the skill directory: python3 -m unittest"""
 import concurrent.futures
 import io
 import json

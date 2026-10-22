@@ -126,4 +126,4 @@ not apply.
 cd <skill> && python3 -m unittest
 ```
 
-The suite uses its own `fixtures/config.json`, so it does not depend on the user's settings.
+The suite uses its own `tests/fixtures/config.json`, so it does not depend on the user's settings.

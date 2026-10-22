@@ -397,7 +397,7 @@ beyond the user's ask; while Gerrit is unreachable it only drops the temp files.
 ## Watcher tests
 
 After any change to a `.py` file of the skill (including `macos/gerrit.30s.py`): `cd <skill> && python3 -m unittest`
-(stdlib only, anonymized Gerrit/zuul fixtures in `fixtures/`), then restart the LaunchAgent if installed.
+(stdlib only, anonymized Gerrit/zuul fixtures in `tests/fixtures/`), then restart the LaunchAgent if installed.
 
 Our own pushes and replies are filtered by the watcher (author = me), so there is no loop; the zuul
 verdict that follows a push wakes the loop only if it fails.

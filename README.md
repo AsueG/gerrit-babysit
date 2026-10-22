@@ -105,7 +105,7 @@ clone free of local edits, so updating is just `git pull`.
 | `macos/launch.py` | Stable entry point for launchd, SwiftBar and the applet: runs the latest installed version |
 | `macos/gerrit.30s.py` | SwiftBar menu and its guarded actions (submit, recheck, rebase push, snooze, cleanup…) |
 | `macos/open-babysit.sh` | Focuses the running babysit session, or opens one |
-| `fakes.py`, `fixtures/` | Test builders and sample Gerrit and zuul payloads |
+| `tests/` | Unit tests, their builders (`fakes.py`) and sample Gerrit and zuul payloads (`fixtures/`) |
 | `.claude-plugin/`, `hooks/` | Claude Code plugin manifest, marketplace entry and Stop hook |
 
 State lives in `~/.cache/gerrit-babysit/`. Run the tests with `python3 -m unittest`.

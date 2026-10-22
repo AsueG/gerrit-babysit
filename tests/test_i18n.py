@@ -1,4 +1,4 @@
-"""Run from this directory: python3 -m unittest"""
+"""Run from the skill directory: python3 -m unittest"""
 import os
 import pathlib
 import tempfile

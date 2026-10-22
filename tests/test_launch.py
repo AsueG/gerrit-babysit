@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-_spec = importlib.util.spec_from_file_location("launch", pathlib.Path(__file__).parent / "macos" / "launch.py")
+_spec = importlib.util.spec_from_file_location("launch", pathlib.Path(__file__).parents[1] / "macos" / "launch.py")
 assert _spec and _spec.loader
 launch = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(launch)
