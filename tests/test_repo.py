@@ -281,6 +281,16 @@ class InterdiffTest(GitRepoTest):
         self.assertFalse(found["rebased"])
         self.assertIn("B.kt", found["stat"])
 
+    def test_it_fetches_from_the_fetch_source(self):
+        # Given: HTTPS instead of origin's SSH, which counts against Gerrit's session cap.
+        self.publish(1, {"A.kt": "one\n"})
+        self.publish(2, {"A.kt": "two\n"})
+        with mock.patch.object(repo, "fetch_source", return_value=([], str(self.repo / "missing"))):
+            # When
+            found = repo.interdiff(self.event())
+        # Then
+        self.assertIn("error", found)
+
     def test_a_git_timeout_is_reported_and_the_refs_are_removed(self):
         # Given
         self.publish(1, {"A.kt": "one\n"})

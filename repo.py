@@ -49,14 +49,24 @@ def fetch_source():
     return options, f"https://{gerrit.HOST}/a{origin.path}"
 
 
+def fetch_command():
+    """(git arguments, environment) of a fetch from fetch_source()."""
+    options, remote = fetch_source()
+    # Untranslated stderr: fetch_refs matches the vanished-ref message. No prompt: the daemon has no terminal.
+    env = {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
+    return [*options, "fetch", "--quiet", "--no-write-fetch-head", remote], env
+
+
+def fetch(*refspecs):
+    command, env = fetch_command()
+    return git_run(*command, *refspecs, timeout=180, env=env)
+
+
 def fetch_refs(refspecs):
     """One fetch for all; when a ref vanished, one per refspec, so it does not blind the whole poll.
 
     Any other failure (network, auth) would only repeat itself once per refspec, each paying the same timeout."""
-    options, remote = fetch_source()
-    command = [*options, "fetch", "--quiet", "--no-write-fetch-head", remote]
-    # Untranslated stderr: the vanished-ref message is matched below. No prompt: the daemon has no terminal.
-    env = {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
+    command, env = fetch_command()
     result = git_run(*command, *refspecs, timeout=180, env=env)
     if result.returncode == 0:
         return
@@ -242,10 +252,9 @@ def interdiff(event):
     refs = {ref: f"{FETCH_NAMESPACE}/review/{event['change']}/{ref.rsplit('/', 1)[1]}"
             for ref in (event["since_ref"], event["current_ref"])}
     try:
-        fetch = git_run("fetch", "--quiet", "--no-write-fetch-head", "origin",
-                        *(f"+{ref}:{local}" for ref, local in refs.items()), timeout=180)
-        if fetch.returncode:
-            return {"error": gerrit.error_detail(fetch)}
+        fetched = fetch(*(f"+{ref}:{local}" for ref, local in refs.items()))
+        if fetched.returncode:
+            return {"error": gerrit.error_detail(fetched)}
         old, new = refs[event["since_ref"]], refs[event["current_ref"]]
         files = sorted({f for sha in (old, new) for f in git("diff", "--name-only", f"{sha}^", sha).splitlines()})
         return {"rebased": git("rev-parse", f"{old}^") != git("rev-parse", f"{new}^"),
@@ -275,8 +284,7 @@ def rebase_target(event):
         return git("rev-parse", "--verify", "--quiet", target).strip() or None
     sha = event["new_parent_sha"]
     if git_run("cat-file", "-e", f"{sha}^{{commit}}").returncode and event.get("parent_ref"):
-        git_run("fetch", "--quiet", "--no-write-fetch-head", "origin",
-                f"+{event['parent_ref']}:{FETCH_NAMESPACE}/changes/{event['parent']}", timeout=180)
+        fetch(f"+{event['parent_ref']}:{FETCH_NAMESPACE}/changes/{event['parent']}")
     return sha if git_run("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0 else None
 
 
