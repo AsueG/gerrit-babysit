@@ -718,6 +718,69 @@ class FlakyMemoryTest(unittest.TestCase):
                          (row["ci_failed_jobs"], row["flaky"]["unit"]["month"], row["rechecks"]))
 
 
+class AutoSubmitAllTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tagged = pathlib.Path(tmp.name) / "tagged.json"
+        for patcher in (mock.patch.object(watch, "AUTO_SUBMIT_TAGGED", self.tagged),
+                        mock.patch.dict(watch.CONFIG, auto_submit_all=True, auto_submit_hashtag="auto-submit"),
+                        mock.patch.object(watch, "log")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_tagging(self, *changes, fail=None):
+        with mock.patch.object(gerrit, "rest_post", side_effect=fail) as post:
+            watch.tag_auto_submit({"changes": list(changes)})
+        return [c.args[0] for c in post.call_args_list]
+
+    def test_ready_changes_get_the_hashtag_but_not_wip_or_already_tagged_ones(self):
+        # When
+        posted = self.run_tagging(change(1), change(2, wip=True), change(3, hashtags=["auto-submit"]))
+        # Then
+        self.assertEqual(["/changes/1/hashtags"], posted)
+        self.assertEqual({"1": True, "3": True}, json.loads(self.tagged.read_text()))
+
+    def test_a_hashtag_removed_by_hand_is_not_added_again(self):
+        # Given
+        self.run_tagging(change(1))
+        # When
+        posted = self.run_tagging(change(1))
+        # Then
+        self.assertEqual([], posted)
+
+    def test_a_change_out_of_wip_gets_it(self):
+        # Given
+        self.run_tagging(change(1, wip=True))
+        # When
+        posted = self.run_tagging(change(1))
+        # Then
+        self.assertEqual(["/changes/1/hashtags"], posted)
+
+    def test_a_failed_post_is_retried_on_the_next_round(self):
+        # Given
+        self.run_tagging(change(1), fail=OSError("down"))
+        # When
+        posted = self.run_tagging(change(1))
+        # Then
+        self.assertEqual(["/changes/1/hashtags"], posted)
+
+    def test_merged_changes_leave_the_memory(self):
+        # Given
+        self.run_tagging(change(1), change(2))
+        # When
+        self.run_tagging(change(2))
+        # Then
+        self.assertEqual({"2": True}, json.loads(self.tagged.read_text()))
+
+    def test_off_by_default(self):
+        # When
+        with mock.patch.dict(watch.CONFIG, auto_submit_all=False):
+            posted = self.run_tagging(change(1))
+        # Then
+        self.assertEqual([], posted)
+
+
 class PreparedRebasesTest(unittest.TestCase):
     def test_candidates_are_what_a_plain_rebase_unblocks(self):
         # Given

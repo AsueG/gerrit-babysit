@@ -47,6 +47,7 @@ DEFAULTS = {
     "recheck_comment": "recheck",
     "gate_label": "Workflow",
     "auto_submit_hashtag": None,
+    "auto_submit_all": False,
     "claude_review_hashtag": None,
 }
 

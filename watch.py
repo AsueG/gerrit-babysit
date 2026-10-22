@@ -21,7 +21,7 @@ import procs
 import repo
 import snooze
 from config import CACHE, INBOX, SESSION, SKILL_DIR, STALE_AFTER_S, STATUS, SWIFTBAR_PLUGIN, atomic_write, read_json
-from config import DAEMON_POLL, VERSION, launched_skill_dir
+from config import CONFIG, DAEMON_POLL, VERSION, launched_skill_dir
 from i18n import t
 from poll import fetch_drafts, poll, with_int_keys
 
@@ -29,6 +29,7 @@ STATE = CACHE / "seen.json"
 DAEMON_STATE = CACHE / "daemon-seen.json"
 FLAKY = CACHE / "flaky.json"
 DIAGNOSES = CACHE / "diagnoses.json"
+AUTO_SUBMIT_TAGGED = CACHE / "auto-submit-tagged.json"
 EXCERPT_CHARS = 300
 FLAKY_RETENTION_S = 90 * 86400
 # Longer than the daemon's interval, so the session sees at least one newer poll before reporting.
@@ -467,6 +468,31 @@ def daemon_round(result, first_run):
     marked = () if quiet and not first_run else current.keys()
     save_seen(remember(seen, marked, result, current, now), DAEMON_STATE)
     record_flaky(result, now)
+    tag_auto_submit(result)
+
+
+def tag_auto_submit(result):
+    """Each ready change of mine gets the auto-submit hashtag once: removing it by hand keeps it off."""
+    tag = CONFIG["auto_submit_hashtag"]
+    if not (CONFIG["auto_submit_all"] and tag):
+        return
+    tagged = read_json(AUTO_SUBMIT_TAGGED)
+    open_numbers = {str(c["number"]) for c in result["changes"]}
+    kept = {n: True for n in tagged if n in open_numbers}
+    for change in result["changes"]:
+        number = str(change["number"])
+        if change.get("wip") or number in kept:
+            continue
+        if tag not in change.get("hashtags", []):
+            try:
+                gerrit.rest_post(f"/changes/{number}/hashtags", {"add": [tag]})
+            except (OSError, ValueError, KeyError) as error:
+                log(f"could not add {tag} to {number}: {gerrit.error_detail(error)}")
+                continue
+            log(f"added {tag} to {number}")
+        kept[number] = True
+    if kept != tagged:
+        atomic_write(AUTO_SUBMIT_TAGGED, dict(sorted(kept.items())))
 
 
 def session_poll():

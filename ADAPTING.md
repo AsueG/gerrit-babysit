@@ -55,6 +55,7 @@ Missing keys take the defaults of `config.py`.
 | `recheck_comment` | `"recheck"` | Comment the SwiftBar menu posts to rerun CI on a known flake (`recheck` or `recheck-<pipeline>`) |
 | `gate_label` | `"Workflow"` | Label whose +1 has zuul merge a change on a gated project (no Submit there); the menu offers that vote instead. `null` = no gated project |
 | `auto_submit_hashtag` | `null` | Hashtag that has Gerrit merge a change once every requirement is met (e.g. `"auto-submit"`); the menu offers to add it |
+| `auto_submit_all` | `false` | The daemon adds `auto_submit_hashtag` to every non-WIP change of mine, once per change (removing it by hand keeps it off) |
 | `claude_review_hashtag` | `null` | Hashtag that triggers an automatic Claude review (e.g. `"claude-code-review"`); the menu offers to add it |
 | `protected_branches` | `["main", "master"]` | Long-lived branches never offered for cleanup |
 | `review_dashboard_url` | `https://<host>/dashboard/self` | Link at the bottom of the SwiftBar menu |
