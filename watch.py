@@ -289,7 +289,14 @@ def write_status(result=None, error=None, listing=None):
     atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None,
                           "threads_error": result.get("threads_error"), "changes": rows,
                           "reviews": events.review_rows(result), "base_health": result.get("base_health", {}),
-                          "cleanup": [{k: v for k, v in event.items() if k != "kind"} for _, event in cleanup]})
+                          "cleanup": [{"key": key, **event} for key, event in cleanup]})
+
+
+def snapshot_cleanup():
+    """{key: event} of the cleanup check the last write_status() made. Entries without a key come from a daemon older
+    than this session, still running until its restart."""
+    return {entry["key"]: {k: v for k, v in entry.items() if k != "key"}
+            for entry in read_json(STATUS).get("cleanup", []) if "key" in entry}
 
 
 def snoozed_changes(result, now):
@@ -466,16 +473,13 @@ def session_poll():
     own_poll = result is None
     if own_poll:
         result = poll()
-    # One listing for the snapshot and the cleanup check.
-    listing = repo.worktree_listing()
     # A slow-but-alive daemon may have finished and published while our own poll ran; its write wins.
     if own_poll and not daemon_alive():
-        write_status(result, listing=listing)
+        write_status(result, listing=repo.worktree_listing())
         record_flaky(result)
-    cleanup = dict(bonus(repo.cleanup_candidates, frozenset(c["id"] for c in result["changes"]), listing,
-                         what="cleanup check"))
+    # Whoever wrote the snapshot ran the cleanup check: not paid a second time.
     now = time.time()
-    return result, now, snoozed_changes(result, now), cleanup
+    return result, now, snoozed_changes(result, now), snapshot_cleanup()
 
 
 def pending_report(result, now, snoozed, current):

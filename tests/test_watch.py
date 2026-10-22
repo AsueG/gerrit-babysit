@@ -392,17 +392,25 @@ class SessionPollTest(unittest.TestCase):
         write_status.assert_not_called()
         record_flaky.assert_not_called()
 
-    def test_a_failed_cleanup_check_does_not_fail_the_poll(self):
+    def test_the_daemon_cleanup_check_is_read_from_the_snapshot(self):
         # Given
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        status = pathlib.Path(tmp.name) / "status.json"
+        candidate = {"kind": "cleanup_candidate", "branch": "old", "worktree": None, "change": 7, "subject": "fix: x",
+                     "status": "merged"}
+        status.write_text(json.dumps({"cleanup": [{"key": "cleanup:old:sha", **candidate},
+                                                  {k: v for k, v in candidate.items() if k != "kind"}]}))
         result = poll_result([change()])
-        with mock.patch.object(watch, "daemon_poll", return_value=result), \
-                mock.patch.object(repo, "worktree_listing", return_value=""), \
-                mock.patch.object(repo, "cleanup_candidates", side_effect=OSError("ssh timed out")), \
-                mock.patch("sys.stderr", io.StringIO()):
+        with mock.patch.object(watch, "STATUS", status), mock.patch.object(watch, "daemon_poll", return_value=result), \
+                mock.patch.object(repo, "worktree_listing") as listing, \
+                mock.patch.object(repo, "cleanup_candidates") as check:
             # When
             found, _, _, cleanup = watch.session_poll()
         # Then
-        self.assertEqual((result, {}), (found, cleanup))
+        self.assertEqual((result, {"cleanup:old:sha": candidate}), (found, cleanup))
+        listing.assert_not_called()
+        check.assert_not_called()
 
     def test_a_genuinely_dead_daemon_still_falls_back(self):
         # Given
@@ -996,8 +1004,10 @@ class BaseHealthTest(unittest.TestCase):
                 mock.patch.object(repo, "cleanup_candidates", return_value=[("cleanup:old:sha", candidate)]) as found:
             watch.write_status(poll_result([change(1)]), listing="listing")
         # Then
-        self.assertEqual([{k: v for k, v in candidate.items() if k != "kind"}], json.loads(status.read_text())["cleanup"])
+        self.assertEqual([{"key": "cleanup:old:sha", **candidate}], json.loads(status.read_text())["cleanup"])
         self.assertEqual("listing", found.call_args.args[1])
+        with mock.patch.object(watch, "STATUS", status):
+            self.assertEqual({"cleanup:old:sha": candidate}, watch.snapshot_cleanup())
 
 class WithIntKeysTest(unittest.TestCase):
     def test_attention_sets_come_back_with_int_keys_and_none_stays_none(self):
