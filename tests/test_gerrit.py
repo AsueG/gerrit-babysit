@@ -168,6 +168,41 @@ class ErrorDetailTest(unittest.TestCase):
         self.assertNotIn("Disconnected", detail)
 
 
+class ReviewTest(unittest.TestCase):
+    def test_votes_and_comments_go_over_rest_on_the_given_patch_set(self):
+        # When
+        with mock.patch.object(gerrit, "rest_auth", return_value="token"), \
+                mock.patch.object(gerrit, "rest_post") as post, mock.patch.object(gerrit, "ssh") as ssh:
+            gerrit.review(7, "2", labels={"Workflow": 1})
+            gerrit.review(7, "2", message="recheck")
+        # Then
+        ssh.assert_not_called()
+        self.assertEqual([mock.call("/changes/7/revisions/2/review", {"labels": {"Workflow": 1}}),
+                          mock.call("/changes/7/revisions/2/review", {"message": "recheck"})], post.call_args_list)
+
+    def test_a_refused_http_password_falls_back_on_ssh(self):
+        # Given
+        refused = gerrit.urllib.error.HTTPError("url", 401, "Unauthorized", {}, io.BytesIO())
+        # When
+        with mock.patch.object(gerrit, "rest_auth", return_value="token"), \
+                mock.patch.object(gerrit, "rest_post", side_effect=refused), mock.patch.object(gerrit, "ssh") as ssh:
+            gerrit.review(7, "2", labels={"Workflow": 1})
+        # Then
+        ssh.assert_called_once_with("gerrit", "review", "--label", "Workflow=+1", "7,2", timeout=120, check=True)
+
+    def test_any_other_refusal_is_raised_without_a_second_try(self):
+        # Given
+        refused = gerrit.urllib.error.HTTPError("url", 409, "Conflict", {}, io.BytesIO(b"change is closed"))
+        self.addCleanup(refused.close)
+        # When / Then
+        with mock.patch.object(gerrit, "rest_auth", return_value="token"), \
+                mock.patch.object(gerrit, "rest_post", side_effect=refused), mock.patch.object(gerrit, "ssh") as ssh, \
+                self.assertRaises(gerrit.urllib.error.HTTPError) as raised:
+            gerrit.review(7, "2", submit=True)
+        ssh.assert_not_called()
+        self.assertEqual("HTTP Error 409: Conflict: change is closed", gerrit.error_detail(raised.exception))
+
+
 class RestGetTest(unittest.TestCase):
     def setUp(self):
         gerrit._rest_auth = None

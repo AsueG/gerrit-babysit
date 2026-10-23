@@ -35,8 +35,8 @@ def missing_objects(shas):
 
 
 def fetch_source():
-    """(git options, remote) to fetch from: Gerrit over HTTPS when an HTTP password is set, since an SSH fetch a network
-    drop cuts lingers on Gerrit against the per-user session cap; else origin as configured."""
+    """(git options, remote) to fetch from and push to: Gerrit over HTTPS when an HTTP password is set, since an SSH
+    session a network drop cuts lingers on Gerrit against the per-user session cap; else origin as configured."""
     try:
         gerrit.http_credentials()
     except (OSError, ValueError, KeyError):
@@ -49,12 +49,21 @@ def fetch_source():
     return options, f"https://{gerrit.HOST}/a{origin.path}"
 
 
-def fetch_command():
-    """(git arguments, environment) of a fetch from fetch_source()."""
+def remote_command(action, *args):
+    """(git arguments, environment) of a fetch or a push through fetch_source()."""
     options, remote = fetch_source()
     # Untranslated stderr: fetch_refs matches the vanished-ref message. No prompt: the daemon has no terminal.
     env = {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
-    return [*options, "fetch", "--quiet", "--no-write-fetch-head", remote], env
+    return [*options, action, *args, remote], env
+
+
+def fetch_command():
+    return remote_command("fetch", "--quiet", "--no-write-fetch-head")
+
+
+def push_for_review(sha, branch):
+    command, env = remote_command("push")
+    return git_run(*command, f"{sha}:refs/for/{branch}", timeout=180, env=env)
 
 
 def fetch(*refspecs):

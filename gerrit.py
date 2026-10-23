@@ -199,8 +199,41 @@ def add_depends_on(rows):
             row["dependsOn"] = [parent]
 
 
+def review(number, patch_set, message=None, labels=None, submit=False):
+    """Comments, votes or submits `patch_set` only: Gerrit refuses once a newer one is pushed. Raises on a refusal.
+
+    Over REST whenever an HTTP password is set, like query(): no SSH session left to linger against the cap."""
+    try:
+        rest_auth()
+    except (OSError, ValueError, KeyError):
+        return ssh_review(number, patch_set, message, labels, submit)
+    revision = f"/changes/{number}/revisions/{patch_set}"
+    try:
+        if message or labels:
+            rest_post(f"{revision}/review", {k: v for k, v in (("message", message), ("labels", labels)) if v})
+        if submit:
+            rest_post(f"{revision}/submit", {})
+    except urllib.error.HTTPError as error:
+        if error.code not in (401, 403):
+            raise
+        error.close()
+        ssh_review(number, patch_set, message, labels, submit)
+
+
+def ssh_review(number, patch_set, message, labels, submit):
+    options = [*(["--message", message] if message else []),
+               *(arg for label, value in (labels or {}).items() for arg in ("--label", f"{label}={value:+d}")),
+               *(["--submit"] if submit else [])]
+    ssh("gerrit", "review", *options, f"{number},{patch_set}", timeout=120, check=True)
+
+
 def error_detail(error):
-    """ssh's own stderr ('Could not resolve hostname…') says far more than 'exit status 255'."""
+    """ssh's own stderr ('Could not resolve hostname…') says far more than 'exit status 255', Gerrit's body more than
+    'HTTP Error 409: Conflict'."""
+    if isinstance(error, urllib.error.HTTPError) and error.fp:
+        body = error.read().decode(errors="replace").strip()
+        if body:
+            return f"{error}: {body.splitlines()[-1]}"
     stderr = getattr(error, "stderr", None)
     if isinstance(stderr, bytes):
         stderr = stderr.decode(errors="replace")

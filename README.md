@@ -83,9 +83,10 @@ clone free of local edits, so updating is just `git pull`.
 | File | Role |
 |---|---|
 | `SKILL.md` | What Claude does with each event |
-| `watch.py` | Turns each poll into events, prints them as JSON and exits (session mode) or notifies (`--daemon`) |
+| `watch.py` | Turns each poll into events, prints them as JSON and exits (session mode); `--daemon` runs `daemon.py` |
+| `daemon.py` | The background loop: status snapshot, macOS notifications, the auto-submit hashtag |
 | `poll.py` | One poll: Gerrit queries, threads, submit requirements, parents, base health and the local conflict check, side by side |
-| `gerrit.py` | Change queries over REST, shaped like `gerrit query` rows (SSH without an HTTP password), and SSH commands |
+| `gerrit.py` | Change queries and reviews (votes, rechecks, submits) over REST, shaped like `gerrit query` rows (SSH without an HTTP password) |
 | `repo.py` | Local git work: fetches, conflict checks, prepared rebases, cleanup of merged or abandoned branches |
 | `events.py` | Pure logic: poll rows in, keyed events and notification texts out |
 | `ci.py` | Zuul failure diagnosis: failing jobs, gradle/lint errors, category, flakiness hints |
@@ -94,7 +95,8 @@ clone free of local edits, so updating is just `git pull`.
 | `config.py` | Settings and state-file helpers |
 | `i18n.py` | FR/EN strings |
 | `memo.py` | Memo keeping only what the latest poll asked for |
-| `snapshot.py` | One classification of the snapshot rows for the SwiftBar menu and the status line |
+| `snapshot.py` | One classification of the snapshot rows, and their menu labels, for the SwiftBar menu and the status line |
+| `menu_actions.py` | What a click in the SwiftBar menu does: confirm, then submit, recheck, push a rebase, snooze, pause the daemon… |
 | `snooze.py` | Snoozed changes, and the CLI to snooze or wake one |
 | `doctor.py` | Checks SSH, the HTTP password, zuul, the daemon and the state files; `--prune` drops what closed changes left behind |
 | `procs.py` | Process-tree lookup: which Claude session a watcher or hook runs under |
