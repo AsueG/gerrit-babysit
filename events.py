@@ -8,7 +8,7 @@ import urllib.parse
 import ci
 from config import CI_STUCK_S, CONFIG, dashboard_url
 from i18n import t
-from gerrit import BOT_USERS, CI_USER, HOST, NOT_ME, USER
+from gerrit import BOT_USERS, CI_USER, HOST, NOT_ME, USER, epoch
 
 CI_LABELS = tuple(CONFIG["ci_labels"])
 GATE_LABEL = CONFIG["gate_label"]
@@ -227,13 +227,8 @@ def attention_entries(attention_set):
     """REST's `attention_set` / `removed_from_attention_set` ({account id: AttentionSetInfo}) as a list."""
     return [{"username": info["account"].get("username", ""),
              "name": info["account"].get("name") or info["account"].get("username", ""),
-             "since": gerrit_time(info["last_update"]), "reason": info.get("reason", "")}
+             "since": epoch(info["last_update"]), "reason": info.get("reason", "")}
             for info in (attention_set or {}).values()]
-
-
-def gerrit_time(text):
-    """REST timestamps are UTC, "2026-09-29 10:00:00.000000000"."""
-    return datetime.datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
 def review_wait(change, patch_set, attention, now):
@@ -370,10 +365,10 @@ def state_events(change, result, day, now):
             # The votes are there but Gerrit would refuse the submit: once per patch set and set of blockers.
             yield f'{number}:blocked:{ps}:{"+".join(blockers)}', {
                 **base, "kind": "submit_blocked", "requirements": blockers}
-        elif gate_state(change) != "voted":
+        elif (gate := gate_state(change)) != "voted":
             # One key per working day: a CL left unsubmitted comes back the next morning.
             yield f'{number}:ready:{ps}:{day}', {**base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set),
-                                                  "gate": gate_state(change)}
+                                                  "gate": gate}
 
     attention_sets = result.get("attention_sets")
     wait = None if attention_sets is None else attention_sets.get(number, {"holders": [], "removed": []})

@@ -129,9 +129,12 @@ def dashboard_url():
 
 
 def gerrit_user():
+    configured = CONFIG["gerrit_user"] or os.environ.get("GERRIT_USER")
+    if configured:
+        return configured
     try:
         found = subprocess.run(["git", "-C", str(REPO), "config", "--get", "gitreview.username"],
                                 capture_output=True, text=True, timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         found = ""
-    return CONFIG["gerrit_user"] or os.environ.get("GERRIT_USER") or found or getpass.getuser()
+    return found or getpass.getuser()
