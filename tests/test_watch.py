@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import concurrent.futures
 import json
 import pathlib
@@ -69,13 +70,15 @@ class OpenThreadsTest(unittest.TestCase):
     def test_an_expired_rest_token_does_not_fail_the_poll(self):
         # Given
         ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
-        with mock.patch.object(poll, "fetch_changes", return_value=[change(current=ps)]), \
-                mock.patch.object(poll, "parent_statuses", return_value={}), \
-                mock.patch.object(repo, "merge_conflicts", return_value={}), \
-                mock.patch.object(repo, "stale_parents", return_value={}), \
-                mock.patch.object(poll, "fetch_reviews", return_value=[]), \
-                mock.patch.object(poll, "fetch_attention", return_value=[]), \
-                mock.patch.object(gerrit, "rest_get", side_effect=OSError("HTTP Error 401: Unauthorized")):
+        with (
+            mock.patch.object(poll, "fetch_changes", return_value=[change(current=ps)]),
+            mock.patch.object(poll, "parent_statuses", return_value={}),
+            mock.patch.object(repo, "merge_conflicts", return_value={}),
+            mock.patch.object(repo, "stale_parents", return_value={}),
+            mock.patch.object(poll, "fetch_reviews", return_value=[]),
+            mock.patch.object(poll, "fetch_attention", return_value=[]),
+            mock.patch.object(gerrit, "rest_get", side_effect=OSError("HTTP Error 401: Unauthorized")),
+        ):
             # When
             result = poll.poll()
         # Then
@@ -111,8 +114,7 @@ class RememberTest(unittest.TestCase):
         # When
         kept = watch.remember(seen, ["1:20:reviewer"], result, current, NOW)
         # Then
-        self.assertEqual({"1:10:reviewer": NOW, "1:20:reviewer": NOW, "2:10:reviewer": NOW - 3600,
-                          "cleanup:live:sha": NOW}, kept)
+        self.assertEqual({"1:10:reviewer": NOW, "1:20:reviewer": NOW, "2:10:reviewer": NOW - 3600, "cleanup:live:sha": NOW}, kept)
 
     def test_a_restored_change_does_not_replay(self):
         # Given
@@ -133,8 +135,7 @@ class EnrichTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         # When
-        with mock.patch.object(ci, "zuul_queue", return_value=[]), \
-                mock.patch.object(watch, "CACHE", pathlib.Path(tmp.name)):
+        with mock.patch.object(ci, "zuul_queue", return_value=[]), mock.patch.object(watch, "CACHE", pathlib.Path(tmp.name)):
             watch.enrich([stuck, requested])
         # Then
         self.assertEqual([], stuck["zuul_queue"])
@@ -142,36 +143,44 @@ class EnrichTest(unittest.TestCase):
 
     def test_a_job_red_on_several_changes_fetches_its_history_once(self):
         # Given
-        events = [{"kind": "message", "change": n, "branch": "main", "author_username": "zuul",
-                   "message": ZUUL["failed"]["message"]} for n in (1, 2)]
+        events = [
+            {"kind": "message", "change": n, "branch": "main", "author_username": "zuul", "message": ZUUL["failed"]["message"]}
+            for n in (1, 2)
+        ]
         build = {"log_url": "https://logs/x/", "end_time": "2026-09-29T12:00:00", "artifacts": []}
-        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}",
-                   "/builds?": "[]"}
+        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}", "/builds?": "[]"}
         get = lambda url: next(body for marker, body in answers.items() if marker in url)
         jobs = {j["job"] for j in ci.failed_jobs(ZUUL["failed"]["message"])}
         # When
-        with mock.patch.object(ci, "http_get", side_effect=get) as http, \
-                mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
-                mock.patch.object(ci, "PERIODIC_BUILD", None):
+        with (
+            mock.patch.object(ci, "http_get", side_effect=get) as http,
+            mock.patch.object(ci, "ZUUL_API", "https://zuul/api"),
+            mock.patch.object(ci, "PERIODIC_BUILD", None),
+        ):
             watch.enrich(events)
         # Then
         self.assertEqual(len(jobs), sum("/builds?" in c.args[0] for c in http.call_args_list))
 
     def test_failures_reuse_the_polled_base_health(self):
         # Given
-        failures = [{"kind": "message", "change": n, "branch": branch, "author_username": "zuul", "message": "m"}
-                    for n, branch in ((1, "main"), (2, "main"), (3, "release"))]
+        failures = [
+            {"kind": "message", "change": n, "branch": branch, "author_username": "zuul", "message": "m"}
+            for n, branch in ((1, "main"), (2, "main"), (3, "release"))
+        ]
         base = {"main": {"result": "FAILURE"}, "release": {"result": "SUCCESS"}}
         # When
-        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
-                mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
-                mock.patch.object(ci, "submit_diagnosis", side_effect=lambda _, event, *__: [done(event["change"])]), \
-                mock.patch.object(ci, "base_health") as base_health:
+        with (
+            mock.patch.object(ci, "ZUUL_API", "https://zuul/api"),
+            mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}),
+            mock.patch.object(ci, "submit_diagnosis", side_effect=lambda _, event, *__: [done(event["change"])]),
+            mock.patch.object(ci, "base_health") as base_health,
+        ):
             watch.enrich(failures, base)
         # Then
         base_health.assert_not_called()
-        self.assertEqual([([1], "FAILURE"), ([2], "FAILURE"), ([3], "SUCCESS")],
-                         [(f["ci_diagnosis"], f["base_build"]["result"]) for f in failures])
+        self.assertEqual(
+            [([1], "FAILURE"), ([2], "FAILURE"), ([3], "SUCCESS")], [(f["ci_diagnosis"], f["base_build"]["result"]) for f in failures]
+        )
 
     def test_only_ci_failures_and_new_patch_sets_get_extras(self):
         # Given
@@ -179,8 +188,10 @@ class EnrichTest(unittest.TestCase):
         human = {"kind": "message", "change": 1, "branch": "main", "author_username": "reviewer", "message": "m"}
         patch = {"kind": "review_new_patch_set", "change": 2, "since_ref": "a", "current_ref": "b"}
         # When
-        with mock.patch.object(ci, "submit_diagnosis", return_value=[done("d")]), \
-                mock.patch.object(repo, "interdiff", return_value={"stat": "s"}):
+        with (
+            mock.patch.object(ci, "submit_diagnosis", return_value=[done("d")]),
+            mock.patch.object(repo, "interdiff", return_value={"stat": "s"}),
+        ):
             watch.enrich([failure, human, patch], {"main": {"result": "SUCCESS"}})
         # Then
         self.assertEqual((["d"], {"result": "SUCCESS"}), (failure["ci_diagnosis"], failure["base_build"]))
@@ -209,20 +220,23 @@ class SettleTest(unittest.TestCase):
     def test_events_a_minute_apart_wake_the_session_once(self):
         # Given
         first = poll_result([change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10)])])
-        second = poll_result([change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10),
-                                               message("reviewer", "Patch Set 1: Code-Review-1", 20)])])
+        second = poll_result(
+            [change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10), message("reviewer", "Patch Set 1: Code-Review-1", 20)])]
+        )
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         out = []
-        with mock.patch.object(watch, "STATE", pathlib.Path(tmp.name) / "seen.json"), \
-                mock.patch.object(watch, "INBOX", pathlib.Path(tmp.name) / "inbox.json"), \
-                mock.patch.object(watch, "CACHE", pathlib.Path(tmp.name)), \
-                mock.patch.object(watch, "write_session_lock"), \
-                mock.patch.object(watch, "daemon_poll", side_effect=[first, second]), \
-                mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
-                mock.patch.object(watch.time, "sleep") as sleep, \
-                mock.patch("sys.argv", ["watch.py"]), \
-                mock.patch("builtins.print", side_effect=out.append):
+        with (
+            mock.patch.object(watch, "STATE", pathlib.Path(tmp.name) / "seen.json"),
+            mock.patch.object(watch, "INBOX", pathlib.Path(tmp.name) / "inbox.json"),
+            mock.patch.object(watch, "CACHE", pathlib.Path(tmp.name)),
+            mock.patch.object(watch, "write_session_lock"),
+            mock.patch.object(watch, "daemon_poll", side_effect=[first, second]),
+            mock.patch.object(repo, "cleanup_candidates", return_value=[]),
+            mock.patch.object(watch.time, "sleep") as sleep,
+            mock.patch("sys.argv", ["watch.py"]),
+            mock.patch("builtins.print", side_effect=out.append),
+        ):
             # When
             watch.main()
         # Then
@@ -236,14 +250,16 @@ class SettleTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         state = pathlib.Path(tmp.name) / "seen.json"
-        with mock.patch.object(watch, "STATE", state), \
-                mock.patch.object(watch, "INBOX", pathlib.Path(tmp.name) / "inbox.json"), \
-                mock.patch.object(watch, "write_session_lock"), \
-                mock.patch.object(watch, "daemon_poll", return_value=result), \
-                mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
-                mock.patch.object(watch, "enrich", side_effect=RuntimeError("boom")), \
-                mock.patch.object(watch.time, "sleep"), \
-                mock.patch("sys.argv", ["watch.py"]):
+        with (
+            mock.patch.object(watch, "STATE", state),
+            mock.patch.object(watch, "INBOX", pathlib.Path(tmp.name) / "inbox.json"),
+            mock.patch.object(watch, "write_session_lock"),
+            mock.patch.object(watch, "daemon_poll", return_value=result),
+            mock.patch.object(repo, "cleanup_candidates", return_value=[]),
+            mock.patch.object(watch, "enrich", side_effect=RuntimeError("boom")),
+            mock.patch.object(watch.time, "sleep"),
+            mock.patch("sys.argv", ["watch.py"]),
+        ):
             # When
             with self.assertRaises(RuntimeError):
                 watch.main()
@@ -263,20 +279,22 @@ class SessionRetryTest(unittest.TestCase):
 
     def run_main(self, argv, polls, unfinished=()):
         out = []
-        with mock.patch.object(watch, "STATE", self.cache / "seen.json"), \
-                mock.patch.object(watch, "STATUS", self.cache / "status.json"), \
-                mock.patch.object(watch.network, "checks", return_value=NETWORK), \
-                mock.patch.object(watch, "INBOX", self.cache / "inbox.json"), \
-                mock.patch.object(watch, "write_session_lock"), \
-                mock.patch.object(watch, "write_status"), \
-                mock.patch.object(watch, "daemon_poll", side_effect=polls), \
-                mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
-                mock.patch.object(watch, "unfinished_events", return_value=list(unfinished)), \
-                mock.patch.object(watch, "fetch_drafts", return_value={}), \
-                mock.patch.object(watch, "enrich", side_effect=lambda events, *_: events), \
-                mock.patch.object(watch.time, "sleep") as sleep, \
-                mock.patch("sys.argv", ["watch.py", *argv]), \
-                mock.patch("builtins.print", side_effect=out.append):
+        with (
+            mock.patch.object(watch, "STATE", self.cache / "seen.json"),
+            mock.patch.object(watch, "STATUS", self.cache / "status.json"),
+            mock.patch.object(watch.network, "checks", return_value=NETWORK),
+            mock.patch.object(watch, "INBOX", self.cache / "inbox.json"),
+            mock.patch.object(watch, "write_session_lock"),
+            mock.patch.object(watch, "write_status"),
+            mock.patch.object(watch, "daemon_poll", side_effect=polls),
+            mock.patch.object(repo, "cleanup_candidates", return_value=[]),
+            mock.patch.object(watch, "unfinished_events", return_value=list(unfinished)),
+            mock.patch.object(watch, "fetch_drafts", return_value={}),
+            mock.patch.object(watch, "enrich", side_effect=lambda events, *_: events),
+            mock.patch.object(watch.time, "sleep") as sleep,
+            mock.patch("sys.argv", ["watch.py", *argv]),
+            mock.patch("builtins.print", side_effect=out.append),
+        ):
             code = watch.main()
         return code, [json.loads(line) for line in out], [c.args[0] for c in sleep.call_args_list]
 
@@ -301,8 +319,10 @@ class SessionRetryTest(unittest.TestCase):
         _, (after,), _ = self.run_main(["--ack", first["id"]], [down] * 4 + [back] * 2)
         # Then
         self.assertEqual((0, 2), (code, len(sleeps)))
-        self.assertEqual({"kind": "unreachable", "detail": "Could not resolve hostname", "failures": 3, "since": 1000.0,
-                          "network": NETWORK}, first["events"][0])
+        self.assertEqual(
+            {"kind": "unreachable", "detail": "Could not resolve hostname", "failures": 3, "since": 1000.0, "network": NETWORK},
+            first["events"][0],
+        )
         self.assertEqual(["message"], [e["kind"] for e in after["events"]])
 
     def test_a_new_outage_is_reported_again(self):
@@ -322,6 +342,7 @@ class SessionRetryTest(unittest.TestCase):
         _, (out,), sleeps = self.run_main([], [poll_result([change(current=ps)], threads={1: []})])
         # Then
         self.assertEqual((["ready_to_submit"], []), ([e["kind"] for e in out["events"]], sleeps))
+
     def test_a_report_comes_back_until_it_is_acknowledged(self):
         # Given
         why = message("reviewer", "Patch Set 1:\n\nwhy?", 10)
@@ -378,13 +399,16 @@ class SessionPollTest(unittest.TestCase):
             return result
 
         heartbeat = pathlib.Path(tmp.name) / "daemon-poll.json"
-        with mock.patch.object(watch, "DAEMON_POLL", heartbeat), mock.patch.object(daemon, "DAEMON_POLL", heartbeat), \
-                mock.patch.object(watch, "daemon_poll", return_value=None), \
-                mock.patch.object(watch, "poll", side_effect=slow_poll), \
-                mock.patch.object(repo, "worktree_listing", return_value=[]), \
-                mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
-                mock.patch.object(watch, "write_status") as write_status, \
-                mock.patch.object(watch, "record_flaky") as record_flaky:
+        with (
+            mock.patch.object(watch, "DAEMON_POLL", heartbeat),
+            mock.patch.object(daemon, "DAEMON_POLL", heartbeat),
+            mock.patch.object(watch, "daemon_poll", return_value=None),
+            mock.patch.object(watch, "poll", side_effect=slow_poll),
+            mock.patch.object(repo, "worktree_listing", return_value=[]),
+            mock.patch.object(repo, "cleanup_candidates", return_value=[]),
+            mock.patch.object(watch, "write_status") as write_status,
+            mock.patch.object(watch, "record_flaky") as record_flaky,
+        ):
             # When
             watch.session_poll()
         # Then
@@ -396,14 +420,24 @@ class SessionPollTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         status = pathlib.Path(tmp.name) / "status.json"
-        candidate = {"kind": "cleanup_candidate", "branch": "old", "worktree": None, "change": 7, "subject": "fix: x",
-                     "status": "merged"}
-        status.write_text(json.dumps({"cleanup": [{"key": "cleanup:old:sha", **candidate},
-                                                  {k: v for k, v in candidate.items() if k != "kind"}]}))
+        candidate = {
+            "kind": "cleanup_candidate",
+            "branch": "old",
+            "worktree": None,
+            "change": 7,
+            "subject": "fix: x",
+            "status": "merged",
+        }
+        status.write_text(
+            json.dumps({"cleanup": [{"key": "cleanup:old:sha", **candidate}, {k: v for k, v in candidate.items() if k != "kind"}]})
+        )
         result = poll_result([change()])
-        with mock.patch.object(watch, "STATUS", status), mock.patch.object(watch, "daemon_poll", return_value=result), \
-                mock.patch.object(repo, "worktree_listing") as listing, \
-                mock.patch.object(repo, "cleanup_candidates") as check:
+        with (
+            mock.patch.object(watch, "STATUS", status),
+            mock.patch.object(watch, "daemon_poll", return_value=result),
+            mock.patch.object(repo, "worktree_listing") as listing,
+            mock.patch.object(repo, "cleanup_candidates") as check,
+        ):
             # When
             found, _, _, cleanup = watch.session_poll()
         # Then
@@ -416,13 +450,15 @@ class SessionPollTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         result = poll_result([change()])
-        with mock.patch.object(watch, "DAEMON_POLL", pathlib.Path(tmp.name) / "daemon-poll.json"), \
-                mock.patch.object(watch, "daemon_poll", return_value=None), \
-                mock.patch.object(watch, "poll", return_value=result), \
-                mock.patch.object(repo, "worktree_listing", return_value=[]), \
-                mock.patch.object(repo, "cleanup_candidates", return_value=[]), \
-                mock.patch.object(watch, "write_status") as write_status, \
-                mock.patch.object(watch, "record_flaky") as record_flaky:
+        with (
+            mock.patch.object(watch, "DAEMON_POLL", pathlib.Path(tmp.name) / "daemon-poll.json"),
+            mock.patch.object(watch, "daemon_poll", return_value=None),
+            mock.patch.object(watch, "poll", return_value=result),
+            mock.patch.object(repo, "worktree_listing", return_value=[]),
+            mock.patch.object(repo, "cleanup_candidates", return_value=[]),
+            mock.patch.object(watch, "write_status") as write_status,
+            mock.patch.object(watch, "record_flaky") as record_flaky,
+        ):
             # When
             watch.session_poll()
         # Then
@@ -435,21 +471,26 @@ class UnfinishedEventsTest(unittest.TestCase):
         # Given
         local = {1: {"worktree": "/wt/1", "unpushed": True, "busy": False}}
         drafts = [change(1), change(5, subject="someone else's")]
-        with mock.patch.object(repo, "unfinished_work", return_value=local), \
-                mock.patch.object(gerrit, "query", return_value=drafts) as query:
+        with (
+            mock.patch.object(repo, "unfinished_work", return_value=local),
+            mock.patch.object(gerrit, "query", return_value=drafts) as query,
+        ):
             # When
             found = dict(watch.unfinished_events([change(1)], poll.fetch_drafts()))
         # Then
         query.assert_called_once_with(poll.DRAFTS_QUERY)
-        self.assertEqual([("/wt/1", True, True), (None, False, True)],
-                         [(e["worktree"], e["unpushed"], e["drafts"]) for e in found.values()])
+        self.assertEqual(
+            [("/wt/1", True, True), (None, False, True)], [(e["worktree"], e["unpushed"], e["drafts"]) for e in found.values()]
+        )
         self.assertEqual(["1:unfinished", "5:unfinished"], list(found))
 
     def test_an_unreachable_gerrit_still_reports_the_local_work(self):
         # Given
         local = {1: {"worktree": "/wt/1", "unpushed": False, "busy": True}}
-        with mock.patch.object(repo, "unfinished_work", return_value=local), \
-                mock.patch.object(gerrit, "query", side_effect=OSError("offline")):
+        with (
+            mock.patch.object(repo, "unfinished_work", return_value=local),
+            mock.patch.object(gerrit, "query", side_effect=OSError("offline")),
+        ):
             # When
             found = dict(watch.unfinished_events([change(1)], poll.fetch_drafts()))
         # Then
@@ -478,8 +519,18 @@ class OutdatedParentsTest(unittest.TestCase):
         # When
         outdated = poll.outdated_parents([child, on_top], {1: (9, "NEW", parent_ps), 2: (9, "NEW", parent_ps)})
         # Then
-        self.assertEqual({1: {"parent": 9, "parent_patch_set": 3, "parent_ref": "refs/changes/09/9/3",
-                              "old_parent_sha": "old", "new_parent_sha": "new"}}, outdated)
+        self.assertEqual(
+            {
+                1: {
+                    "parent": 9,
+                    "parent_patch_set": 3,
+                    "parent_ref": "refs/changes/09/9/3",
+                    "old_parent_sha": "old",
+                    "new_parent_sha": "new",
+                }
+            },
+            outdated,
+        )
 
     def test_root_commit_has_no_parent(self):
         # Given: Gerrit sends parents: [] for a root commit, not a missing key.
@@ -499,8 +550,7 @@ class OutdatedParentsTest(unittest.TestCase):
 
     def test_parent_updated_once_per_parent_patch_set_and_before_conflicts(self):
         # Given
-        outdated = {1: {"parent": 9, "parent_patch_set": 3, "parent_ref": "r", "old_parent_sha": "old",
-                        "new_parent_sha": "new"}}
+        outdated = {1: {"parent": 9, "parent_patch_set": 3, "parent_ref": "r", "old_parent_sha": "old", "new_parent_sha": "new"}}
         result = {**poll_result([change()], conflicts={1: ["A.kt"]}), "outdated_parents": outdated}
         # When
         found = dict(events.events(result))
@@ -531,10 +581,16 @@ class FlakyMemoryTest(unittest.TestCase):
 
     def test_a_failure_carries_the_local_flake_count_even_without_zuul_api(self):
         # Given
-        watch.record_flaky(poll_result([change(comments=[zuul_verdict(1, NOW - 20, "FAILURE"),
-                                                         zuul_verdict(1, NOW - 10, "SUCCESS")])]), NOW)
-        event = {"kind": "message", "change": 2, "branch": "main", "author_username": "zuul",
-                 "message": zuul_verdict(3, NOW, "FAILURE")["message"]}
+        watch.record_flaky(
+            poll_result([change(comments=[zuul_verdict(1, NOW - 20, "FAILURE"), zuul_verdict(1, NOW - 10, "SUCCESS")])]), NOW
+        )
+        event = {
+            "kind": "message",
+            "change": 2,
+            "branch": "main",
+            "author_username": "zuul",
+            "message": zuul_verdict(3, NOW, "FAILURE")["message"],
+        }
         # When
         with mock.patch.object(ci, "ZUUL_API", None):
             watch.enrich([event])
@@ -543,21 +599,28 @@ class FlakyMemoryTest(unittest.TestCase):
 
     def test_the_status_row_lists_failed_jobs_their_flakes_and_my_rechecks(self):
         # Given
-        watch.record_flaky(poll_result([change(2, comments=[zuul_verdict(1, NOW - 20, "FAILURE"),
-                                                            zuul_verdict(1, NOW - 10, "SUCCESS")])]), NOW)
-        red = change(current=patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS]),
-                     comments=[zuul_verdict(1, NOW - 5, "FAILURE"), message(gerrit.USER, "Patch Set 1:\n\nrecheck", NOW)])
+        watch.record_flaky(
+            poll_result([change(2, comments=[zuul_verdict(1, NOW - 20, "FAILURE"), zuul_verdict(1, NOW - 10, "SUCCESS")])]), NOW
+        )
+        red = change(
+            current=patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS]),
+            comments=[zuul_verdict(1, NOW - 5, "FAILURE"), message(gerrit.USER, "Patch Set 1:\n\nrecheck", NOW)],
+        )
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         status = pathlib.Path(tmp.name) / "status.json"
         # When
-        with mock.patch.object(watch, "STATUS", status), mock.patch.object(repo, "worktrees_by_change_id", return_value={}), \
-                mock.patch.object(repo, "cleanup_candidates", return_value=[]):
+        with (
+            mock.patch.object(watch, "STATUS", status),
+            mock.patch.object(repo, "worktrees_by_change_id", return_value={}),
+            mock.patch.object(repo, "cleanup_candidates", return_value=[]),
+        ):
             watch.write_status(poll_result([red]))
         # Then
         row = json.loads(status.read_text())["changes"][0]
-        self.assertEqual(([{"job": "unit", "result": "FAILURE"}], 1, 1),
-                         (row["ci_failed_jobs"], row["flaky"]["unit"]["month"], row["rechecks"]))
+        self.assertEqual(
+            ([{"job": "unit", "result": "FAILURE"}], 1, 1), (row["ci_failed_jobs"], row["flaky"]["unit"]["month"], row["rechecks"])
+        )
 
 
 class PreparedRebasesTest(unittest.TestCase):
@@ -566,9 +629,12 @@ class PreparedRebasesTest(unittest.TestCase):
         merge_failed = patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS])
         verdict = message("zuul", "Patch Set 1: Verified-1\n\nMerge Failed.", 5)
         changes = [change(1), change(2), change(3), change(4), change(5, current=merge_failed, comments=[verdict])]
-        result = {**poll_result(changes, conflicts={3: ["A.kt"], 4: ["B.kt"]}, parents={1: 9, 4: 8},
-                                stale={2: {"parent": 7, "old_parent_sha": "old"}}),
-                  "outdated_parents": {1: {"parent": 9, "new_parent_sha": "p9"}}}
+        result = {
+            **poll_result(
+                changes, conflicts={3: ["A.kt"], 4: ["B.kt"]}, parents={1: 9, 4: 8}, stale={2: {"parent": 7, "old_parent_sha": "old"}}
+            ),
+            "outdated_parents": {1: {"parent": 9, "new_parent_sha": "p9"}},
+        }
         # When
         with mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}):
             found = {n: (onto, parent) for n, (_, onto, parent) in watch.rebase_candidates(result).items()}
@@ -578,10 +644,12 @@ class PreparedRebasesTest(unittest.TestCase):
     def test_a_change_with_work_left_in_its_worktree_is_not_prepared(self):
         # Given
         result = poll_result([change(1), change(2)], conflicts={1: ["A.kt"], 2: ["A.kt"]})
-        with mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}), \
-                mock.patch.object(repo, "unfinished_work", return_value={1: {"worktree": "/wt1"}}), \
-                mock.patch.object(repo, "worktrees_by_change_id", return_value={"I1": "/wt1", "I2": "/wt2"}), \
-                mock.patch.object(repo, "prepare_replays", side_effect=lambda wanted: {n: "new" for n in wanted}) as replays:
+        with (
+            mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}),
+            mock.patch.object(repo, "unfinished_work", return_value={1: {"worktree": "/wt1"}}),
+            mock.patch.object(repo, "worktrees_by_change_id", return_value={"I1": "/wt1", "I2": "/wt2"}),
+            mock.patch.object(repo, "prepare_replays", side_effect=lambda wanted: {n: "new" for n in wanted}) as replays,
+        ):
             # When
             found = watch.prepared_rebases(result)
         # Then
@@ -591,10 +659,12 @@ class PreparedRebasesTest(unittest.TestCase):
     def test_the_worktree_listing_is_reused(self):
         # Given
         result = poll_result([change(1)], conflicts={1: ["A.kt"]})
-        with mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}), \
-                mock.patch.object(repo, "worktree_listing") as listing, \
-                mock.patch.object(repo, "change_ids_by_worktree", return_value={}), \
-                mock.patch.object(repo, "prepare_replays", return_value={}):
+        with (
+            mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}),
+            mock.patch.object(repo, "worktree_listing") as listing,
+            mock.patch.object(repo, "change_ids_by_worktree", return_value={}),
+            mock.patch.object(repo, "prepare_replays", return_value={}),
+        ):
             # When
             watch.prepared_rebases(result, "worktree /repo\n")
         # Then
@@ -603,8 +673,10 @@ class PreparedRebasesTest(unittest.TestCase):
     def test_without_candidates_the_old_rebases_are_still_dropped(self):
         # Given
         result = poll_result([change(1)])
-        with mock.patch.object(repo, "branch_tips", return_value={}), \
-                mock.patch.object(repo, "prepare_replays", return_value={}) as replays:
+        with (
+            mock.patch.object(repo, "branch_tips", return_value={}),
+            mock.patch.object(repo, "prepare_replays", return_value={}) as replays,
+        ):
             # When
             found = watch.prepared_rebases(result)
         # Then
@@ -621,19 +693,22 @@ class DiagnoseRedTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def red(self, number, verdict_at):
-        return change(number, current=patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS]),
-                      comments=[zuul_verdict(1, verdict_at, "FAILURE")])
+        return change(
+            number,
+            current=patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS]),
+            comments=[zuul_verdict(1, verdict_at, "FAILURE")],
+        )
 
     def test_each_verdict_is_diagnosed_once_and_kept_while_the_change_is_open(self):
         # Given
         def diagnose(reported, base=None):
             for event in reported:
-                event["ci_diagnosis"] = [{"job": "unit", "category": "unknown", "log_url": "https://logs/u",
-                                          "log_tail": "x" * 1000, "others_failing": [3]}]
+                event["ci_diagnosis"] = [
+                    {"job": "unit", "category": "unknown", "log_url": "https://logs/u", "log_tail": "x" * 1000, "others_failing": [3]}
+                ]
             return reported
 
-        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
-                mock.patch.object(watch, "enrich", side_effect=diagnose) as enrich:
+        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), mock.patch.object(watch, "enrich", side_effect=diagnose) as enrich:
             # When
             first = watch.diagnose_red(poll_result([self.red(1, 10), change(2)]))
             again = watch.diagnose_red(poll_result([self.red(1, 10)]))
@@ -641,8 +716,9 @@ class DiagnoseRedTest(unittest.TestCase):
             closed = watch.diagnose_red(poll_result([change(2)]))
         # Then
         self.assertEqual([1, 0, 1, 0], [len(c.args[0]) for c in enrich.call_args_list])
-        self.assertEqual({1: [{"job": "unit", "category": "unknown", "log_url": "https://logs/u",
-                               "excerpt": "x" * watch.EXCERPT_CHARS}]}, first)
+        self.assertEqual(
+            {1: [{"job": "unit", "category": "unknown", "log_url": "https://logs/u", "excerpt": "x" * watch.EXCERPT_CHARS}]}, first
+        )
         self.assertEqual((first, first), (again, rechecked))
         self.assertEqual(({}, {}), (closed, json.loads(watch.DIAGNOSES.read_text())))
 
@@ -655,21 +731,39 @@ class DiagnoseRedTest(unittest.TestCase):
 
     def test_an_unknown_failure_a_newer_patch_set_got_past_is_offered_for_the_memory(self):
         # Given
-        jobs = [{"job": "unit", "category": "unknown", "log_url": "https://logs/u", "excerpt": "boom"},
-                {"job": "lint", "category": "lint"}]
-        watch.DIAGNOSES.write_text(json.dumps({"101:1:10": {"jobs": jobs}, "102:1:10": {"jobs": jobs},
-                                               "103:1:10": {"jobs": jobs}, "104:3:10": {"jobs": jobs}}))
+        jobs = [
+            {"job": "unit", "category": "unknown", "log_url": "https://logs/u", "excerpt": "boom"},
+            {"job": "lint", "category": "lint"},
+        ]
+        watch.DIAGNOSES.write_text(
+            json.dumps(
+                {"101:1:10": {"jobs": jobs}, "102:1:10": {"jobs": jobs}, "103:1:10": {"jobs": jobs}, "104:3:10": {"jobs": jobs}}
+            )
+        )
         green = patch_set(2, *GREEN_CI)
-        changes = [change(101, current=green), change(102, current=green), self.red(103, 20),
-                   change(104, current=patch_set(3, *GREEN_CI))]
+        changes = [
+            change(101, current=green),
+            change(102, current=green),
+            self.red(103, 20),
+            change(104, current=patch_set(3, *GREEN_CI)),
+        ]
         with mock.patch.object(watch.known_failures, "load", return_value={"102:1:unit": {}}):
             # When
             found = dict(watch.fixed_failures(poll_result(changes)))
         # Then
         self.assertEqual(["101:fixed:1:unit"], list(found))
-        self.assertEqual({"kind": "failure_fixed", "job": "unit", "failed_patch_set": 1, "failed_ref": "refs/changes/01/101/1",
-                          "fixed_ref": "refs/changes/01/1/2", "log_url": "https://logs/u", "excerpt": "boom"},
-                         {k: v for k, v in found["101:fixed:1:unit"].items() if k not in events.event_base(changes[0])})
+        self.assertEqual(
+            {
+                "kind": "failure_fixed",
+                "job": "unit",
+                "failed_patch_set": 1,
+                "failed_ref": "refs/changes/01/101/1",
+                "fixed_ref": "refs/changes/01/1/2",
+                "log_url": "https://logs/u",
+                "excerpt": "boom",
+            },
+            {k: v for k, v in found["101:fixed:1:unit"].items() if k not in events.event_base(changes[0])},
+        )
 
 
 class SnoozeFilterTest(unittest.TestCase):
@@ -706,12 +800,20 @@ class MyAttentionSetsTest(unittest.TestCase):
             failed = poll.my_attention_sets()
         # Then
         rest.assert_called_once_with("/changes/?q=owner%3Aself%20status%3Aopen&o=DETAILED_ACCOUNTS")
-        self.assertEqual(({7: {"holders": [{"username": "alice", "name": "Alice", "since": 1790668800.0, "reason": ""}],
-                               "removed": []}}, None), (found, failed))
+        self.assertEqual(
+            ({7: {"holders": [{"username": "alice", "name": "Alice", "since": 1790668800.0, "reason": ""}], "removed": []}}, None),
+            (found, failed),
+        )
 
 
-RED = {"result": "FAILURE", "end_time": "2026-09-29T12:00:00", "log_url": "https://logs/p/",
-       "red_since": "2026-09-29T10:00:00", "failures": 2, "last_green": "2026-09-29T09:00:00"}
+RED = {
+    "result": "FAILURE",
+    "end_time": "2026-09-29T12:00:00",
+    "log_url": "https://logs/p/",
+    "red_since": "2026-09-29T10:00:00",
+    "failures": 2,
+    "last_green": "2026-09-29T09:00:00",
+}
 
 
 class BaseHealthTest(unittest.TestCase):
@@ -726,9 +828,11 @@ class BaseHealthTest(unittest.TestCase):
         # Given
         changes = [change(1), change(2), change(3, branch="release")]
         # When
-        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
-                mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
-                mock.patch.object(ci, "base_health", side_effect=lambda branch: {"branch": branch}) as base_health:
+        with (
+            mock.patch.object(ci, "ZUUL_API", "https://zuul/api"),
+            mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}),
+            mock.patch.object(ci, "base_health", side_effect=lambda branch: {"branch": branch}) as base_health,
+        ):
             found = poll.base_health(changes)
         with mock.patch.object(ci, "PERIODIC_BUILD", None):
             unset = poll.base_health(changes)
@@ -745,23 +849,27 @@ class BaseHealthTest(unittest.TestCase):
         def fetch(branch):
             barrier.wait()
             return {"branch": branch}
+
         # When
-        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), \
-                mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}), \
-                mock.patch.object(ci, "base_health", side_effect=fetch):
+        with (
+            mock.patch.object(ci, "ZUUL_API", "https://zuul/api"),
+            mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}),
+            mock.patch.object(ci, "base_health", side_effect=fetch),
+        ):
             found = poll.base_health(changes)
         # Then: both branches reached the barrier, so neither call waited on the other to start.
         self.assertEqual({"main": {"branch": "main"}, "release": {"branch": "release"}}, found)
 
     def test_a_red_base_is_announced_once_for_all_its_changes(self):
         # Given
-        red = {**poll_result([change(1), change(2), change(3, branch="release")]),
-               "base_health": {"main": RED, "release": {"result": "SUCCESS"}}}
+        red = {
+            **poll_result([change(1), change(2), change(3, branch="release")]),
+            "base_health": {"main": RED, "release": {"result": "SUCCESS"}},
+        }
         longer = {**red, "base_health": {"main": {**RED, "end_time": "2026-09-29T14:00:00", "failures": 3}}}
         again = {**red, "base_health": {"main": {**RED, "last_green": "2026-09-29T13:00:00"}}}
         # When
-        found = [{k: e for k, e in events.events(result, NOW) if e["kind"] == "base_red"}
-                 for result in (red, longer, again)]
+        found = [{k: e for k, e in events.events(result, NOW) if e["kind"] == "base_red"} for result in (red, longer, again)]
         # Then
         self.assertEqual(["base_red:main:2026-09-29T09:00:00"], list(found[0]))
         self.assertEqual([1, 2], found[0]["base_red:main:2026-09-29T09:00:00"]["changes"])
@@ -793,8 +901,10 @@ class BaseHealthTest(unittest.TestCase):
     def test_a_base_green_snooze_holds_while_red_or_unknown(self):
         # Given
         watch.snooze.set_snooze(1, base_green=True)
-        polls = [{**poll_result([change(1)]), "base_health": {"main": health}}
-                 for health in (RED, {"error": "offline"}, {"result": "SUCCESS"})]
+        polls = [
+            {**poll_result([change(1)]), "base_health": {"main": health}}
+            for health in (RED, {"error": "offline"}, {"result": "SUCCESS"})
+        ]
         # When
         found = [bool(watch.snoozed_changes(result, NOW)) for result in polls]
         # Then
@@ -808,25 +918,36 @@ class BaseHealthTest(unittest.TestCase):
         status = pathlib.Path(tmp.name) / "status.json"
         watch.snooze.set_snooze(1, base_green=True)
         # When
-        with mock.patch.object(watch, "STATUS", status), mock.patch.object(repo, "worktrees_by_change_id", return_value={}), \
-                mock.patch.object(repo, "cleanup_candidates", return_value=[]):
+        with (
+            mock.patch.object(watch, "STATUS", status),
+            mock.patch.object(repo, "worktrees_by_change_id", return_value={}),
+            mock.patch.object(repo, "cleanup_candidates", return_value=[]),
+        ):
             watch.write_status(result)
         snapshot = json.loads(status.read_text())
         # Then
         self.assertEqual([True, False], [row["base_red"] for row in snapshot["changes"]])
         self.assertEqual([1], list(watch.snooze.snapshot_active(snapshot, NOW)))
 
-
     def test_the_snapshot_lists_the_branches_to_clean_up(self):
         # Given
-        candidate = {"kind": "cleanup_candidate", "branch": "old", "worktree": "/wt/old", "change": 7,
-                     "subject": "fix: x", "status": "merged"}
+        candidate = {
+            "kind": "cleanup_candidate",
+            "branch": "old",
+            "worktree": "/wt/old",
+            "change": 7,
+            "subject": "fix: x",
+            "status": "merged",
+        }
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         status = pathlib.Path(tmp.name) / "status.json"
         # When
-        with mock.patch.object(watch, "STATUS", status), mock.patch.object(repo, "worktrees_by_change_id", return_value={}), \
-                mock.patch.object(repo, "cleanup_candidates", return_value=[("cleanup:old:sha", candidate)]) as found:
+        with (
+            mock.patch.object(watch, "STATUS", status),
+            mock.patch.object(repo, "worktrees_by_change_id", return_value={}),
+            mock.patch.object(repo, "cleanup_candidates", return_value=[("cleanup:old:sha", candidate)]) as found,
+        ):
             watch.write_status(poll_result([change(1)]), listing="listing")
         # Then
         self.assertEqual([{"key": "cleanup:old:sha", **candidate}], json.loads(status.read_text())["cleanup"])
@@ -834,11 +955,11 @@ class BaseHealthTest(unittest.TestCase):
         with mock.patch.object(watch, "STATUS", status):
             self.assertEqual({"cleanup:old:sha": candidate}, watch.snapshot_cleanup())
 
+
 class WithIntKeysTest(unittest.TestCase):
     def test_attention_sets_come_back_with_int_keys_and_none_stays_none(self):
         # Given
-        polls = [{**poll_result(), "attention_sets": {7: {"holders": [], "removed": []}}},
-                 {**poll_result(), "attention_sets": None}]
+        polls = [{**poll_result(), "attention_sets": {7: {"holders": [], "removed": []}}}, {**poll_result(), "attention_sets": None}]
         # When
         found = [poll.with_int_keys(json.loads(json.dumps(p))) for p in polls]
         # Then
@@ -859,8 +980,10 @@ class ClaudePidTest(unittest.TestCase):
         # Given
         table = {40: (30, "/bin/zsh"), 30: (20, "/Users/me/.local/bin/claude"), 20: (1, "claude"), 50: (1, "claude")}
         # When
-        with mock.patch.object(watch.procs, "processes", return_value=table) as processes, \
-                mock.patch.object(watch.os, "getppid", return_value=40):
+        with (
+            mock.patch.object(watch.procs, "processes", return_value=table) as processes,
+            mock.patch.object(watch.os, "getppid", return_value=40),
+        ):
             pid = watch.claude_pid()
         # Then
         self.assertEqual(30, pid)
@@ -870,8 +993,7 @@ class ClaudePidTest(unittest.TestCase):
         # Given
         table = {40: (1, "/bin/zsh")}
         # When
-        with mock.patch.object(watch.procs, "processes", return_value=table), \
-                mock.patch.object(watch.os, "getppid", return_value=40):
+        with mock.patch.object(watch.procs, "processes", return_value=table), mock.patch.object(watch.os, "getppid", return_value=40):
             pid = watch.claude_pid()
         # Then
         self.assertIsNone(pid)

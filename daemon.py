@@ -1,6 +1,7 @@
 """The background loop behind `watch.py --daemon`: status snapshot + macOS notifications with no Claude session.
 
 Started by launchd through macos/launch.py; clicking a notification opens a session."""
+
 import os
 import pathlib
 import subprocess
@@ -24,15 +25,26 @@ AUTO_SUBMIT_TAGGED = CACHE / "auto-submit-tagged.json"
 
 def write_daemon_poll(result=None, error=None):
     previous = read_json(DAEMON_POLL)
-    atomic_write(DAEMON_POLL, {"attempt": time.time(), "error": error, "version": VERSION, "skill_dir": str(SKILL_DIR),
-                               "poll": result if error is None else previous.get("poll")})
+    atomic_write(
+        DAEMON_POLL,
+        {
+            "attempt": time.time(),
+            "error": error,
+            "version": VERSION,
+            "skill_dir": str(SKILL_DIR),
+            "poll": result if error is None else previous.get("poll"),
+        },
+    )
 
 
 def swiftbar(action, **params):
     """Best effort: a hung SwiftBar must not kill the daemon before it saves what it just notified."""
     try:
-        subprocess.run(["open", "-g", f"swiftbar://{action}?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"],
-                       capture_output=True, timeout=10)
+        subprocess.run(
+            ["open", "-g", f"swiftbar://{action}?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"],
+            capture_output=True,
+            timeout=10,
+        )
     except (subprocess.SubprocessError, OSError):
         pass
 
@@ -51,8 +63,7 @@ def notify_unreachable(detail, now):
     key = watch.outage_key()
     if events.is_quiet(now) or key in seen:
         return
-    swiftbar("notify", plugin=SWIFTBAR_PLUGIN, title=t("unreachable", host=gerrit.HOST),
-             body=t("unreachable_body", detail=detail))
+    swiftbar("notify", plugin=SWIFTBAR_PLUGIN, title=t("unreachable", host=gerrit.HOST), body=t("unreachable_body", detail=detail))
     watch.save_seen({**seen, key: now}, DAEMON_STATE)
 
 

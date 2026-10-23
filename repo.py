@@ -1,4 +1,5 @@
 """Local git work on the repo: fetches into a private namespace, conflict checks, rebases, branch cleanup."""
+
 import os
 import pathlib
 import re
@@ -18,8 +19,9 @@ FETCH_NAMESPACE = "refs/gerrit-babysit"
 
 
 def git_run(*args, cwd=None, timeout=60, input=None, env=None):
-    return subprocess.run(["git", "-C", str(cwd or REPO), *args], capture_output=True, text=True, timeout=timeout,
-                          input=input, env=env)
+    return subprocess.run(
+        ["git", "-C", str(cwd or REPO), *args], capture_output=True, text=True, timeout=timeout, input=input, env=env
+    )
 
 
 def git(*args, cwd=None):
@@ -91,8 +93,7 @@ def branch_tips(branches):
     if not branches:
         return {}
     prefix = f"{FETCH_NAMESPACE}/"
-    refs = dict(line.split(" ") for line in
-                git("for-each-ref", "--format=%(refname) %(objectname)", prefix).splitlines())
+    refs = dict(line.split(" ") for line in git("for-each-ref", "--format=%(refname) %(objectname)", prefix).splitlines())
     return {branch: refs[prefix + branch] for branch in branches if prefix + branch in refs}
 
 
@@ -112,8 +113,7 @@ def merge_conflicts(changes):
     now = time.monotonic()
     due = {c["branch"] for c, _ in candidates if now - _tips_fetched_at.get(c["branch"], float("-inf")) >= TIPS_REFRESH_S}
     refspecs = {f"+refs/heads/{branch}:{FETCH_NAMESPACE}/{branch}" for branch in due}
-    refspecs |= {f"+{ps['ref']}:{FETCH_NAMESPACE}/changes/{c['number']}"
-                 for c, ps in candidates if ps["revision"] in missing}
+    refspecs |= {f"+{ps['ref']}:{FETCH_NAMESPACE}/changes/{c['number']}" for c, ps in candidates if ps["revision"] in missing}
     if refspecs:
         fetch_refs(sorted(refspecs))
         _tips_fetched_at.update(dict.fromkeys(due, now))
@@ -149,8 +149,10 @@ def changed_on_both_sides(target, revision):
     base = git_run("merge-base", target, revision)
     if base.returncode:
         return None
-    diffs = [git_run("diff", "--no-renames", "--name-only", a, b)
-             for a, b in ((base.stdout.strip(), target), (base.stdout.strip(), revision), (target, revision))]
+    diffs = [
+        git_run("diff", "--no-renames", "--name-only", a, b)
+        for a, b in ((base.stdout.strip(), target), (base.stdout.strip(), revision), (target, revision))
+    ]
     if any(d.returncode for d in diffs):
         return None
     theirs, mine, different = (set(d.stdout.splitlines()) for d in diffs)
@@ -215,13 +217,11 @@ def cleanup_candidates(open_ids=frozenset(), listing=None):
     Branches of still-open CLs are skipped, so the Gerrit query only reruns when a CL leaves `open_ids` or a
     branch moves. Runs every poll: only the few candidates pay for a `git status` of their worktree."""
     listing = listing if listing is not None else worktree_listing()
-    blocks = [dict(line.partition(" ")[::2] for line in block.splitlines())
-              for block in listing.split("\n\n") if block.strip()]
+    blocks = [dict(line.partition(" ")[::2] for line in block.splitlines()) for block in listing.split("\n\n") if block.strip()]
     main_branch = blocks[0].get("branch", "").removeprefix("refs/heads/") if blocks else ""
     worktree_of = {b["branch"].removeprefix("refs/heads/"): b for b in blocks[1:] if "branch" in b}
 
-    tips = dict(line.split(" ") for line in
-                git("for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads").splitlines())
+    tips = dict(line.split(" ") for line in git("for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads").splitlines())
     with _change_ids.poll() as memo:
         change_ids = {sha: memo.get(sha, change_id_of, sha) for sha in set(tips.values())}
     branches = {}
@@ -236,15 +236,20 @@ def cleanup_candidates(open_ids=frozenset(), listing=None):
         return []
     closed = _cleanup_memo.get(frozenset(branches.items()), lambda: list(closed_branches(branches)))
     # Checked on every call, not memoized: a worktree can get dirty without its branch moving.
-    return [(k, event) for k, event in closed
-            if not event["worktree"] or not git("status", "--porcelain", cwd=event["worktree"]).strip()]
+    return [
+        (k, event) for k, event in closed if not event["worktree"] or not git("status", "--porcelain", cwd=event["worktree"]).strip()
+    ]
 
 
 def closed_branches(branches):
     ids = " OR ".join(f"change:{cid}" for cid in sorted({cid for _, cid, _ in branches.values()}))
     closed = {
-        row["id"]: ({ps["revision"] for ps in row.get("patchSets", [])}, row["number"], row["subject"],
-                    row.get("status", "MERGED").lower())
+        row["id"]: (
+            {ps["revision"] for ps in row.get("patchSets", [])},
+            row["number"],
+            row["subject"],
+            row.get("status", "MERGED").lower(),
+        )
         for row in gerrit.query(f"owner:self (status:merged OR status:abandoned) ({ids})", "--patch-sets")
     }
     for branch, (sha, change_id, path) in branches.items():
@@ -252,22 +257,35 @@ def closed_branches(branches):
         # Exact pushed SHA only: a local amend made after the merge or the abandon is not a candidate. An abandoned
         # change can be restored, but its pushed patch sets stay on Gerrit: deleting the branch loses nothing.
         if sha in revisions:
-            yield f"cleanup:{branch}:{sha}", {"kind": "cleanup_candidate", "branch": branch, "worktree": path,
-                                               "change": number, "subject": subject, "status": status}
+            yield (
+                f"cleanup:{branch}:{sha}",
+                {
+                    "kind": "cleanup_candidate",
+                    "branch": branch,
+                    "worktree": path,
+                    "change": number,
+                    "subject": subject,
+                    "status": status,
+                },
+            )
 
 
 def interdiff(event):
     """What moved since the patch set I last saw; the diff is limited to the change's files to keep rebase noise out."""
-    refs = {ref: f"{FETCH_NAMESPACE}/review/{event['change']}/{ref.rsplit('/', 1)[1]}"
-            for ref in (event["since_ref"], event["current_ref"])}
+    refs = {
+        ref: f"{FETCH_NAMESPACE}/review/{event['change']}/{ref.rsplit('/', 1)[1]}"
+        for ref in (event["since_ref"], event["current_ref"])
+    }
     try:
         fetched = fetch(*(f"+{ref}:{local}" for ref, local in refs.items()))
         if fetched.returncode:
             return {"error": gerrit.error_detail(fetched)}
         old, new = refs[event["since_ref"]], refs[event["current_ref"]]
         files = sorted({f for sha in (old, new) for f in git("diff", "--name-only", f"{sha}^", sha).splitlines()})
-        return {"rebased": git("rev-parse", f"{old}^") != git("rev-parse", f"{new}^"),
-                "stat": git("diff", "--stat", old, new, "--", *files).strip()[-3000:] if files else ""}
+        return {
+            "rebased": git("rev-parse", f"{old}^") != git("rev-parse", f"{new}^"),
+            "stat": git("diff", "--stat", old, new, "--", *files).strip()[-3000:] if files else "",
+        }
     except (subprocess.SubprocessError, OSError) as error:
         return {"error": gerrit.error_detail(error)}
     finally:
@@ -324,14 +342,17 @@ def prepare_rebase(event):
     except subprocess.TimeoutExpired:
         git_run("rebase", "--abort", cwd=worktree)
         raise
-    report = {"worktree": worktree, "onto": onto, "previous_head": head,
-              "command": " ".join(["git", *command])}
+    report = {"worktree": worktree, "onto": onto, "previous_head": head, "command": " ".join(["git", *command])}
     if result.returncode:
         files = git("diff", "--name-only", "--diff-filter=U", cwd=worktree).split()
         git_run("rebase", "--abort", cwd=worktree)
         return {**report, "status": "conflict", "files": files}
-    return {**report, "status": "rebased", "head": git("rev-parse", "HEAD", cwd=worktree).strip(),
-            "commits": int(git("rev-list", "--count", f"{onto}..HEAD", cwd=worktree).strip() or 0)}
+    return {
+        **report,
+        "status": "rebased",
+        "head": git("rev-parse", "HEAD", cwd=worktree).strip(),
+        "commits": int(git("rev-list", "--count", f"{onto}..HEAD", cwd=worktree).strip() or 0),
+    }
 
 
 REBASED = f"{FETCH_NAMESPACE}/rebased"

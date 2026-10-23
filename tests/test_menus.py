@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import contextlib
 import importlib.util
 import io
@@ -30,9 +31,23 @@ _spec.loader.exec_module(plugin)
 
 
 def row(number=1, **extra):
-    return {"number": number, "patch_set": 2, "subject": "feat(inbox): x", "url": f"https://review/{number}",
-            "wip": False, "code_review": 0, "ci": "passed", "ci_failed": [], "ci_stuck": False, "threads": 0,
-            "conflict": False, "open_parent": None, "ready": False, "worktree": None, **extra}
+    return {
+        "number": number,
+        "patch_set": 2,
+        "subject": "feat(inbox): x",
+        "url": f"https://review/{number}",
+        "wip": False,
+        "code_review": 0,
+        "ci": "passed",
+        "ci_failed": [],
+        "ci_stuck": False,
+        "threads": 0,
+        "conflict": False,
+        "open_parent": None,
+        "ready": False,
+        "worktree": None,
+        **extra,
+    }
 
 
 class AgeTest(unittest.TestCase):
@@ -45,8 +60,7 @@ class AgeTest(unittest.TestCase):
 class SnapshotTest(unittest.TestCase):
     def write(self, changes, age=0, **extra):
         now = time.time() - age
-        self.status.write_text(json.dumps({"updated": now, "last_attempt": now, "last_error": None,
-                                           "changes": changes, **extra}))
+        self.status.write_text(json.dumps({"updated": now, "last_attempt": now, "last_error": None, "changes": changes, **extra}))
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -75,8 +89,7 @@ class StatusLineTest(SnapshotTest):
 
     def test_counts_agree_with_the_menu_colors(self):
         # Given
-        changes = [row(1, ready=True, outdated_parent=9), row(2, ready=True), row(3, code_review=-1),
-                   row(4, ci="stale_base")]
+        changes = [row(1, ready=True, outdated_parent=9), row(2, ready=True), row(3, code_review=-1), row(4, ci="stale_base")]
         self.write(changes)
         # When
         found = self.segment()
@@ -125,13 +138,16 @@ class MenuStateTest(unittest.TestCase):
 
     def test_worst_problem_wins(self):
         # Given
-        changes = [row(wip=True, conflict=True), row(conflict=True, ci="failed"), row(ci="stale_base", code_review=-1),
-                   row(code_review=-1, ci_stuck=True)]
+        changes = [
+            row(wip=True, conflict=True),
+            row(conflict=True, ci="failed"),
+            row(ci="stale_base", code_review=-1),
+            row(code_review=-1, ci_stuck=True),
+        ]
         # When
         symbols = [plugin.display(c)[1] for c in changes]
         # Then
-        self.assertEqual(["pencil", "exclamationmark.triangle.fill", "arrow.triangle.branch", "hand.thumbsdown.fill"],
-                         symbols)
+        self.assertEqual(["pencil", "exclamationmark.triangle.fill", "arrow.triangle.branch", "hand.thumbsdown.fill"], symbols)
 
     def test_a_draft_stays_gray_but_names_its_problem(self):
         # Given
@@ -189,8 +205,11 @@ class OpenWorktreeTest(SnapshotTest):
         # Given
         self.write([row(7, worktree='/tmp/odd "name"')])
         # When
-        with mock.patch.object(actions, "STATUS", self.status), mock.patch.object(actions, "ORCA", "/nonexistent"), \
-                mock.patch.object(actions.subprocess, "run") as run:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "ORCA", "/nonexistent"),
+            mock.patch.object(actions.subprocess, "run") as run,
+        ):
             actions.handle(["worktree", "7"])
             actions.handle(["worktree", "8"])
         # Then
@@ -216,8 +235,14 @@ class InvestigateTest(SnapshotTest):
 
     def test_offered_only_for_changes_in_trouble(self):
         # Given
-        changes = [row(ci="failed"), row(threads=2), row(ci="running"), row(wip=True, ci="failed"),
-                   row(wip=True, conflict=True), row(wip=True, ci="stale_base")]
+        changes = [
+            row(ci="failed"),
+            row(threads=2),
+            row(ci="running"),
+            row(wip=True, ci="failed"),
+            row(wip=True, conflict=True),
+            row(wip=True, ci="stale_base"),
+        ]
         # When
         offered = ['"investigate"' in self.menu(c) for c in changes]
         # Then
@@ -227,8 +252,11 @@ class InvestigateTest(SnapshotTest):
         # Given
         self.write([row(7, ci="failed", ci_failed=["Quality"], worktree='/tmp/odd "name"')])
         # When
-        with mock.patch.object(actions, "STATUS", self.status), mock.patch.object(actions, "ORCA", "/nonexistent"), \
-                mock.patch.object(actions, "osascript") as osascript:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "ORCA", "/nonexistent"),
+            mock.patch.object(actions, "osascript") as osascript,
+        ):
             actions.handle(["investigate", "7"])
             actions.handle(["investigate", "8"])
         # Then
@@ -240,12 +268,20 @@ class InvestigateTest(SnapshotTest):
 
     def test_the_prompt_carries_the_diagnosis_already_made(self):
         # Given
-        job = {"job": "unit", "category": "unknown", "log_url": "https://logs/1", "excerpt": "boom\nat Foo.kt",
-               "resembles": [{"change": 42, "cause": "stale cache", "fix": "clean build"}]}
+        job = {
+            "job": "unit",
+            "category": "unknown",
+            "log_url": "https://logs/1",
+            "excerpt": "boom\nat Foo.kt",
+            "resembles": [{"change": 42, "cause": "stale cache", "fix": "clean build"}],
+        }
         self.write([row(7, ci="failed", ci_failed=["Verified"], ci_diagnosis=[job])])
         # When
-        with mock.patch.object(actions, "STATUS", self.status), mock.patch.object(actions, "ORCA", "/nonexistent"), \
-                mock.patch.object(actions, "osascript") as osascript:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "ORCA", "/nonexistent"),
+            mock.patch.object(actions, "osascript") as osascript,
+        ):
             actions.handle(["investigate", "7"])
         # Then
         command = osascript.call_args.args[2]
@@ -256,10 +292,26 @@ class InvestigateTest(SnapshotTest):
 class ReviewsMenuTest(SnapshotTest):
     def test_the_review_section_greys_out_what_its_owner_will_rework(self):
         # Given
-        reviews = [{"number": 3, "patch_set": 1, "subject": "fix(lint): a", "url": "https://review/3", "owner": "Simon",
-                    "since": time.time() - 3600, "blocked_by": None},
-                   {"number": 4, "patch_set": 2, "subject": "feat(cart): b", "url": "https://review/4", "owner": "Ana",
-                    "since": time.time(), "blocked_by": "ci_failed"}]
+        reviews = [
+            {
+                "number": 3,
+                "patch_set": 1,
+                "subject": "fix(lint): a",
+                "url": "https://review/3",
+                "owner": "Simon",
+                "since": time.time() - 3600,
+                "blocked_by": None,
+            },
+            {
+                "number": 4,
+                "patch_set": 2,
+                "subject": "feat(cart): b",
+                "url": "https://review/4",
+                "owner": "Ana",
+                "since": time.time(),
+                "blocked_by": "ci_failed",
+            },
+        ]
         self.write([], reviews=reviews)
         out = io.StringIO()
         # When
@@ -268,17 +320,21 @@ class ReviewsMenuTest(SnapshotTest):
         # Then
         lines = out.getvalue().splitlines()
         self.assertIn(f"{i18n.t('bar_reviews_section', count=1)} | disabled=true", lines)
-        self.assertIn(f"3  lint — Simon · {i18n.t('bar_review_waiting', age='60 min')} | href=https://review/3 "
-                      "sfimage=eyeglasses", lines)
-        self.assertIn(f"4  cart — Ana · {i18n.t('bar_review_ci_failed')} | href=https://review/4 sfimage=hourglass "
-                      "sfcolor=gray", lines)
+        self.assertIn(
+            f"3  lint — Simon · {i18n.t('bar_review_waiting', age='60 min')} | href=https://review/3 sfimage=eyeglasses", lines
+        )
+        self.assertIn(
+            f"4  cart — Ana · {i18n.t('bar_review_ci_failed')} | href=https://review/4 sfimage=hourglass sfcolor=gray", lines
+        )
 
 
 class DiagnosisMenuTest(unittest.TestCase):
     def test_a_red_change_names_its_failure_categories_and_links_each_log(self):
         # Given
-        jobs = [{"job": "lint", "category": "lint", "log_url": "https://logs/l"},
-                {"job": "unit", "category": "unknown", "resembles": [{"change": 42, "fix": "clean build"}]}]
+        jobs = [
+            {"job": "lint", "category": "lint", "log_url": "https://logs/l"},
+            {"job": "unit", "category": "unknown", "resembles": [{"change": 42, "fix": "clean build"}]},
+        ]
         change = row(ci="failed", ci_failed=["Verified"], ci_diagnosis=jobs)
         out = io.StringIO()
         # When
@@ -288,12 +344,15 @@ class DiagnosisMenuTest(unittest.TestCase):
         lines = out.getvalue().splitlines()
         self.assertIn("· lint, unknown", lines[0])
         self.assertIn("--lint: lint | href=https://logs/l sfimage=doc.text.magnifyingglass", lines)
-        self.assertTrue(any(line.startswith("--unit: unknown · ") and "#42" in line and "disabled=true" in line
-                            for line in lines))
+        self.assertTrue(any(line.startswith("--unit: unknown · ") and "#42" in line and "disabled=true" in line for line in lines))
 
 
-FLAKY_RED = {"ci": "failed", "ci_failed_jobs": [{"job": "unit", "result": "FAILURE"}],
-             "flaky": {"unit": {"week": 3, "month": 4, "last": 1}}, "rechecks": 0}
+FLAKY_RED = {
+    "ci": "failed",
+    "ci_failed_jobs": [{"job": "unit", "result": "FAILURE"}],
+    "flaky": {"unit": {"week": 3, "month": 4, "last": 1}},
+    "rechecks": 0,
+}
 
 
 class RecheckTest(SnapshotTest):
@@ -305,10 +364,12 @@ class RecheckTest(SnapshotTest):
 
     def test_offered_when_every_failed_job_is_a_known_flake_not_yet_rechecked(self):
         # Given
-        changes = [row(**FLAKY_RED), row(**{**FLAKY_RED, "rechecks": 1}),
-                   row(**{**FLAKY_RED, "flaky": {"unit": {"week": 1, "month": 1, "last": 1}}}),
-                   row(**{**FLAKY_RED, "ci_failed_jobs": [{"job": "unit", "result": "FAILURE"},
-                                                          {"job": "lint", "result": "FAILURE"}]})]
+        changes = [
+            row(**FLAKY_RED),
+            row(**{**FLAKY_RED, "rechecks": 1}),
+            row(**{**FLAKY_RED, "flaky": {"unit": {"week": 1, "month": 1, "last": 1}}}),
+            row(**{**FLAKY_RED, "ci_failed_jobs": [{"job": "unit", "result": "FAILURE"}, {"job": "lint", "result": "FAILURE"}]}),
+        ]
         # When
         offered = ['"recheck"' in self.menu(c) for c in changes] + ['"recheck"' in self.menu(row(**FLAKY_RED), False)]
         # Then
@@ -320,10 +381,12 @@ class RecheckTest(SnapshotTest):
         self.write([row(7, **FLAKY_RED)])
         confirm = mock.Mock(returncode=0)
         # When
-        with mock.patch.object(actions, "STATUS", self.status), \
-                mock.patch.object(actions, "osascript", return_value=confirm), \
-                mock.patch.object(gerrit, "rest_auth", side_effect=KeyError("no ~/.netrc entry")), \
-                mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "osascript", return_value=confirm),
+            mock.patch.object(gerrit, "rest_auth", side_effect=KeyError("no ~/.netrc entry")),
+            mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(returncode=0)) as run,
+        ):
             actions.handle(["recheck", "7", "1"])
             actions.handle(["recheck", "7", "2"])
         # Then
@@ -334,8 +397,11 @@ class RecheckTest(SnapshotTest):
         # Given
         self.write([row(1, **FLAKY_RED)])
         # When
-        with mock.patch.dict(sys.modules, {"gerrit": None}), mock.patch.object(plugin, "STATUS", self.status), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            mock.patch.dict(sys.modules, {"gerrit": None}),
+            mock.patch.object(plugin, "STATUS", self.status),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             plugin.main()
         # Then
         self.assertIn('"recheck"', out.getvalue())
@@ -352,10 +418,12 @@ class PushRebaseTest(SnapshotTest):
 
     def test_offered_only_on_fresh_data_for_the_patch_set_it_was_made_from(self):
         # Given
-        cases = [(row(7, branch="main", rebase_ready=self.READY), True),
-                 (row(7, branch="main", rebase_ready=self.READY), False),
-                 (row(7, branch="main", rebase_ready={**self.READY, "patch_set": 1}), True),
-                 (row(7, branch="main", rebase_ready={**self.READY, "parent": 9}), True)]
+        cases = [
+            (row(7, branch="main", rebase_ready=self.READY), True),
+            (row(7, branch="main", rebase_ready=self.READY), False),
+            (row(7, branch="main", rebase_ready={**self.READY, "patch_set": 1}), True),
+            (row(7, branch="main", rebase_ready={**self.READY, "parent": 9}), True),
+        ]
         # When
         lines = [self.menu(change, fresh) for change, fresh in cases]
         # Then
@@ -366,12 +434,15 @@ class PushRebaseTest(SnapshotTest):
     def push(self, ref_sha, answer=True):
         self.write([row(7, branch="main", worktree="/wt", rebase_ready=self.READY)])
         pushed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(actions, "STATUS", self.status), \
-                mock.patch.object(actions, "confirmed", return_value=answer) as confirmed, \
-                mock.patch.object(actions, "notify"), mock.patch.object(actions, "refresh"), \
-                mock.patch("repo.git", return_value=ref_sha + "\n"), \
-                mock.patch("repo.fetch_source", return_value=([], "origin")), \
-                mock.patch("repo.git_run", return_value=pushed) as git_run:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "confirmed", return_value=answer) as confirmed,
+            mock.patch.object(actions, "notify"),
+            mock.patch.object(actions, "refresh"),
+            mock.patch("repo.git", return_value=ref_sha + "\n"),
+            mock.patch("repo.fetch_source", return_value=([], "origin")),
+            mock.patch("repo.git_run", return_value=pushed) as git_run,
+        ):
             actions.handle(["push_rebase", "7", "2"])
         return confirmed, git_run
 
@@ -411,20 +482,24 @@ class CleanupTest(SnapshotTest):
         self.assertFalse([line for line in empty if "trash" in line])
         start = lines.index(next(line for line in lines if line.startswith(plugin.t("bar_cleanup", count=2))))
         self.assertIn('param1="cleanup" terminal=false', lines[start])
-        self.assertEqual(["--bare — 8 abandoned", "--old — 7 merged", "-----"],
-                         [line.split(" ·")[0] for line in lines[start + 1:start + 4]])
+        self.assertEqual(
+            ["--bare — 8 abandoned", "--old — 7 merged", "-----"], [line.split(" ·")[0] for line in lines[start + 1 : start + 4]]
+        )
         self.assertIn('param1="cleanup" terminal=false', lines[start + 4])
 
     def clean(self, candidates, answer=True, refused=()):
         def git_run(*args, **_):
             failed = args[0] == "worktree" and args[-1] in refused
             return subprocess.CompletedProcess(args, int(failed), "", "has untracked files" if failed else "")
-        with mock.patch.object(actions, "confirmed", return_value=answer) as confirmed, \
-                mock.patch.object(actions, "notify") as notify, mock.patch.object(actions, "alert") as alert, \
-                mock.patch.object(actions, "refresh"), \
-                mock.patch("repo.cleanup_candidates", return_value=[("k", {"kind": "cleanup_candidate", **c})
-                                                                    for c in candidates]), \
-                mock.patch("repo.git_run", side_effect=git_run) as run:
+
+        with (
+            mock.patch.object(actions, "confirmed", return_value=answer) as confirmed,
+            mock.patch.object(actions, "notify") as notify,
+            mock.patch.object(actions, "alert") as alert,
+            mock.patch.object(actions, "refresh"),
+            mock.patch("repo.cleanup_candidates", return_value=[("k", {"kind": "cleanup_candidate", **c}) for c in candidates]),
+            mock.patch("repo.git_run", side_effect=git_run) as run,
+        ):
             actions.handle(["cleanup"])
         return confirmed, notify, alert, [call.args for call in run.call_args_list]
 
@@ -454,6 +529,7 @@ class CleanupTest(SnapshotTest):
         self.assertEqual([], calls)
         self.assertEqual(plugin.t("bar_cleanup_none"), notify.call_args.args[0])
 
+
 class SubmitTest(SnapshotTest):
     def menu(self, change, fresh=True):
         out = io.StringIO()
@@ -478,8 +554,7 @@ class SubmitTest(SnapshotTest):
         lines = self.menu(change)
         # Then
         reason = plugin.t("bar_ci_failed", labels="Integration")
-        self.assertEqual([f"--{plugin.t('bar_submit_unavailable', reason=reason)} | disabled=true sfimage=paperplane"],
-                         lines)
+        self.assertEqual([f"--{plugin.t('bar_submit_unavailable', reason=reason)} | disabled=true sfimage=paperplane"], lines)
 
     def test_a_green_change_without_a_plus_two_says_so(self):
         # Given
@@ -496,8 +571,7 @@ class SubmitTest(SnapshotTest):
         # When
         lines = [self.menu(change) for change in changes]
         # Then
-        self.assertIn(plugin.t("bar_submit_unavailable", reason=plugin.t("bar_submit_wait_threads", count=1)),
-                      lines[0][0])
+        self.assertIn(plugin.t("bar_submit_unavailable", reason=plugin.t("bar_submit_wait_threads", count=1)), lines[0][0])
         self.assertIn(plugin.t("bar_submit_unavailable", reason=plugin.t("threads_unknown")), lines[1][0])
 
     def test_stale_data_greys_out_even_a_ready_change(self):
@@ -507,18 +581,19 @@ class SubmitTest(SnapshotTest):
         lines = self.menu(change, fresh=False)
         # Then
         reason = plugin.t("bar_submit_stale")
-        self.assertEqual([f"--{plugin.t('bar_submit_unavailable', reason=reason)} | disabled=true sfimage=paperplane"],
-                         lines)
+        self.assertEqual([f"--{plugin.t('bar_submit_unavailable', reason=reason)} | disabled=true sfimage=paperplane"], lines)
 
     def test_submits_the_confirmed_change_and_patch_set(self):
         # Given
         self.write([row(7, ready=True, code_review=2)])
         confirm = mock.Mock(returncode=0)
         # When
-        with mock.patch.object(actions, "STATUS", self.status), \
-                mock.patch.object(actions, "osascript", return_value=confirm), \
-                mock.patch.object(gerrit, "rest_auth", side_effect=KeyError("no ~/.netrc entry")), \
-                mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "osascript", return_value=confirm),
+            mock.patch.object(gerrit, "rest_auth", side_effect=KeyError("no ~/.netrc entry")),
+            mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(returncode=0)) as run,
+        ):
             actions.handle(["submit", "7", "2"])
         # Then
         ssh = [c.args[0] for c in run.call_args_list if c.args[0][0] == "ssh"]
@@ -526,14 +601,19 @@ class SubmitTest(SnapshotTest):
 
     def test_no_submit_once_the_snapshot_says_otherwise(self):
         # Given
-        snapshots = [([row(7, code_review=-1)], {}),
-                     ([row(7, ready=True, code_review=2, patch_set=3)], {}),
-                     ([row(7, ready=True, code_review=2)], {"last_error": "offline"})]
+        snapshots = [
+            ([row(7, code_review=-1)], {}),
+            ([row(7, ready=True, code_review=2, patch_set=3)], {}),
+            ([row(7, ready=True, code_review=2)], {"last_error": "offline"}),
+        ]
         for changes, extra in snapshots:
             self.write(changes, **extra)
             # When
-            with mock.patch.object(actions, "STATUS", self.status), mock.patch.object(actions, "osascript") as osascript, \
-                    mock.patch.object(actions.subprocess, "run") as run:
+            with (
+                mock.patch.object(actions, "STATUS", self.status),
+                mock.patch.object(actions, "osascript") as osascript,
+                mock.patch.object(actions.subprocess, "run") as run,
+            ):
                 actions.handle(["submit", "7", "2"])
             # Then
             osascript.assert_not_called()
@@ -544,9 +624,11 @@ class SubmitTest(SnapshotTest):
         self.write([row(7)])
         cancel = mock.Mock(returncode=1)
         # When
-        with mock.patch.object(actions, "STATUS", self.status), \
-                mock.patch.object(actions, "osascript", return_value=cancel), \
-                mock.patch.object(actions.subprocess, "run") as run:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "osascript", return_value=cancel),
+            mock.patch.object(actions.subprocess, "run") as run,
+        ):
             actions.handle(["submit", "7", "2"])
         # Then
         run.assert_not_called()
@@ -557,11 +639,14 @@ class SubmitTest(SnapshotTest):
         confirm = mock.Mock(returncode=0)
         failed = subprocess.CalledProcessError(1, ["ssh"], stderr="fatal: not mergeable\n")
         # When
-        with mock.patch.object(actions, "STATUS", self.status), \
-                mock.patch.object(actions, "osascript", return_value=confirm), \
-                mock.patch.object(actions, "alert") as alert, mock.patch.object(actions, "refresh"), \
-                mock.patch.object(gerrit, "rest_auth", side_effect=KeyError("no ~/.netrc entry")), \
-                mock.patch.object(actions.subprocess, "run", side_effect=failed):
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "osascript", return_value=confirm),
+            mock.patch.object(actions, "alert") as alert,
+            mock.patch.object(actions, "refresh"),
+            mock.patch.object(gerrit, "rest_auth", side_effect=KeyError("no ~/.netrc entry")),
+            mock.patch.object(actions.subprocess, "run", side_effect=failed),
+        ):
             actions.handle(["submit", "7", "2"])
         # Then
         alert.assert_called_once_with(plugin.t("bar_submit_failed", n="7"), "fatal: not mergeable")
@@ -572,12 +657,15 @@ class SubmitTest(SnapshotTest):
         refused = gerrit.urllib.error.HTTPError("url", 409, "Conflict", {}, io.BytesIO(b"revision 2 is not current\n"))
         self.addCleanup(refused.close)
         # When
-        with mock.patch.object(actions, "STATUS", self.status), \
-                mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=0)), \
-                mock.patch.object(actions, "alert") as alert, mock.patch.object(actions, "refresh"), \
-                mock.patch.object(gerrit, "rest_auth", return_value="token"), \
-                mock.patch.object(gerrit, "rest_post", side_effect=refused) as post, \
-                mock.patch.object(actions.subprocess, "run") as run:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=0)),
+            mock.patch.object(actions, "alert") as alert,
+            mock.patch.object(actions, "refresh"),
+            mock.patch.object(gerrit, "rest_auth", return_value="token"),
+            mock.patch.object(gerrit, "rest_post", side_effect=refused) as post,
+            mock.patch.object(actions.subprocess, "run") as run,
+        ):
             actions.handle(["submit", "7", "2"])
         # Then
         post.assert_called_once_with("/changes/7/revisions/2/submit", {})
@@ -615,10 +703,12 @@ class GateTest(SnapshotTest):
         # Given
         self.write([row(7, gate="vote")])
         # When
-        with mock.patch.object(actions, "STATUS", self.status), \
-                mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=0)), \
-                mock.patch.object(gerrit, "rest_auth", side_effect=KeyError("no ~/.netrc entry")), \
-                mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=0)),
+            mock.patch.object(gerrit, "rest_auth", side_effect=KeyError("no ~/.netrc entry")),
+            mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(returncode=0)) as run,
+        ):
             actions.handle(["vote_gate", "7", "2"])
         # Then
         ssh = [c.args[0] for c in run.call_args_list if c.args[0][0] == "ssh"]
@@ -669,9 +759,13 @@ class HashtagTest(SnapshotTest):
         # Given
         self.write([row(7)])
         # When
-        with mock.patch.object(actions, "STATUS", self.status), mock.patch.object(actions, "HASHTAGS", self.TAGS), \
-                mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=0)), \
-                mock.patch.object(actions, "refresh"), mock.patch.object(gerrit, "rest_post") as post:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "HASHTAGS", self.TAGS),
+            mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=0)),
+            mock.patch.object(actions, "refresh"),
+            mock.patch.object(gerrit, "rest_post") as post,
+        ):
             actions.handle(["hashtag", "7", "claude_review"])
         # Then
         post.assert_called_once_with("/changes/7/hashtags", {"add": ["claude-code-review"]})
@@ -680,9 +774,12 @@ class HashtagTest(SnapshotTest):
         # Given
         self.write([row(7)])
         # When
-        with mock.patch.object(actions, "STATUS", self.status), mock.patch.object(actions, "HASHTAGS", self.TAGS), \
-                mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=1)), \
-                mock.patch.object(gerrit, "rest_post") as post:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "HASHTAGS", self.TAGS),
+            mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=1)),
+            mock.patch.object(gerrit, "rest_post") as post,
+        ):
             actions.handle(["hashtag", "7", "auto_submit"])
         # Then
         post.assert_not_called()
@@ -717,20 +814,26 @@ class SnoozeMenuTest(SnapshotTest):
         # Given
         self.write([row(3)])
         # When
-        with mock.patch.object(actions, "STATUS", self.status), mock.patch.object(actions, "notify"), \
-                mock.patch.object(actions, "refresh"):
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "notify"),
+            mock.patch.object(actions, "refresh"),
+        ):
             actions.handle(["snooze", "3", "ps", "2"])
         # Then
         self.assertEqual({3: {"patch_set": 2}}, actions.snooze.load())
-        with mock.patch.object(statusline_segment, "STATUS", self.status), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
+        with mock.patch.object(statusline_segment, "STATUS", self.status), contextlib.redirect_stdout(io.StringIO()) as out:
             statusline_segment.main()
         self.assertEqual("⎇ 0", out.getvalue())
 
     def snooze_until(self, typed):
-        with mock.patch.object(actions, "STATUS", self.status), mock.patch.object(actions, "notify"), \
-                mock.patch.object(actions, "refresh"), mock.patch.object(actions, "alert") as alert, \
-                mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=0, stdout=f"{typed}\n")) as ask:
+        with (
+            mock.patch.object(actions, "STATUS", self.status),
+            mock.patch.object(actions, "notify"),
+            mock.patch.object(actions, "refresh"),
+            mock.patch.object(actions, "alert") as alert,
+            mock.patch.object(actions, "osascript", return_value=mock.Mock(returncode=0, stdout=f"{typed}\n")) as ask,
+        ):
             actions.handle(["snooze", "4", "date"])
         return ask, alert
 
@@ -759,9 +862,10 @@ class SnoozeMenuTest(SnapshotTest):
     def test_a_red_base_is_shown_and_offers_a_snooze_until_green(self):
         # Given
         red = {"result": "FAILURE", "log_url": "https://logs/p/", "red_since": "2026-09-29T10:00:00"}
-        self.write([row(1, branch="main", base_red=True), row(2, branch="release", base_red=False),
-                    row(3, branch="main", base_red=True)],
-                   base_health={"main": red, "release": {"result": "SUCCESS"}})
+        self.write(
+            [row(1, branch="main", base_red=True), row(2, branch="release", base_red=False), row(3, branch="main", base_red=True)],
+            base_health={"main": red, "release": {"result": "SUCCESS"}},
+        )
         plugin.snooze.set_snooze(3, base_green=True)
         # When
         found = self.menu()
@@ -789,8 +893,12 @@ class VersionDriftTest(SnapshotTest):
         self.write([])
         poll = self.status.with_name("daemon-poll.json")
         poll.write_text(json.dumps(heartbeat))
-        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(plugin, "DAEMON_POLL", poll), \
-                mock.patch.object(plugin, "VERSION", "1.7.0"), contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            mock.patch.object(plugin, "STATUS", self.status),
+            mock.patch.object(plugin, "DAEMON_POLL", poll),
+            mock.patch.object(plugin, "VERSION", "1.7.0"),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             plugin.main()
         return out.getvalue()
 
@@ -804,8 +912,10 @@ class VersionDriftTest(SnapshotTest):
 
     def test_nothing_shows_for_the_same_version_or_a_stopped_daemon(self):
         # When
-        found = [self.menu({"attempt": time.time(), "version": "1.7.0"}),
-                 self.menu({"attempt": time.time() - 3600, "version": "1.6.1"})]
+        found = [
+            self.menu({"attempt": time.time(), "version": "1.7.0"}),
+            self.menu({"attempt": time.time() - 3600, "version": "1.6.1"}),
+        ]
         # Then
         self.assertEqual([False, False], ["restart_daemon" in menu for menu in found])
 
@@ -821,8 +931,11 @@ class VersionDriftTest(SnapshotTest):
 class PauseTest(SnapshotTest):
     def menu(self, paused, age=0):
         self.write([], age=age)
-        with mock.patch.object(plugin, "STATUS", self.status), mock.patch.object(actions, "daemon_paused", return_value=paused), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            mock.patch.object(plugin, "STATUS", self.status),
+            mock.patch.object(actions, "daemon_paused", return_value=paused),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             plugin.main()
         return out.getvalue()
 
@@ -860,10 +973,17 @@ class PauseTest(SnapshotTest):
 
     def test_paused_is_read_from_launchd_disabled_list(self):
         label = config.CONFIG["launchd_label"]
-        for listed, expected in ((f'"{label}" => disabled', True), (f'"{label}" => true', True),
-                                 (f'"{label}" => enabled', False), ('"other" => disabled', False)):
-            with self.subTest(listed=listed), mock.patch.object(actions, "PLIST", self.status), \
-                    mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(stdout=listed)):
+        for listed, expected in (
+            (f'"{label}" => disabled', True),
+            (f'"{label}" => true', True),
+            (f'"{label}" => enabled', False),
+            ('"other" => disabled', False),
+        ):
+            with (
+                self.subTest(listed=listed),
+                mock.patch.object(actions, "PLIST", self.status),
+                mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(stdout=listed)),
+            ):
                 self.status.write_text("{}")
                 self.assertEqual(expected, self.real_daemon_paused())
 

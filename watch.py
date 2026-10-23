@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Block until one of my open Gerrit changes gets a new actionable event, print it as JSON, exit."""
+
 import argparse
 import concurrent.futures
 import itertools
@@ -43,9 +44,15 @@ def unfinished_events(changes, drafts):
     local = repo.unfinished_work(changes)
     mine = {c["number"]: c for c in changes}
     for number in sorted(local.keys() | drafts.keys()):
-        yield f"{number}:unfinished", {
-            **events.event_base(mine.get(number) or drafts[number]), "kind": "unfinished",
-            **local.get(number, {"worktree": None, "unpushed": False, "busy": False}), "drafts": number in drafts}
+        yield (
+            f"{number}:unfinished",
+            {
+                **events.event_base(mine.get(number) or drafts[number]),
+                "kind": "unfinished",
+                **local.get(number, {"worktree": None, "unpushed": False, "busy": False}),
+                "drafts": number in drafts,
+            },
+        )
 
 
 class DaemonError(Exception):
@@ -95,8 +102,10 @@ def diagnose_failures(failures, base):
     histories = {}
     known = known_failures.load()
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        diagnoses = [ci.submit_diagnosis(pool, {"change": event["change"], "message": verdict}, histories,
-                                         event.get("known_flaky"), known) for event, verdict in failures]
+        diagnoses = [
+            ci.submit_diagnosis(pool, {"change": event["change"], "message": verdict}, histories, event.get("known_flaky"), known)
+            for event, verdict in failures
+        ]
         for (event, _), futures in zip(failures, diagnoses):
             event["ci_diagnosis"] = [future.result() for future in futures]
             if ci.PERIODIC_BUILD:
@@ -132,11 +141,15 @@ def diagnose_red(result):
         return {}
     stored = read_json(DIAGNOSES)
     red = red_verdicts(result["changes"])
-    missing = [(key, {**events.event_base(change), "kind": "ci_red", "ci_verdict": verdict["message"]})
-               for key, (change, verdict) in red.items() if key not in stored]
+    missing = [
+        (key, {**events.event_base(change), "kind": "ci_red", "ci_verdict": verdict["message"]})
+        for key, (change, verdict) in red.items()
+        if key not in stored
+    ]
     enrich([event for _, event in missing], result.get("base_health"))
-    found = {key: {"diagnosed_at": time.time(), "jobs": [job_summary(d) for d in event.get("ci_diagnosis", [])]}
-             for key, event in missing}
+    found = {
+        key: {"diagnosed_at": time.time(), "jobs": [job_summary(d) for d in event.get("ci_diagnosis", [])]} for key, event in missing
+    }
     open_changes = {str(c["number"]) for c in result["changes"]}
     kept = {key: entry for key, entry in {**stored, **found}.items() if key.split(":", 1)[0] in open_changes}
     if kept != stored:
@@ -156,8 +169,8 @@ def rebase_candidates(result):
         if number in outdated:
             found[number] = (change, outdated[number]["new_parent_sha"], outdated[number]["parent"])
         elif number not in result["parents"] and (
-                number in result.get("stale_parents", {}) or number in result["conflicts"]
-                or events.ci_reading(change)[2] == "stale_base"):
+            number in result.get("stale_parents", {}) or number in result["conflicts"] or events.ci_reading(change)[2] == "stale_base"
+        ):
             if tips.get(change["branch"]):
                 found[number] = (change, tips[change["branch"]], None)
     return found
@@ -173,10 +186,15 @@ def prepared_rebases(result, listing=None):
         return repo.prepare_replays({})
     busy = {w["worktree"] for w in repo.unfinished_work([c for c, _, _ in candidates.values()], listing).values()}
     worktrees = repo.worktrees_by_change_id(listing)
-    wanted = {n: (c["currentPatchSet"]["revision"], onto) for n, (c, onto, _) in candidates.items()
-              if c.get("currentPatchSet", {}).get("revision") and worktrees.get(c["id"]) not in busy}
-    return {n: {"sha": sha, "patch_set": candidates[n][0]["currentPatchSet"].get("number"), "parent": candidates[n][2]}
-            for n, sha in repo.prepare_replays(wanted).items()}
+    wanted = {
+        n: (c["currentPatchSet"]["revision"], onto)
+        for n, (c, onto, _) in candidates.items()
+        if c.get("currentPatchSet", {}).get("revision") and worktrees.get(c["id"]) not in busy
+    }
+    return {
+        n: {"sha": sha, "patch_set": candidates[n][0]["currentPatchSet"].get("number"), "parent": candidates[n][2]}
+        for n, sha in repo.prepare_replays(wanted).items()
+    }
 
 
 def change_ref(number, patch_set):
@@ -199,10 +217,19 @@ def fixed_failures(result):
             continue
         for job in entry.get("jobs", []):
             if job.get("category") == "unknown" and f"{number}:{failed}:{job['job']}" not in known:
-                yield f"{number}:fixed:{failed}:{job['job']}", {
-                    **events.event_base(change), "kind": "failure_fixed", "job": job["job"], "failed_patch_set": failed,
-                    "failed_ref": change_ref(number, failed), "fixed_ref": patch_set.get("ref"),
-                    "log_url": job.get("log_url"), "excerpt": job.get("excerpt")}
+                yield (
+                    f"{number}:fixed:{failed}:{job['job']}",
+                    {
+                        **events.event_base(change),
+                        "kind": "failure_fixed",
+                        "job": job["job"],
+                        "failed_patch_set": failed,
+                        "failed_ref": change_ref(number, failed),
+                        "fixed_ref": patch_set.get("ref"),
+                        "log_url": job.get("log_url"),
+                        "excerpt": job.get("excerpt"),
+                    },
+                )
 
 
 def rebase(event):
@@ -228,8 +255,13 @@ def prereview(event):
 
 
 # Run one event after the other: they work on the local repo, where concurrent git commands fight over locks.
-EXTRAS = {"parent_merged": rebase, "parent_updated": rebase, "review_new_patch_set": interdiff,
-          "ci_stuck": zuul_queue, "review_requested": prereview}
+EXTRAS = {
+    "parent_merged": rebase,
+    "parent_updated": rebase,
+    "review_new_patch_set": interdiff,
+    "ci_stuck": zuul_queue,
+    "review_requested": prereview,
+}
 
 
 def enrich(reported, base=None):
@@ -273,24 +305,34 @@ def write_status(result=None, error=None, listing=None):
     rows = events.status_rows(result, load_flaky(), repo.worktrees_by_change_id(listing), now, diagnoses)
     for row in rows:
         row["rebase_ready"] = rebases.get(row["number"])
-    cleanup = bonus(repo.cleanup_candidates, frozenset(c["id"] for c in result["changes"]), listing,
-                    what="cleanup check")
-    atomic_write(STATUS, {"updated": now, "last_attempt": now, "last_error": None,
-                          "threads_error": result.get("threads_error"), "changes": rows,
-                          "reviews": events.review_rows(result), "base_health": result.get("base_health", {}),
-                          "cleanup": [{"key": key, **event} for key, event in cleanup]})
+    cleanup = bonus(repo.cleanup_candidates, frozenset(c["id"] for c in result["changes"]), listing, what="cleanup check")
+    atomic_write(
+        STATUS,
+        {
+            "updated": now,
+            "last_attempt": now,
+            "last_error": None,
+            "threads_error": result.get("threads_error"),
+            "changes": rows,
+            "reviews": events.review_rows(result),
+            "base_health": result.get("base_health", {}),
+            "cleanup": [{"key": key, **event} for key, event in cleanup],
+        },
+    )
 
 
 def snapshot_cleanup():
     """{key: event} of the cleanup check the last write_status() made. Entries without a key come from a daemon older
     than this session, still running until its restart."""
-    return {entry["key"]: {k: v for k, v in entry.items() if k != "key"}
-            for entry in read_json(STATUS).get("cleanup", []) if "key" in entry}
+    return {
+        entry["key"]: {k: v for k, v in entry.items() if k != "key"}
+        for entry in read_json(STATUS).get("cleanup", [])
+        if "key" in entry
+    }
 
 
 def snoozed_changes(result, now):
-    patch_sets = {c["number"]: c.get("currentPatchSet", {}).get("number")
-                  for c in result["changes"] + result.get("reviews", [])}
+    patch_sets = {c["number"]: c.get("currentPatchSet", {}).get("number") for c in result["changes"] + result.get("reviews", [])}
     return snooze.active(patch_sets, now, base_red=snooze.red_base(result["changes"], result.get("base_health", {})))
 
 
@@ -314,16 +356,17 @@ def remember(seen, keys, result, current, now):
     change restored soon after does not replay its history, then dropped so the seen files stop growing."""
     alive = {str(c["number"]) for c in result["changes"] + result.get("reviews", [])}
     live = lambda key: key in current or key.split(":", 1)[0] in alive
-    return {key: now if live(key) else stamp
-            for key, stamp in {**seen, **dict.fromkeys(keys, now)}.items()
-            if live(key) or now - stamp < SEEN_RETENTION_S}
+    return {
+        key: now if live(key) else stamp
+        for key, stamp in {**seen, **dict.fromkeys(keys, now)}.items()
+        if live(key) or now - stamp < SEEN_RETENTION_S
+    }
 
 
 def claude_pid():
     """The Claude session running this watcher, found by walking up the process tree."""
     table = procs.processes("comm")
-    return next((pid for pid in procs.ancestors(os.getppid(), table)
-                 if pathlib.Path(table[pid][1].strip()).name == "claude"), None)
+    return next((pid for pid in procs.ancestors(os.getppid(), table) if pathlib.Path(table[pid][1].strip()).name == "claude"), None)
 
 
 def write_session_lock():
@@ -348,8 +391,13 @@ def outage_key():
 
 
 def unreachable_event(detail, failures):
-    return {"kind": "unreachable", "detail": detail, "failures": failures, "since": read_json(STATUS).get("updated"),
-            "network": network.checks()}
+    return {
+        "kind": "unreachable",
+        "detail": detail,
+        "failures": failures,
+        "since": read_json(STATUS).get("updated"),
+        "network": network.checks(),
+    }
 
 
 def session_cap_wait(detail, wait):
@@ -385,15 +433,13 @@ def pending_report(result, now, snoozed, current):
     if threads_error is None and not result["changes"]:
         # No open change, no REST call in the poll: check the HTTP password before a change needs it.
         threads_error = gerrit.http_error()
-    return {"status": "pending", "events": report, "nudges": events.nudges(report),
-            "threads_error": threads_error, "snoozed": snoozed}
+    return {"status": "pending", "events": report, "nudges": events.nudges(report), "threads_error": threads_error, "snoozed": snoozed}
 
 
 def events_report(fresh, result):
     # A snooze ending or a morning catch-up can flush many at once: most urgent first.
     report = events.by_urgency(enrich(list(fresh.values()), result.get("base_health")))
-    return {"status": "events", "events": report, "nudges": events.nudges(report),
-            "threads_error": result.get("threads_error")}
+    return {"status": "events", "events": report, "nudges": events.nudges(report), "threads_error": result.get("threads_error")}
 
 
 def emit(report):
@@ -434,14 +480,14 @@ def main():
         sys.exit("gerrit-babysit: set gerrit_host in config.json (see config.example.json)")
     parser = argparse.ArgumentParser()
     parser.add_argument("--interval", type=int, default=60)
-    parser.add_argument("--pending", action="store_true",
-                        help="print what needs me now, mark everything current as seen and exit")
+    parser.add_argument("--pending", action="store_true", help="print what needs me now, mark everything current as seen and exit")
     parser.add_argument("--daemon", action="store_true", help="run forever: status snapshot + macOS notifications")
     parser.add_argument("--ack", help="id of the last report, handled: without it, that report is printed again")
     args = parser.parse_args()
     if args.daemon:
         # Imported on use: daemon.py imports this module.
         import daemon
+
         return daemon.run(args.interval)
 
     write_session_lock()
@@ -467,8 +513,7 @@ def main():
             # wakes the session once, so it can say so, then the relaunched watcher retries in silence.
             failures += 1
             if failures >= UNREACHABLE_AFTER and outage_key() not in (seen := load_seen()):
-                report = {"status": "events", "events": [unreachable_event(detail, failures)], "nudges": [],
-                          "threads_error": None}
+                report = {"status": "events", "events": [unreachable_event(detail, failures)], "nudges": [], "threads_error": None}
                 report = deliver(report, time.time())
                 save_seen({**seen, outage_key(): time.time()})
                 return emit(report)

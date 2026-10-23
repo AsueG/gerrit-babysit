@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import contextlib
 import io
 import json
@@ -24,11 +25,13 @@ class DaemonTest(unittest.TestCase):
     def run_daemon(self, rounds, **patches):
         sleeps = self.sleeps = mock.Mock(side_effect=[None] * (rounds - 1) + [self.Stop()])
         stderr = io.StringIO()
-        with mock.patch.object(daemon.time, "sleep", sleeps), \
-                mock.patch.object(daemon, "swiftbar"), \
-                mock.patch.object(daemon, "write_daemon_poll"), \
-                mock.patch("sys.stderr", stderr), \
-                contextlib.ExitStack() as stack:
+        with (
+            mock.patch.object(daemon.time, "sleep", sleeps),
+            mock.patch.object(daemon, "swiftbar"),
+            mock.patch.object(daemon, "write_daemon_poll"),
+            mock.patch("sys.stderr", stderr),
+            contextlib.ExitStack() as stack,
+        ):
             for name, value in patches.items():
                 # The daemon's own names on daemon, the shared ones (write_status…) on watch.
                 stack.enter_context(mock.patch.object(daemon if hasattr(daemon, name) else watch, name, value))
@@ -40,8 +43,9 @@ class DaemonTest(unittest.TestCase):
         # Given
         status = mock.Mock()
         # When
-        log = self.run_daemon(3, poll=mock.Mock(return_value={}), write_status=status,
-                              daemon_round=mock.Mock(side_effect=KeyError("number")))
+        log = self.run_daemon(
+            3, poll=mock.Mock(return_value={}), write_status=status, daemon_round=mock.Mock(side_effect=KeyError("number"))
+        )
         # Then
         self.assertEqual(1, log.count("Traceback"))
         self.assertEqual([mock.call(error="KeyError: 'number'")] * 3, status.call_args_list)
@@ -54,10 +58,14 @@ class DaemonTest(unittest.TestCase):
         launcher.write_text("import pathlib\ndef skill_dir():\n    return pathlib.Path('/elsewhere/1.4.2')\n")
         round_ = mock.Mock()
         # When
-        with mock.patch.dict(daemon.os.environ, {"GERRIT_BABYSIT_LAUNCHER": str(launcher)}), \
-                mock.patch.object(daemon, "swiftbar"), mock.patch.object(daemon, "write_daemon_poll"), \
-                mock.patch.object(daemon, "poll", return_value={}), mock.patch.object(daemon, "daemon_round", round_), \
-                mock.patch("sys.stderr", io.StringIO()) as stderr:
+        with (
+            mock.patch.dict(daemon.os.environ, {"GERRIT_BABYSIT_LAUNCHER": str(launcher)}),
+            mock.patch.object(daemon, "swiftbar"),
+            mock.patch.object(daemon, "write_daemon_poll"),
+            mock.patch.object(daemon, "poll", return_value={}),
+            mock.patch.object(daemon, "daemon_round", round_),
+            mock.patch("sys.stderr", io.StringIO()) as stderr,
+        ):
             code = daemon.run(60)
         # Then
         self.assertEqual((0, 1), (code, round_.call_count))
@@ -67,8 +75,7 @@ class DaemonTest(unittest.TestCase):
         # Given
         down = OSError("Could not resolve hostname")
         # When
-        log = self.run_daemon(3, poll=mock.Mock(side_effect=[down, down, {}]), write_status=mock.Mock(),
-                              daemon_round=mock.Mock())
+        log = self.run_daemon(3, poll=mock.Mock(side_effect=[down, down, {}]), write_status=mock.Mock(), daemon_round=mock.Mock())
         # Then
         self.assertEqual(1, log.count("poll failed"))
         self.assertIn("recovered", log)
@@ -83,10 +90,17 @@ class DaemonTest(unittest.TestCase):
         (cache / "status.json").write_text(json.dumps({"updated": 1000.0}))
         notify = mock.Mock()
         down = OSError("Could not resolve hostname")
-        with mock.patch.object(daemon, "DAEMON_STATE", state), mock.patch.object(watch, "STATUS", cache / "status.json"), \
-                mock.patch.object(daemon.events, "is_quiet", return_value=quiet):
-            self.run_daemon(rounds, poll=mock.Mock(side_effect=down), write_status=mock.Mock(),
-                            swiftbar=mock.Mock(side_effect=lambda action, **p: action == "notify" and notify(p)))
+        with (
+            mock.patch.object(daemon, "DAEMON_STATE", state),
+            mock.patch.object(watch, "STATUS", cache / "status.json"),
+            mock.patch.object(daemon.events, "is_quiet", return_value=quiet),
+        ):
+            self.run_daemon(
+                rounds,
+                poll=mock.Mock(side_effect=down),
+                write_status=mock.Mock(),
+                swiftbar=mock.Mock(side_effect=lambda action, **p: action == "notify" and notify(p)),
+            )
         return notify
 
     def test_a_lasting_outage_notifies_once_pointing_at_the_vpn(self):
@@ -111,17 +125,24 @@ class DaemonTest(unittest.TestCase):
         with mock.patch.object(daemon, "DAEMON_POLL", heartbeat):
             daemon.write_daemon_poll({"changes": []})
         # Then
-        self.assertEqual((daemon.VERSION, str(daemon.SKILL_DIR)),
-                         (json.loads(heartbeat.read_text())["version"], json.loads(heartbeat.read_text())["skill_dir"]))
+        self.assertEqual(
+            (daemon.VERSION, str(daemon.SKILL_DIR)),
+            (json.loads(heartbeat.read_text())["version"], json.loads(heartbeat.read_text())["skill_dir"]),
+        )
 
     def test_the_poll_duration_comes_off_the_wait(self):
         # Given
         sleep = mock.Mock(side_effect=self.Stop())
         clock = mock.Mock(side_effect=[100.0, 125.0])
         # When
-        with mock.patch.object(daemon.time, "sleep", sleep), mock.patch.object(daemon.time, "monotonic", clock), \
-                mock.patch.object(daemon, "poll", return_value={}), mock.patch.object(daemon, "daemon_round"), \
-                mock.patch.object(daemon, "write_daemon_poll"), self.assertRaises(self.Stop):
+        with (
+            mock.patch.object(daemon.time, "sleep", sleep),
+            mock.patch.object(daemon.time, "monotonic", clock),
+            mock.patch.object(daemon, "poll", return_value={}),
+            mock.patch.object(daemon, "daemon_round"),
+            mock.patch.object(daemon, "write_daemon_poll"),
+            self.assertRaises(self.Stop),
+        ):
             daemon.run(60)
         # Then
         sleep.assert_called_once_with(35.0)
@@ -156,9 +177,11 @@ class DaemonTest(unittest.TestCase):
         # Given
         published = mock.Mock()
         # When
-        with mock.patch.object(daemon, "write_daemon_poll", published), \
-                mock.patch.object(watch, "write_status", side_effect=OSError("disk full")), \
-                self.assertRaises(OSError):
+        with (
+            mock.patch.object(daemon, "write_daemon_poll", published),
+            mock.patch.object(watch, "write_status", side_effect=OSError("disk full")),
+            self.assertRaises(OSError),
+        ):
             daemon.daemon_round({"changes": []}, first_run=True)
         # Then
         published.assert_called_once_with({"changes": []})
@@ -180,9 +203,11 @@ class AutoSubmitAllTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tagged = pathlib.Path(tmp.name) / "tagged.json"
-        for patcher in (mock.patch.object(daemon, "AUTO_SUBMIT_TAGGED", self.tagged),
-                        mock.patch.dict(daemon.CONFIG, auto_submit_all=True, auto_submit_hashtag="auto-submit"),
-                        mock.patch.object(daemon, "log")):
+        for patcher in (
+            mock.patch.object(daemon, "AUTO_SUBMIT_TAGGED", self.tagged),
+            mock.patch.dict(daemon.CONFIG, auto_submit_all=True, auto_submit_hashtag="auto-submit"),
+            mock.patch.object(daemon, "log"),
+        ):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -254,10 +279,14 @@ class SnoozedRoundTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         state = pathlib.Path(tmp.name) / "daemon-seen.json"
         # When
-        with mock.patch.object(daemon, "DAEMON_STATE", state), mock.patch.object(daemon, "write_daemon_poll"), \
-                mock.patch.object(watch, "write_status"), mock.patch.object(watch, "record_flaky"), \
-                mock.patch.object(events, "is_quiet", return_value=False), \
-                mock.patch.object(daemon, "swiftbar") as swiftbar:
+        with (
+            mock.patch.object(daemon, "DAEMON_STATE", state),
+            mock.patch.object(daemon, "write_daemon_poll"),
+            mock.patch.object(watch, "write_status"),
+            mock.patch.object(watch, "record_flaky"),
+            mock.patch.object(events, "is_quiet", return_value=False),
+            mock.patch.object(daemon, "swiftbar") as swiftbar,
+        ):
             daemon.daemon_round(result, first_run=False)
         # Then
         self.assertEqual([], [c for c in swiftbar.call_args_list if c.args[0] == "notify"])

@@ -1,4 +1,5 @@
 """Settings shared by the watcher, the status line and the SwiftBar plugin."""
+
 import getpass
 import importlib.util
 import json
@@ -95,8 +96,7 @@ def launched_skill_dir(launcher):
 
 def config_path():
     candidates = [os.environ.get("GERRIT_BABYSIT_CONFIG"), SKILL_DIR / "config.json", USER_DIR / "config.json"]
-    return next((pathlib.Path(p).expanduser() for p in candidates if p and pathlib.Path(p).expanduser().is_file()),
-                None)
+    return next((pathlib.Path(p).expanduser() for p in candidates if p and pathlib.Path(p).expanduser().is_file()), None)
 
 
 def load():
@@ -133,8 +133,9 @@ def gerrit_user():
     if configured:
         return configured
     try:
-        found = subprocess.run(["git", "-C", str(REPO), "config", "--get", "gitreview.username"],
-                                capture_output=True, text=True, timeout=5).stdout.strip()
+        found = subprocess.run(
+            ["git", "-C", str(REPO), "config", "--get", "gitreview.username"], capture_output=True, text=True, timeout=5
+        ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         found = ""
     return found or getpass.getuser()

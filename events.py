@@ -1,4 +1,5 @@
 """Pure logic: a poll's rows in, keyed events and notification texts out. No network, no git."""
+
 import datetime
 import pathlib
 import re
@@ -120,8 +121,7 @@ def ci_state(change, patch_set, votes, verdict=None):
 
 def patch_set_messages(change, patch_set, author):
     prefix = f"Patch Set {patch_set.get('number')}:"
-    return [m for m in change.get("comments", [])
-            if m["reviewer"].get("username") == author and m["message"].startswith(prefix)]
+    return [m for m in change.get("comments", []) if m["reviewer"].get("username") == author and m["message"].startswith(prefix)]
 
 
 def latest_ci_verdict(change, patch_set):
@@ -139,8 +139,7 @@ def ci_reading(change):
 
 def ci_idle_since(change, patch_set):
     """Zuul's last sign of life on this patch set (a recheck's "Starting" counts), else the upload."""
-    return max((m["timestamp"] for m in patch_set_messages(change, patch_set, CI_USER)),
-               default=patch_set.get("createdOn", 0))
+    return max((m["timestamp"] for m in patch_set_messages(change, patch_set, CI_USER)), default=patch_set.get("createdOn", 0))
 
 
 def is_ci_stuck(change, patch_set, state, now):
@@ -149,8 +148,11 @@ def is_ci_stuck(change, patch_set, state, now):
 
 def my_rechecks(change, patch_set, before):
     """How many times I already asked zuul to rerun this patch set before the given verdict."""
-    return sum(1 for m in patch_set_messages(change, patch_set, USER)
-               if m["timestamp"] < before and ci.RECHECK.fullmatch(m["message"].partition("\n")[2].strip()))
+    return sum(
+        1
+        for m in patch_set_messages(change, patch_set, USER)
+        if m["timestamp"] < before and ci.RECHECK.fullmatch(m["message"].partition("\n")[2].strip())
+    )
 
 
 def event_base(change):
@@ -186,11 +188,18 @@ def awaiting_threads(comments_by_file):
     threads = {}
     for comment in sorted(by_id.values(), key=lambda c: c["updated"]):
         threads.setdefault(root(comment), []).append(comment)
-    awaiting = [{"patch_set": thread[0].get("patch_set"), "file": thread[0]["file"], "line": thread[0].get("line"),
-                 "author": thread[-1]["author"].get("name", ""), "reply_to": thread[-1]["id"],
-                 "messages": [f'{m["author"].get("username", "")}: {m["message"][:800]}' for m in thread[-3:]]}
-                for thread in threads.values()
-                if thread[-1].get("unresolved") and thread[-1]["author"].get("username", "") not in NOT_ME]
+    awaiting = [
+        {
+            "patch_set": thread[0].get("patch_set"),
+            "file": thread[0]["file"],
+            "line": thread[0].get("line"),
+            "author": thread[-1]["author"].get("name", ""),
+            "reply_to": thread[-1]["id"],
+            "messages": [f"{m['author'].get('username', '')}: {m['message'][:800]}" for m in thread[-3:]],
+        }
+        for thread in threads.values()
+        if thread[-1].get("unresolved") and thread[-1]["author"].get("username", "") not in NOT_ME
+    ]
     return awaiting[-MAX_THREADS:]
 
 
@@ -207,8 +216,7 @@ def is_quiet(now):
 
 def working_days_since(start, now):
     first, last = datetime.date.fromtimestamp(start), datetime.date.fromtimestamp(now)
-    return sum(1 for n in range(1, (last - first).days + 1)
-               if (first + datetime.timedelta(days=n)).weekday() < 5)
+    return sum(1 for n in range(1, (last - first).days + 1) if (first + datetime.timedelta(days=n)).weekday() < 5)
 
 
 def unreviewed_days(change, patch_set, now):
@@ -216,8 +224,7 @@ def unreviewed_days(change, patch_set, now):
     if change.get("wip") or votes_of(patch_set).get("Code-Review"):
         return None
     uploaded = patch_set.get("createdOn", now)
-    if any(m["timestamp"] >= uploaded and m["reviewer"].get("username", "") not in NOT_ME
-           for m in change.get("comments", [])):
+    if any(m["timestamp"] >= uploaded and m["reviewer"].get("username", "") not in NOT_ME for m in change.get("comments", [])):
         return None
     days = working_days_since(uploaded, now)
     return days if days >= UNREVIEWED_WORKING_DAYS else None
@@ -225,10 +232,15 @@ def unreviewed_days(change, patch_set, now):
 
 def attention_entries(attention_set):
     """REST's `attention_set` / `removed_from_attention_set` ({account id: AttentionSetInfo}) as a list."""
-    return [{"username": info["account"].get("username", ""),
-             "name": info["account"].get("name") or info["account"].get("username", ""),
-             "since": epoch(info["last_update"]), "reason": info.get("reason", "")}
-            for info in (attention_set or {}).values()]
+    return [
+        {
+            "username": info["account"].get("username", ""),
+            "name": info["account"].get("name") or info["account"].get("username", ""),
+            "since": epoch(info["last_update"]),
+            "reason": info.get("reason", ""),
+        }
+        for info in (attention_set or {}).values()
+    ]
 
 
 def review_wait(change, patch_set, attention, now):
@@ -243,11 +255,17 @@ def review_wait(change, patch_set, attention, now):
     if change.get("wip") or any(h["username"] == USER for h in attention["holders"]):
         return None
     uploaded = patch_set.get("createdOn", now)
-    holders = [{"name": h["name"], "username": h["username"], "working_days": working_days_since(h["since"], now)}
-               for h in attention["holders"] if h["username"] not in NOT_ME]
+    holders = [
+        {"name": h["name"], "username": h["username"], "working_days": working_days_since(h["since"], now)}
+        for h in attention["holders"]
+        if h["username"] not in NOT_ME
+    ]
     spoke = {m["reviewer"].get("username", "") for m in change.get("comments", []) if m["timestamp"] >= uploaded}
-    dismissed = [{"name": r["name"], "username": r["username"], "reason": r["reason"]} for r in attention["removed"]
-                 if r["since"] >= uploaded and r["username"] not in NOT_ME | spoke | {h["username"] for h in holders}]
+    dismissed = [
+        {"name": r["name"], "username": r["username"], "reason": r["reason"]}
+        for r in attention["removed"]
+        if r["since"] >= uploaded and r["username"] not in NOT_ME | spoke | {h["username"] for h in holders}
+    ]
     held = max((h["working_days"] for h in holders), default=0)
     if held >= UNREVIEWED_WORKING_DAYS:
         return held, holders, dismissed
@@ -257,9 +275,25 @@ def review_wait(change, patch_set, attention, now):
 
 # An outage hides everything else, then work left halfway, what blocks my changes (a red base explains the CI
 # failures after it), what one click unblocks, what others wait from me, then what only waits.
-URGENCY = ("unreachable", "unfinished", "base_red", "merge_conflict", "parent_merged", "pending", "message", "submit_blocked",
-           "ready_to_submit", "parent_updated", "ci_stuck", "review_reply", "review_requested", "review_new_patch_set",
-           "waiting_for_review", "cleanup_candidate", "failure_fixed")
+URGENCY = (
+    "unreachable",
+    "unfinished",
+    "base_red",
+    "merge_conflict",
+    "parent_merged",
+    "pending",
+    "message",
+    "submit_blocked",
+    "ready_to_submit",
+    "parent_updated",
+    "ci_stuck",
+    "review_reply",
+    "review_requested",
+    "review_new_patch_set",
+    "waiting_for_review",
+    "cleanup_candidate",
+    "failure_fixed",
+)
 
 
 def by_urgency(reported):
@@ -287,16 +321,19 @@ def nudges(reported):
     waiting = [event for event in reported if event["kind"] == "waiting_for_review"]
     for event in waiting:
         for holder in event.get("waiting_on") or []:
-            entry = by_reviewer.setdefault(holder["username"], {"reviewer": holder["name"], "username": holder["username"],
-                                                                "changes": [], "working_days": 0})
+            entry = by_reviewer.setdefault(
+                holder["username"], {"reviewer": holder["name"], "username": holder["username"], "changes": [], "working_days": 0}
+            )
             entry["changes"].append(event["change"])
             entry["working_days"] = max(entry["working_days"], holder["working_days"])
     return sorted(by_reviewer.values(), key=lambda e: (-len(e["changes"]), e["reviewer"]))
 
 
 def ready_since(patch_set):
-    return max((int(a.get("grantedOn", 0)) for a in patch_set.get("approvals", [])
-                if a["type"] == "Code-Review" and int(a["value"]) == 2), default=None)
+    return max(
+        (int(a.get("grantedOn", 0)) for a in patch_set.get("approvals", []) if a["type"] == "Code-Review" and int(a["value"]) == 2),
+        default=None,
+    )
 
 
 def threads_of(result, number):
@@ -332,7 +369,7 @@ def message_events(change, threads):
             event["rechecks"] = my_rechecks(change, patch_set, message["timestamp"])
         else:
             event["threads_awaiting_me"] = threads
-        yield f'{number}:{message["timestamp"]}:{author}', event
+        yield f"{number}:{message['timestamp']}:{author}", event
 
 
 def state_events(change, result, day, now):
@@ -349,38 +386,47 @@ def state_events(change, result, day, now):
     state = ci_state(change, patch_set, votes)
     voted = votes_ready(votes, ci_labels_of(change))
     if is_ci_stuck(change, patch_set, state, now):
-        yield f'{number}:ci_stuck:{ps}', {**base, "kind": "ci_stuck", "idle_since": ci_idle_since(change, patch_set)}
+        yield f"{number}:ci_stuck:{ps}", {**base, "kind": "ci_stuck", "idle_since": ci_idle_since(change, patch_set)}
     if number in stale:
         # Takes over merge_conflict: the fix is a rebase --onto that drops the old parent, conflicts or not.
-        yield f'{number}:parent_merged:{ps}', {
-            **base, "kind": "parent_merged", **stale[number], "files": conflicts.get(number, [])}
+        yield f"{number}:parent_merged:{ps}", {**base, "kind": "parent_merged", **stale[number], "files": conflicts.get(number, [])}
     elif number in outdated:
         # Rebasing onto the parent's new patch set comes first: a conflict with the branch may go with it.
-        yield f'{number}:parent_updated:{ps}:{outdated[number]["new_parent_sha"]}', {
-            **base, "kind": "parent_updated", **outdated[number]}
+        yield (
+            f"{number}:parent_updated:{ps}:{outdated[number]['new_parent_sha']}",
+            {**base, "kind": "parent_updated", **outdated[number]},
+        )
     elif number in conflicts:
-        yield f'{number}:conflict:{ps}', {**base, "kind": "merge_conflict", "files": conflicts[number]}
+        yield f"{number}:conflict:{ps}", {**base, "kind": "merge_conflict", "files": conflicts[number]}
     elif voted and threads_of(result, number) == [] and number not in result["parents"]:
         if blockers:
             # The votes are there but Gerrit would refuse the submit: once per patch set and set of blockers.
-            yield f'{number}:blocked:{ps}:{"+".join(blockers)}', {
-                **base, "kind": "submit_blocked", "requirements": blockers}
+            yield f"{number}:blocked:{ps}:{'+'.join(blockers)}", {**base, "kind": "submit_blocked", "requirements": blockers}
         elif (gate := gate_state(change)) != "voted":
             # One key per working day: a CL left unsubmitted comes back the next morning.
-            yield f'{number}:ready:{ps}:{day}', {**base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set),
-                                                  "gate": gate}
+            yield (
+                f"{number}:ready:{ps}:{day}",
+                {**base, "kind": "ready_to_submit", "ready_since": ready_since(patch_set), "gate": gate},
+            )
 
     attention_sets = result.get("attention_sets")
     wait = None if attention_sets is None else attention_sets.get(number, {"holders": [], "removed": []})
     wait = review_wait(change, patch_set, wait, now)
-    if (wait and number not in conflicts and number not in stale and not voted
-            and state not in ("failed", "stale_base")):
+    if wait and number not in conflicts and number not in stale and not voted and state not in ("failed", "stale_base"):
         days, waiting_on, dismissed = wait
-        yield f'{number}:unreviewed:{ps}:{day}', {
-            **base, "kind": "waiting_for_review", "working_days": days, "waiting_on": waiting_on,
-            "dismissed": dismissed,
-            "reviewers": [r.get("name") or r.get("username") for r in change.get("allReviewers", [])
-                          if r.get("username", "") not in NOT_ME]}
+        yield (
+            f"{number}:unreviewed:{ps}:{day}",
+            {
+                **base,
+                "kind": "waiting_for_review",
+                "working_days": days,
+                "waiting_on": waiting_on,
+                "dismissed": dismissed,
+                "reviewers": [
+                    r.get("name") or r.get("username") for r in change.get("allReviewers", []) if r.get("username", "") not in NOT_ME
+                ],
+            },
+        )
 
 
 def base_events(result):
@@ -389,8 +435,10 @@ def base_events(result):
     for branch, health in sorted(result.get("base_health", {}).items()):
         changes = sorted(c["number"] for c in result["changes"] if c["branch"] == branch)
         if ci.is_red(health) and changes:
-            yield f'base_red:{branch}:{health.get("last_green") or "?"}', {
-                "kind": "base_red", "branch": branch, "url": health.get("log_url"), "changes": changes, **health}
+            yield (
+                f"base_red:{branch}:{health.get('last_green') or '?'}",
+                {"kind": "base_red", "branch": branch, "url": health.get("log_url"), "changes": changes, **health},
+            )
 
 
 def patch_set_of(message):
@@ -406,9 +454,12 @@ def is_new_patch_set_notice(message):
 
 def my_review_votes(change):
     """[(patch set, value)] of my Code-Review votes on a change I review."""
-    return [(int(ps["number"]), int(a["value"]))
-            for ps in change.get("patchSets", []) for a in ps.get("approvals", [])
-            if a["by"].get("username") == USER and a["type"] == "Code-Review"]
+    return [
+        (int(ps["number"]), int(a["value"]))
+        for ps in change.get("patchSets", [])
+        for a in ps.get("approvals", [])
+        if a["by"].get("username") == USER and a["type"] == "Code-Review"
+    ]
 
 
 def human_reviewers(change):
@@ -434,17 +485,34 @@ def review_events(change, day, needs_my_attention=False):
     if not change.get("wip") and len(humans) <= MAX_REVIEWERS:
         # Untouched requests come back each working day; once I took part, it is not a request anymore.
         key = f"{number}:review_requested" if last_seen_ps else f"{number}:review_requested:{day}"
-        yield key, {**base, "kind": "review_requested", "reviewers": len(humans), "participated": bool(last_seen_ps),
-                    "current_ref": change.get("currentPatchSet", {}).get("ref"), "blocked_by": blocked_by}
+        yield (
+            key,
+            {
+                **base,
+                "kind": "review_requested",
+                "reviewers": len(humans),
+                "participated": bool(last_seen_ps),
+                "current_ref": change.get("currentPatchSet", {}).get("ref"),
+                "blocked_by": blocked_by,
+            },
+        )
 
     # A vote Gerrit copied onto the current patch set (trivial rebase) means nothing needs re-reviewing.
     if last_seen_ps and last_seen_ps < current and not any(ps == current for ps, _ in my_votes):
         last_vote = max(my_votes, default=None)
         refs = {int(ps["number"]): ps.get("ref") for ps in change.get("patchSets", [])}
-        yield f"{number}:review_ps:{current}", {
-            **base, "kind": "review_new_patch_set", "since_patch_set": last_seen_ps, "blocked_by": blocked_by,
-            "since_ref": refs.get(last_seen_ps), "current_ref": refs.get(int(current)),
-            "my_last_vote": {"patch_set": last_vote[0], "value": last_vote[1]} if last_vote else None}
+        yield (
+            f"{number}:review_ps:{current}",
+            {
+                **base,
+                "kind": "review_new_patch_set",
+                "since_patch_set": last_seen_ps,
+                "blocked_by": blocked_by,
+                "since_ref": refs.get(last_seen_ps),
+                "current_ref": refs.get(int(current)),
+                "my_last_vote": {"patch_set": last_vote[0], "value": last_vote[1]} if last_vote else None,
+            },
+        )
 
     if not mine:
         return
@@ -453,7 +521,7 @@ def review_events(change, day, needs_my_attention=False):
         author = message["reviewer"].get("username")
         replied = author == owner or (needs_my_attention and (author or "") not in NOT_ME)
         if message["timestamp"] > my_last and replied and not is_new_patch_set_notice(message):
-            yield f'{number}:review_reply:{message["timestamp"]}', message_event(base, message, "review_reply")
+            yield f"{number}:review_reply:{message['timestamp']}", message_event(base, message, "review_reply")
 
 
 def review_rows(result):
@@ -463,12 +531,23 @@ def review_rows(result):
     for change in result.get("reviews", []):
         patch_set = change.get("currentPatchSet", {})
         current = int(patch_set.get("number") or 0)
-        if (change.get("wip") or len(human_reviewers(change)) > MAX_REVIEWERS
-                or any(ps == current for ps, _ in my_review_votes(change))):
+        if (
+            change.get("wip")
+            or len(human_reviewers(change)) > MAX_REVIEWERS
+            or any(ps == current for ps, _ in my_review_votes(change))
+        ):
             continue
-        rows.append({"number": change["number"], "patch_set": current, "subject": change["subject"],
-                     "url": change["url"], "owner": change.get("owner", {}).get("name", ""),
-                     "since": patch_set.get("createdOn"), "blocked_by": review_blocker(change)})
+        rows.append(
+            {
+                "number": change["number"],
+                "patch_set": current,
+                "subject": change["subject"],
+                "url": change["url"],
+                "owner": change.get("owner", {}).get("name", ""),
+                "since": patch_set.get("createdOn"),
+                "blocked_by": review_blocker(change),
+            }
+        )
     return sorted(rows, key=lambda row: (bool(row["blocked_by"]), row["since"] or 0))
 
 
@@ -481,8 +560,14 @@ def pending_events(result, now=None, current=None):
         threads = threads_of(result, change["number"])
         if not (threads or code_review < 0 or state in ("failed", "stale_base")):
             continue
-        event = {**event_base(change), "kind": "pending", "wip": change.get("wip", False), "ci": state,
-                 "code_review": code_review, "threads_awaiting_me": threads}
+        event = {
+            **event_base(change),
+            "kind": "pending",
+            "wip": change.get("wip", False),
+            "ci": state,
+            "code_review": code_review,
+            "threads_awaiting_me": threads,
+        }
         if verdict:
             event["ci_verdict"] = verdict["message"][:1500]
             event["rechecks"] = my_rechecks(change, patch_set, verdict["timestamp"])
@@ -504,35 +589,37 @@ def status_rows(result, flakes, worktrees, now, diagnoses=None):
         patch_set, votes, state, verdict = ci_reading(change)
         failed_jobs = [{"job": j["job"], "result": j["result"]} for j in ci.failed_jobs(verdict["message"])] if verdict else []
         outdated = result.get("outdated_parents", {}).get(number)
-        rows.append({
-            "number": number,
-            "change_id": change["id"],
-            "patch_set": patch_set.get("number"),
-            "subject": change["subject"],
-            "url": change["url"],
-            "wip": change.get("wip", False),
-            "code_review": code_review_score(votes),
-            "ci": state,
-            "ci_failed": failed_ci_labels(votes),
-            "ci_failed_jobs": failed_jobs,
-            "ci_diagnosis": diagnoses.get(number, []) if verdict else [],
-            "flaky": ci.flaky_counts(flakes, [j["job"] for j in failed_jobs], now),
-            # Every recheck on the patch set, also after the verdict: one may already be running.
-            "rechecks": my_rechecks(change, patch_set, float("inf")),
-            "ci_stuck": is_ci_stuck(change, patch_set, state, now),
-            "threads": None if threads is None else len(threads),
-            "conflict": number in result["conflicts"],
-            "open_parent": result["parents"].get(number),
-            "outdated_parent": outdated["parent"] if outdated else None,
-            # The votes are in and no thread waits on me; an open parent is the reader's call.
-            "ready": votes_ready(votes, ci_labels_of(change)) and threads == [] and not blockers.get(number),
-            "submit_blocked": blockers.get(number, []),
-            "gate": gate_state(change),
-            "hashtags": change.get("hashtags", []),
-            "worktree": worktrees.get(change["id"]),
-            "branch": change["branch"],
-            "base_red": ci.is_red(result.get("base_health", {}).get(change["branch"])),
-        })
+        rows.append(
+            {
+                "number": number,
+                "change_id": change["id"],
+                "patch_set": patch_set.get("number"),
+                "subject": change["subject"],
+                "url": change["url"],
+                "wip": change.get("wip", False),
+                "code_review": code_review_score(votes),
+                "ci": state,
+                "ci_failed": failed_ci_labels(votes),
+                "ci_failed_jobs": failed_jobs,
+                "ci_diagnosis": diagnoses.get(number, []) if verdict else [],
+                "flaky": ci.flaky_counts(flakes, [j["job"] for j in failed_jobs], now),
+                # Every recheck on the patch set, also after the verdict: one may already be running.
+                "rechecks": my_rechecks(change, patch_set, float("inf")),
+                "ci_stuck": is_ci_stuck(change, patch_set, state, now),
+                "threads": None if threads is None else len(threads),
+                "conflict": number in result["conflicts"],
+                "open_parent": result["parents"].get(number),
+                "outdated_parent": outdated["parent"] if outdated else None,
+                # The votes are in and no thread waits on me; an open parent is the reader's call.
+                "ready": votes_ready(votes, ci_labels_of(change)) and threads == [] and not blockers.get(number),
+                "submit_blocked": blockers.get(number, []),
+                "gate": gate_state(change),
+                "hashtags": change.get("hashtags", []),
+                "worktree": worktrees.get(change["id"]),
+                "branch": change["branch"],
+                "base_red": ci.is_red(result.get("base_health", {}).get(change["branch"])),
+            }
+        )
     return rows
 
 
@@ -556,21 +643,26 @@ def waiting_title(event, n):
 # kind → (event, change number, now) → (title, body)
 NOTIFICATIONS = {
     "merge_conflict": lambda e, n, now: (t("conflict", n=n), ", ".join(pathlib.Path(f).name for f in e["files"])),
-    "submit_blocked": lambda e, n, now: (t("submit_blocked", n=n),
-                                         t("submit_blocked_body", requirements=", ".join(e["requirements"]))),
+    "submit_blocked": lambda e, n, now: (
+        t("submit_blocked", n=n),
+        t("submit_blocked_body", requirements=", ".join(e["requirements"])),
+    ),
     "ready_to_submit": lambda e, n, now: (ready_title(e, n, now), e["subject"]),
-    "ci_stuck": lambda e, n, now: (t("ci_stuck", n=n),
-                                   t("ci_stuck_body", hours=int((now - e["idle_since"]) // 3600), subject=e["subject"])),
+    "ci_stuck": lambda e, n, now: (
+        t("ci_stuck", n=n),
+        t("ci_stuck_body", hours=int((now - e["idle_since"]) // 3600), subject=e["subject"]),
+    ),
     "parent_merged": lambda e, n, now: (t("rebase", n=n), t("rebase_body", parent=e["parent"], subject=e["subject"])),
     "parent_updated": lambda e, n, now: (t("parent_updated", n=n, parent=e["parent"]), e["subject"]),
     "waiting_for_review": lambda e, n, now: (waiting_title(e, n), e["subject"]),
     "message": lambda e, n, now: (f"{n} · {e['author']}", message_body(e)),
     "review_requested": lambda e, n, now: (t("review_requested", owner=e["owner"]), f"{n} · {e['subject']}"),
-    "review_new_patch_set": lambda e, n, now: (t("new_patch_set", n=n, ps=e["patch_set"]),
-                                               f"{e['owner']} · {e['subject']}"),
+    "review_new_patch_set": lambda e, n, now: (t("new_patch_set", n=n, ps=e["patch_set"]), f"{e['owner']} · {e['subject']}"),
     "review_reply": lambda e, n, now: (t("replied", n=n, author=e["author"]), message_body(e)),
-    "base_red": lambda e, n, now: (t("base_red", branch=e["branch"], hours=int(ci.red_for_s(e, now) // 3600)),
-                                   t("base_red_body", changes=", ".join(map(str, e["changes"])))),
+    "base_red": lambda e, n, now: (
+        t("base_red", branch=e["branch"], hours=int(ci.red_for_s(e, now) // 3600)),
+        t("base_red_body", changes=", ".join(map(str, e["changes"]))),
+    ),
 }
 
 
@@ -590,11 +682,19 @@ def notifications(fresh, now=None):
     fresh = list(fresh)
     grouped = [n for n in nudges(fresh) if len(n["changes"]) > 1]
     covered = {number for n in grouped for number in n["changes"]}
-    contents = [(t("waiting_on_many", count=len(n["changes"]), name=n["reviewer"]), " · ".join(map(str, n["changes"])),
-                 waiting_on_url(n["username"])) for n in grouped]
-    contents += [(*content, event.get("url") or DASHBOARD) for event in fresh
-                 if not (event["kind"] == "waiting_for_review" and event.get("change") in covered)
-                 and (content := notification(event, now))]
+    contents = [
+        (
+            t("waiting_on_many", count=len(n["changes"]), name=n["reviewer"]),
+            " · ".join(map(str, n["changes"])),
+            waiting_on_url(n["username"]),
+        )
+        for n in grouped
+    ]
+    contents += [
+        (*content, event.get("url") or DASHBOARD)
+        for event in fresh
+        if not (event["kind"] == "waiting_for_review" and event.get("change") in covered) and (content := notification(event, now))
+    ]
     if len(contents) <= DIGEST_OVER:
         return contents
     return [(t("digest", count=len(contents)), " · ".join(title for title, _, _ in contents)[:200], DASHBOARD)]

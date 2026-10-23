@@ -1,6 +1,7 @@
 """What a click in the SwiftBar menu does (macos/gerrit.30s.py draws it): confirm, then act on Gerrit, git or launchd.
 
 Each public action first checks the snapshot still shows what the menu offered: stale rows could hide a -1 or a push."""
+
 import datetime
 import json
 import os
@@ -40,16 +41,23 @@ def snapshot_row(number, status=None):
 
 def confirmed(question, detail, button):
     """Cancel is the default button: a stray Enter never publishes anything."""
-    return osascript(
-        'on run argv\n'
-        'display dialog (item 1 of argv & return & return & item 2 of argv) '
-        'buttons {item 3 of argv, item 4 of argv} default button 1 cancel button 1 with title "Gerrit" with icon caution\n'
-        'end run',
-        question, detail, t("bar_cancel"), button).returncode == 0
+    return (
+        osascript(
+            "on run argv\n"
+            "display dialog (item 1 of argv & return & return & item 2 of argv) "
+            'buttons {item 3 of argv, item 4 of argv} default button 1 cancel button 1 with title "Gerrit" with icon caution\n'
+            "end run",
+            question,
+            detail,
+            t("bar_cancel"),
+            button,
+        ).returncode
+        == 0
+    )
 
 
 def alert(title, detail):
-    osascript('on run argv\ndisplay alert (item 1 of argv) message (item 2 of argv) as critical\nend run', title, detail)
+    osascript("on run argv\ndisplay alert (item 1 of argv) message (item 2 of argv) as critical\nend run", title, detail)
 
 
 def refresh():
@@ -60,6 +68,7 @@ def review(number, patch_set, subject, done, failed, params=None, **action):
     """On the confirmed patch set: Gerrit refuses if a newer one was pushed since the snapshot."""
     # Imported on use: resolving the SSH user can run git, and the menu redraws every 30 s.
     import gerrit
+
     try:
         gerrit.review(number, patch_set, **action)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
@@ -101,8 +110,7 @@ def vote_gate(number, patch_set):
         return
     subject = row.get("subject", "")
     if confirmed(t("bar_gate_confirm", label=GATE_LABEL, n=number, ps=patch_set), subject, t("bar_gate_button")):
-        review(number, patch_set, subject, "bar_gate_voted", "bar_gate_failed", {"label": GATE_LABEL},
-               labels={GATE_LABEL: 1})
+        review(number, patch_set, subject, "bar_gate_voted", "bar_gate_failed", {"label": GATE_LABEL}, labels={GATE_LABEL: 1})
 
 
 def add_hashtag(number, kind):
@@ -115,6 +123,7 @@ def add_hashtag(number, kind):
         return
     # Imported on use: the menu redraws every 30 s and only the actions need it.
     import gerrit
+
     try:
         gerrit.rest_post(f"/changes/{number}/hashtags", {"add": [tag]})
     except (OSError, ValueError, KeyError) as error:
@@ -140,6 +149,7 @@ def push_rebase(number, patch_set):
     it was made from and the private ref still holds it."""
     # Imported on use: the menu redraws every 30 s and only this action needs git.
     import repo
+
     row = acted_row(number, patch_set)
     prepared = row.get("rebase_ready") or {}
     if str(prepared.get("patch_set")) != patch_set:
@@ -150,8 +160,9 @@ def push_rebase(number, patch_set):
     detail = row.get("subject", "")
     if row.get("worktree"):
         detail += "\n\n" + t("bar_push_rebase_worktree", path=row["worktree"], ps=patch_set, n=number)
-    if not confirmed(t("bar_push_rebase_confirm", n=number, ps=patch_set, onto=snapshot.rebase_onto(row)), detail,
-                     t("bar_push_button")):
+    if not confirmed(
+        t("bar_push_rebase_confirm", n=number, ps=patch_set, onto=snapshot.rebase_onto(row)), detail, t("bar_push_button")
+    ):
         return
     result = repo.push_for_review(sha, row["branch"])
     if result.returncode == 0:
@@ -162,16 +173,23 @@ def push_rebase(number, patch_set):
 
 
 # A plain text field: on macOS 26 osascript gets SIGKILLed as soon as it builds an AppKit NSDatePicker.
-DATE_PROMPT = ('on run argv\n'
-               'text returned of (display dialog (item 1 of argv) default answer (item 4 of argv) '
-               'buttons {item 2 of argv, item 3 of argv} default button 2 cancel button 1 with title "Gerrit")\n'
-               'end run')
+DATE_PROMPT = (
+    "on run argv\n"
+    "text returned of (display dialog (item 1 of argv) default answer (item 4 of argv) "
+    'buttons {item 2 of argv, item 3 of argv} default button 2 cancel button 1 with title "Gerrit")\n'
+    "end run"
+)
 
 
 def ask_date(number):
     today = datetime.date.today()
-    answer = osascript(DATE_PROMPT, t("bar_snooze_prompt", n=number), t("bar_cancel"), t("bar_snooze_button"),
-                       (today + datetime.timedelta(days=1)).isoformat())
+    answer = osascript(
+        DATE_PROMPT,
+        t("bar_snooze_prompt", n=number),
+        t("bar_cancel"),
+        t("bar_snooze_button"),
+        (today + datetime.timedelta(days=1)).isoformat(),
+    )
     if answer.returncode != 0:
         return None
     text = answer.stdout.strip()
@@ -208,18 +226,25 @@ def open_terminal(path, title, command=None):
     if pathlib.Path(ORCA).is_file():
         subprocess.run(["open", "-a", "Orca"], capture_output=True)
         extra = ["--command", command] if command else []
-        created = subprocess.run([ORCA, "terminal", "create", "--worktree", f"path:{path}", "--title", title,
-                                  *extra, "--focus"], capture_output=True, timeout=30)
+        created = subprocess.run(
+            [ORCA, "terminal", "create", "--worktree", f"path:{path}", "--title", title, *extra, "--focus"],
+            capture_output=True,
+            timeout=30,
+        )
         if created.returncode == 0:
             return
     if not command:
         subprocess.run(["open", "-a", "Terminal", path], capture_output=True)
         return
     # Path and command go in as argv, never spliced into the script.
-    osascript('on run argv\n'
-              'tell application "Terminal" to do script "cd " & quoted form of item 1 of argv & " && " & item 2 of argv\n'
-              'tell application "Terminal" to activate\n'
-              'end run', str(path), command)
+    osascript(
+        "on run argv\n"
+        'tell application "Terminal" to do script "cd " & quoted form of item 1 of argv & " && " & item 2 of argv\n'
+        'tell application "Terminal" to activate\n'
+        "end run",
+        str(path),
+        command,
+    )
 
 
 def open_worktree(number):
@@ -289,6 +314,7 @@ def resume_daemon():
 def remove_candidate(candidate):
     """The worktree is never forced: one that got files meanwhile keeps them, and its branch with it."""
     import repo
+
     if candidate.get("worktree"):
         removed = repo.git_run("worktree", "remove", candidate["worktree"])
         if removed.returncode:
@@ -301,6 +327,7 @@ def cleanup():
     """Asked again of git and Gerrit on click: the snapshot may be a poll old, a branch may have moved since."""
     import gerrit
     import repo
+
     try:
         candidates = [event for _, event in repo.cleanup_candidates()]
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
@@ -321,10 +348,22 @@ def cleanup():
     refresh()
 
 
-ACTIONS = {"submit": submit, "worktree": open_worktree, "investigate": investigate, "copy": copy,
-           "recheck": recheck, "snooze": snooze_change, "wake": wake, "restart_daemon": restart_daemon,
-           "pause_daemon": pause_daemon, "resume_daemon": resume_daemon, "cleanup": cleanup,
-           "push_rebase": push_rebase, "vote_gate": vote_gate, "hashtag": add_hashtag}
+ACTIONS = {
+    "submit": submit,
+    "worktree": open_worktree,
+    "investigate": investigate,
+    "copy": copy,
+    "recheck": recheck,
+    "snooze": snooze_change,
+    "wake": wake,
+    "restart_daemon": restart_daemon,
+    "pause_daemon": pause_daemon,
+    "resume_daemon": resume_daemon,
+    "cleanup": cleanup,
+    "push_rebase": push_rebase,
+    "vote_gate": vote_gate,
+    "hashtag": add_hashtag,
+}
 
 
 def handle(args):

@@ -1,4 +1,5 @@
 """Gerrit access: change queries over the authenticated REST API (SSH when no HTTP password is set) and SSH commands."""
+
 import base64
 import datetime
 import hashlib
@@ -28,10 +29,23 @@ REST = f"https://{HOST}/a"
 
 # A short hashed name: macOS caps socket paths at 104 bytes and ssh appends a 17-char temp suffix while binding.
 CONTROL_PATH = CACHE / f"ssh-{hashlib.sha1(f'{USER}@{HOST}:{PORT}'.encode()).hexdigest()[:10]}"
-MULTIPLEX = ["-o", "ControlMaster=auto", "-o", f"ControlPath={str(CONTROL_PATH).replace('%', '%%')}",
-             "-o", "ControlPersist=120",
-             # A master stuck on a dead VPN must exit instead of hanging every query that reuses it.
-             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2"] if len(str(CONTROL_PATH)) <= 80 else []
+MULTIPLEX = (
+    [
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        f"ControlPath={str(CONTROL_PATH).replace('%', '%%')}",
+        "-o",
+        "ControlPersist=120",
+        # A master stuck on a dead VPN must exit instead of hanging every query that reuses it.
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=2",
+    ]
+    if len(str(CONTROL_PATH)) <= 80
+    else []
+)
 SSH = ["ssh", "-p", PORT, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", *MULTIPLEX, f"{USER}@{HOST}"]
 
 
@@ -111,9 +125,12 @@ VOTE = re.compile(r"(?<![\w-])([A-Za-z][\w-]*)([+-]\d+)(?![\w-])")
 
 def current_approvals(change):
     """The votes on the current patch set, copied ones included, as SSH lists them: an unvoted reviewer is no vote."""
-    return [{"type": label, "value": str(vote["value"]), "grantedOn": epoch(vote["date"]) if vote.get("date") else 0,
-             "by": account(vote)}
-            for label, info in change.get("labels", {}).items() for vote in info.get("all", []) if vote.get("value")]
+    return [
+        {"type": label, "value": str(vote["value"]), "grantedOn": epoch(vote["date"]) if vote.get("date") else 0, "by": account(vote)}
+        for label, info in change.get("labels", {}).items()
+        for vote in info.get("all", [])
+        if vote.get("value")
+    ]
 
 
 def past_approvals(change):
@@ -126,9 +143,13 @@ def past_approvals(change):
         if not number or not header.startswith(prefix):
             continue
         by = account(message.get("author"))
-        for label, value in VOTE.findall(header[len(prefix):]):
-            latest[(number, by.get("username"), label)] = {"type": label, "value": str(int(value)),
-                                                           "grantedOn": epoch(message["date"]), "by": by}
+        for label, value in VOTE.findall(header[len(prefix) :]):
+            latest[(number, by.get("username"), label)] = {
+                "type": label,
+                "value": str(int(value)),
+                "grantedOn": epoch(message["date"]),
+                "by": by,
+            }
     approvals = {}
     for (number, _, _), approval in latest.items():
         if approval["value"] != "0":
@@ -137,8 +158,13 @@ def past_approvals(change):
 
 
 def patch_set(sha, revision, approvals):
-    entry = {"number": revision["_number"], "revision": sha, "ref": revision.get("ref"), "approvals": approvals,
-             "createdOn": epoch(revision["created"]) if revision.get("created") else 0}
+    entry = {
+        "number": revision["_number"],
+        "revision": sha,
+        "ref": revision.get("ref"),
+        "approvals": approvals,
+        "createdOn": epoch(revision["created"]) if revision.get("created") else 0,
+    }
     if revision.get("kind"):
         entry["kind"] = revision["kind"]
     if revision.get("uploader"):
@@ -152,11 +178,20 @@ def patch_set(sha, revision, approvals):
 def ssh_row(change, options):
     """A REST ChangeInfo shaped like the SSH row the same flags give, so callers read both alike."""
     number, project, status = change["_number"], change["project"], change["status"]
-    row = {"project": project, "branch": change["branch"], "id": change["change_id"], "number": number,
-           "subject": change.get("subject", ""), "owner": account(change.get("owner")),
-           "url": f"https://{HOST}/c/{project}/+/{number}", "hashtags": change.get("hashtags", []),
-           "createdOn": epoch(change["created"]), "lastUpdated": epoch(change["updated"]), "open": status == "NEW",
-           "status": status}
+    row = {
+        "project": project,
+        "branch": change["branch"],
+        "id": change["change_id"],
+        "number": number,
+        "subject": change.get("subject", ""),
+        "owner": account(change.get("owner")),
+        "url": f"https://{HOST}/c/{project}/+/{number}",
+        "hashtags": change.get("hashtags", []),
+        "createdOn": epoch(change["created"]),
+        "lastUpdated": epoch(change["updated"]),
+        "open": status == "NEW",
+        "status": status,
+    }
     if change.get("topic"):
         row["topic"] = change["topic"]
     if change.get("work_in_progress"):
@@ -167,32 +202,46 @@ def ssh_row(change, options):
         row["currentPatchSet"] = patch_set(current, revisions[current], approvals)
     if "--patch-sets" in options or "--all-approvals" in options:
         past = past_approvals(change) if "--all-approvals" in options else {}
-        row["patchSets"] = sorted((patch_set(sha, revision, approvals if sha == current else past.get(revision["_number"], []))
-                                   for sha, revision in revisions.items()), key=lambda ps: ps["number"])
+        row["patchSets"] = sorted(
+            (
+                patch_set(sha, revision, approvals if sha == current else past.get(revision["_number"], []))
+                for sha, revision in revisions.items()
+            ),
+            key=lambda ps: ps["number"],
+        )
     if "--comments" in options:
-        row["comments"] = [{"timestamp": epoch(m["date"]), "reviewer": account(m.get("author")),
-                            "message": m.get("message", "")} for m in change.get("messages", [])]
+        row["comments"] = [
+            {"timestamp": epoch(m["date"]), "reviewer": account(m.get("author")), "message": m.get("message", "")}
+            for m in change.get("messages", [])
+        ]
     if "--all-reviewers" in options:
         people = [a for state in ("REVIEWER", "CC") for a in change.get("reviewers", {}).get(state, [])]
         row["allReviewers"] = list({a.get("_account_id"): account(a) for a in people}.values())
     if "--submit-records" in options:
-        row["submitRecords"] = [{"status": r.get("status"),
-                                 "labels": [{"label": lb["label"], "status": lb.get("status")} for lb in r.get("labels", [])]}
-                                for r in change.get("submit_records", [])]
+        row["submitRecords"] = [
+            {"status": r.get("status"), "labels": [{"label": lb["label"], "status": lb.get("status")} for lb in r.get("labels", [])]}
+            for r in change.get("submit_records", [])
+        ]
     return row
 
 
 def add_depends_on(rows):
     """SSH's `dependsOn`: the change, merged ones included, whose patch set is the current one's parent, same branch."""
-    parent_of = {row["number"]: row["currentPatchSet"]["parents"][0] for row in rows
-                 if row.get("currentPatchSet", {}).get("parents")}
+    parent_of = {row["number"]: row["currentPatchSet"]["parents"][0] for row in rows if row.get("currentPatchSet", {}).get("parents")}
     if not parent_of:
         return
     found = rest_changes(" OR ".join(f"commit:{sha}" for sha in sorted(set(parent_of.values()))), ["ALL_REVISIONS"])
-    by_commit = {(c["project"], c["branch"], sha): {"id": c["change_id"], "number": c["_number"], "revision": sha,
-                                                    "ref": revision.get("ref"),
-                                                    "isCurrentPatchSet": sha == c.get("current_revision")}
-                 for c in found for sha, revision in c.get("revisions", {}).items()}
+    by_commit = {
+        (c["project"], c["branch"], sha): {
+            "id": c["change_id"],
+            "number": c["_number"],
+            "revision": sha,
+            "ref": revision.get("ref"),
+            "isCurrentPatchSet": sha == c.get("current_revision"),
+        }
+        for c in found
+        for sha, revision in c.get("revisions", {}).items()
+    }
     for row in rows:
         parent = by_commit.get((row["project"], row["branch"], parent_of.get(row["number"])))
         if parent:
@@ -221,9 +270,11 @@ def review(number, patch_set, message=None, labels=None, submit=False):
 
 
 def ssh_review(number, patch_set, message, labels, submit):
-    options = [*(["--message", message] if message else []),
-               *(arg for label, value in (labels or {}).items() for arg in ("--label", f"{label}={value:+d}")),
-               *(["--submit"] if submit else [])]
+    options = [
+        *(["--message", message] if message else []),
+        *(arg for label, value in (labels or {}).items() for arg in ("--label", f"{label}={value:+d}")),
+        *(["--submit"] if submit else []),
+    ]
     ssh("gerrit", "review", *options, f"{number},{patch_set}", timeout=120, check=True)
 
 
@@ -241,8 +292,10 @@ def error_detail(error):
     # Its last line is only "Disconnected from …": the reason sits on the one before.
     cap = next((line for line in lines if SESSION_CAP in line), None)
     if cap:
-        return (f"Gerrit refuses new SSH sessions ({cap[cap.index(SESSION_CAP):]}): sessions cut by a network drop "
-                "linger server-side until Gerrit times them out")
+        return (
+            f"Gerrit refuses new SSH sessions ({cap[cap.index(SESSION_CAP) :]}): sessions cut by a network drop "
+            "linger server-side until Gerrit times them out"
+        )
     return (lines[-1] if lines else "") or str(error)
 
 
@@ -254,8 +307,14 @@ def http_credentials():
     """(user, HTTP password): from the Gerrit MCP server's config when set, so the token lives in one place."""
     if CONFIG["gerrit_mcp_config"]:
         hosts = json.loads(pathlib.Path(CONFIG["gerrit_mcp_config"]).expanduser().read_text())["gerrit_hosts"]
-        entry = next((h for h in hosts if HOST in {urllib.parse.urlparse(h.get(key) or "").hostname
-                                                   for key in ("external_url", "internal_url")}), None)
+        entry = next(
+            (
+                h
+                for h in hosts
+                if HOST in {urllib.parse.urlparse(h.get(key) or "").hostname for key in ("external_url", "internal_url")}
+            ),
+            None,
+        )
         if not entry:
             raise KeyError(f"no gerrit_hosts entry for {HOST} in {CONFIG['gerrit_mcp_config']}")
         auth = entry["authentication"]

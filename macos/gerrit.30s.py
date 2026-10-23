@@ -54,8 +54,12 @@ def recheck_detail(change):
         return None
     if any(flaky.get(j["job"], {}).get("month", 0) < ci.FLAKY_MIN for j in jobs):
         return None
-    return ", ".join(t("bar_flaky_week", job=j["job"], count=flaky[j["job"]]["week"]) if flaky[j["job"]]["week"]
-                     else t("bar_flaky_month", job=j["job"], count=flaky[j["job"]]["month"]) for j in jobs)
+    return ", ".join(
+        t("bar_flaky_week", job=j["job"], count=flaky[j["job"]]["week"])
+        if flaky[j["job"]]["week"]
+        else t("bar_flaky_month", job=j["job"], count=flaky[j["job"]]["month"])
+        for j in jobs
+    )
 
 
 def needs_investigation(change):
@@ -121,28 +125,34 @@ def print_change(change, label, symbol, color, fresh):
     recheck_reason = recheck_detail(change) if fresh and change.get("patch_set") else None
     if recheck_reason:
         print("-----")
-        print(f"--{t('bar_recheck', detail=recheck_reason)} | {action('recheck', number, change['patch_set'])} "
-              "sfimage=arrow.clockwise")
+        print(
+            f"--{t('bar_recheck', detail=recheck_reason)} | {action('recheck', number, change['patch_set'])} sfimage=arrow.clockwise"
+        )
     prepared = change.get("rebase_ready")
     if fresh and prepared and prepared.get("patch_set") == change.get("patch_set"):
         print("-----")
-        print(f"--{t('bar_push_rebase', onto=rebase_onto(change))} | "
-              f"{action('push_rebase', number, change['patch_set'])} sfimage=arrow.triangle.branch")
+        print(
+            f"--{t('bar_push_rebase', onto=rebase_onto(change))} | "
+            f"{action('push_rebase', number, change['patch_set'])} sfimage=arrow.triangle.branch"
+        )
     if change.get("patch_set"):
         print("-----")
         print_hashtags(change, number, fresh)
         state = snapshot.state(change)
         gated = change.get("gate") is not None
         if fresh and state == "ready" and gated:
-            print(f"--{t('bar_gate_vote', label=GATE_LABEL)} | {action('vote_gate', number, change['patch_set'])} "
-                  "sfimage=paperplane.fill")
+            print(
+                f"--{t('bar_gate_vote', label=GATE_LABEL)} | {action('vote_gate', number, change['patch_set'])} "
+                "sfimage=paperplane.fill"
+            )
         elif fresh and state == "ready":
             print(f"--{t('bar_submit')} | {action('submit', number, change['patch_set'])} sfimage=paperplane.fill")
         else:
             # Always there, greyed out with what stands in the way, so a missing Submit never needs explaining.
             reason = (submit_wait(state, change) or label_of(state, change)) if fresh else t("bar_submit_stale")
-            unavailable = t("bar_gate_unavailable", label=GATE_LABEL, reason=reason) if gated \
-                else t("bar_submit_unavailable", reason=reason)
+            unavailable = (
+                t("bar_gate_unavailable", label=GATE_LABEL, reason=reason) if gated else t("bar_submit_unavailable", reason=reason)
+            )
             print(f"--{menu_text(unavailable)} | disabled=true sfimage=paperplane")
 
 
@@ -174,11 +184,15 @@ def print_review(review, now):
     waited = age(now - review["since"]) if review.get("since") else "?"
     owner = menu_text(review["owner"])
     if review["blocked_by"]:
-        print(f"{review['number']}  {scope(review['subject'])} — {owner} · {t('bar_review_' + review['blocked_by'])} | "
-              f"href={review['url']} sfimage=hourglass sfcolor=gray")
+        print(
+            f"{review['number']}  {scope(review['subject'])} — {owner} · {t('bar_review_' + review['blocked_by'])} | "
+            f"href={review['url']} sfimage=hourglass sfcolor=gray"
+        )
     else:
-        print(f"{review['number']}  {scope(review['subject'])} — {owner} · {t('bar_review_waiting', age=waited)} | "
-              f"href={review['url']} sfimage=eyeglasses")
+        print(
+            f"{review['number']}  {scope(review['subject'])} — {owner} · {t('bar_review_waiting', age=waited)} | "
+            f"href={review['url']} sfimage=eyeglasses"
+        )
     print(f"--{menu_text(review['subject'])} | disabled=true")
     print(f"--{t('bar_open_gerrit')} | href={review['url']} sfimage=safari")
 
@@ -197,8 +211,7 @@ def main():
     changes = status.get("changes", [])
     # Read here rather than from the snapshot: a snooze shows at once, not at the daemon's next poll.
     snoozed = snooze.snapshot_active(status, now)
-    rows = sorted(((c, display(c)) for c in changes if c["number"] not in snoozed),
-                  key=lambda row: ORDER.get(row[1][2], 3))
+    rows = sorted(((c, display(c)) for c in changes if c["number"] not in snoozed), key=lambda row: ORDER.get(row[1][2], 3))
     active = [row for row in rows if not row[0]["wip"]]
     problems = sum(1 for _, (_, _, color) in rows if color == "red")
     ready = sum(1 for _, (_, _, color) in rows if color == "green")
@@ -218,8 +231,10 @@ def main():
     for branch, health in sorted(status.get("base_health", {}).items()):
         if ci.is_red(health):
             link = f"href={health['log_url']} " if health.get("log_url") else ""
-            print(f"{menu_text(t('bar_base_red', branch=branch, age=age(ci.red_for_s(health, now))))} | "
-                  f"{link}sfimage=flame.fill sfcolor=red")
+            print(
+                f"{menu_text(t('bar_base_red', branch=branch, age=age(ci.red_for_s(health, now))))} | "
+                f"{link}sfimage=flame.fill sfcolor=red"
+            )
     for change, state in rows:
         print_change(change, *state, fresh=not (error or stopped))
     if not changes:
@@ -254,12 +269,13 @@ def main():
         print(f"{t('bar_unreachable', age=data_age)} | color=orange sfimage=wifi.exclamationmark")
         print(f"--{menu_text(error)} | disabled=true")
     else:
-        pause = f"{action('pause_daemon')} tooltip=\"{t('bar_pause_hint')}\" " if paused is False else ""
+        pause = f'{action("pause_daemon")} tooltip="{t("bar_pause_hint")}" ' if paused is False else ""
         print(f"{t('bar_active')} | {pause}sfimage=dot.radiowaves.left.and.right")
     drifted = daemon_version(now)
     if drifted:
-        print(f"{t('bar_version_mismatch', daemon=drifted, menu=VERSION or '?')} | color=orange "
-              "sfimage=exclamationmark.arrow.circlepath")
+        print(
+            f"{t('bar_version_mismatch', daemon=drifted, menu=VERSION or '?')} | color=orange sfimage=exclamationmark.arrow.circlepath"
+        )
         print(f"--{t('bar_restart_daemon')} | {action('restart_daemon')} sfimage=arrow.clockwise")
     if OPEN_CLAUDE.exists():
         print(f"{t('bar_open_claude', command=COMMAND)} | href={OPEN_CLAUDE.as_uri()} sfimage=sparkles")

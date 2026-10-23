@@ -1,6 +1,7 @@
 """One reading of a snapshot row for the SwiftBar menu and the status line, so their counts never disagree.
 
 Kept free of gerrit/events imports: the status line loads it on every refresh."""
+
 from config import CI_STUCK_S, CONFIG, STALE_AFTER_S
 from i18n import t
 
@@ -62,7 +63,7 @@ STYLES = {
     "ci_stuck": ("exclamationmark.arrow.triangle.2.circlepath", "orange"),
     "ready_parent": ("link", "orange"),
     "submit_blocked": ("lock.fill", "orange"),
-    "ready":("checkmark.seal.fill", "green"),
+    "ready": ("checkmark.seal.fill", "green"),
     "gating": ("arrow.triangle.merge", None),
     "ci_running": ("hourglass", "orange"),
     "ci_passed": ("clock", None),
