@@ -1,10 +1,7 @@
 """Run from the skill directory: python3 -m unittest"""
 import concurrent.futures
-import contextlib
-import io
 import json
 import pathlib
-import subprocess
 import tempfile
 import threading
 import unittest
@@ -16,6 +13,7 @@ import ci
 import events
 import gerrit
 import poll
+import daemon
 import repo
 import watch
 
@@ -376,10 +374,11 @@ class SessionPollTest(unittest.TestCase):
         def slow_poll():
             # The daemon's own round, stuck in fetch retries past STALE_AFTER_S, finishes and publishes while
             # the session is still running its fallback poll.
-            watch.write_daemon_poll(result)
+            daemon.write_daemon_poll(result)
             return result
 
-        with mock.patch.object(watch, "DAEMON_POLL", pathlib.Path(tmp.name) / "daemon-poll.json"), \
+        heartbeat = pathlib.Path(tmp.name) / "daemon-poll.json"
+        with mock.patch.object(watch, "DAEMON_POLL", heartbeat), mock.patch.object(daemon, "DAEMON_POLL", heartbeat), \
                 mock.patch.object(watch, "daemon_poll", return_value=None), \
                 mock.patch.object(watch, "poll", side_effect=slow_poll), \
                 mock.patch.object(repo, "worktree_listing", return_value=[]), \
@@ -457,17 +456,6 @@ class UnfinishedEventsTest(unittest.TestCase):
         self.assertEqual([(True, False)], [(e["busy"], e["drafts"]) for e in found.values()])
 
 
-class SwiftbarTest(unittest.TestCase):
-    def test_a_hung_swiftbar_does_not_kill_the_daemon(self):
-        # Given
-        hung = subprocess.TimeoutExpired("open", 10)
-        # When
-        with mock.patch.object(watch.subprocess, "run", side_effect=hung) as run:
-            watch.swiftbar("refreshplugin", name="gerrit")
-        # Then
-        run.assert_called_once()
-
-
 class ParentStatusesTest(unittest.TestCase):
     def test_mine_are_open_and_others_are_queried(self):
         # Given
@@ -521,152 +509,6 @@ class OutdatedParentsTest(unittest.TestCase):
         self.assertEqual("1 · parent 9 has a new patch set", events.notification(found["1:parent_updated:1:new"])[0])
 
 
-class DaemonTest(unittest.TestCase):
-    class Stop(Exception):
-        pass
-
-    def run_daemon(self, rounds, **patches):
-        sleeps = self.sleeps = mock.Mock(side_effect=[None] * (rounds - 1) + [self.Stop()])
-        stderr = io.StringIO()
-        with mock.patch.object(watch.time, "sleep", sleeps), \
-                mock.patch.object(watch, "swiftbar"), \
-                mock.patch.object(watch, "write_daemon_poll"), \
-                mock.patch("sys.stderr", stderr), \
-                contextlib.ExitStack() as stack:
-            for name, value in patches.items():
-                stack.enter_context(mock.patch.object(watch, name, value))
-            with self.assertRaises(self.Stop):
-                watch.daemon(60)
-        return stderr.getvalue()
-
-    def test_a_bug_after_the_poll_is_logged_once_and_the_daemon_keeps_going(self):
-        # Given
-        status = mock.Mock()
-        # When
-        log = self.run_daemon(3, poll=mock.Mock(return_value={}), write_status=status,
-                              daemon_round=mock.Mock(side_effect=KeyError("number")))
-        # Then
-        self.assertEqual(1, log.count("Traceback"))
-        self.assertEqual([mock.call(error="KeyError: 'number'")] * 3, status.call_args_list)
-
-    def test_a_plugin_update_ends_the_daemon_after_its_round(self):
-        # Given
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        launcher = pathlib.Path(tmp.name) / "launch.py"
-        launcher.write_text("import pathlib\ndef skill_dir():\n    return pathlib.Path('/elsewhere/1.4.2')\n")
-        round_ = mock.Mock()
-        # When
-        with mock.patch.dict(watch.os.environ, {"GERRIT_BABYSIT_LAUNCHER": str(launcher)}), \
-                mock.patch.object(watch, "swiftbar"), mock.patch.object(watch, "write_daemon_poll"), \
-                mock.patch.object(watch, "poll", return_value={}), mock.patch.object(watch, "daemon_round", round_), \
-                mock.patch("sys.stderr", io.StringIO()) as stderr:
-            code = watch.daemon(60)
-        # Then
-        self.assertEqual((0, 1), (code, round_.call_count))
-        self.assertIn("restarting", stderr.getvalue())
-
-    def test_a_repeated_poll_failure_is_logged_once(self):
-        # Given
-        down = OSError("Could not resolve hostname")
-        # When
-        log = self.run_daemon(3, poll=mock.Mock(side_effect=[down, down, {}]), write_status=mock.Mock(),
-                              daemon_round=mock.Mock())
-        # Then
-        self.assertEqual(1, log.count("poll failed"))
-        self.assertIn("recovered", log)
-
-    def outage(self, rounds, first_run=False, quiet=False):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        cache = pathlib.Path(tmp.name)
-        state = cache / "daemon-seen.json"
-        if not first_run:
-            state.write_text("{}")
-        (cache / "status.json").write_text(json.dumps({"updated": 1000.0}))
-        notify = mock.Mock()
-        down = OSError("Could not resolve hostname")
-        with mock.patch.object(watch, "DAEMON_STATE", state), mock.patch.object(watch, "STATUS", cache / "status.json"), \
-                mock.patch.object(watch.events, "is_quiet", return_value=quiet):
-            self.run_daemon(rounds, poll=mock.Mock(side_effect=down), write_status=mock.Mock(),
-                            swiftbar=mock.Mock(side_effect=lambda action, **p: action == "notify" and notify(p)))
-        return notify
-
-    def test_a_lasting_outage_notifies_once_pointing_at_the_vpn(self):
-        # When
-        notify = self.outage(6)
-        # Then
-        notify.assert_called_once()
-        self.assertIn("VPN", notify.call_args.args[0]["body"])
-
-    def test_no_outage_notification_on_a_first_install_or_at_night(self):
-        # When
-        silent = [self.outage(4, first_run=True), self.outage(4, quiet=True), self.outage(2)]
-        # Then
-        self.assertEqual([0, 0, 0], [n.call_count for n in silent])
-
-    def test_the_heartbeat_names_the_daemons_version(self):
-        # Given
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        heartbeat = pathlib.Path(tmp.name) / "daemon-poll.json"
-        # When
-        with mock.patch.object(watch, "DAEMON_POLL", heartbeat):
-            watch.write_daemon_poll({"changes": []})
-        # Then
-        self.assertEqual((watch.VERSION, str(watch.SKILL_DIR)),
-                         (json.loads(heartbeat.read_text())["version"], json.loads(heartbeat.read_text())["skill_dir"]))
-
-    def test_the_poll_duration_comes_off_the_wait(self):
-        # Given
-        sleep = mock.Mock(side_effect=self.Stop())
-        clock = mock.Mock(side_effect=[100.0, 125.0])
-        # When
-        with mock.patch.object(watch.time, "sleep", sleep), mock.patch.object(watch.time, "monotonic", clock), \
-                mock.patch.object(watch, "poll", return_value={}), mock.patch.object(watch, "daemon_round"), \
-                mock.patch.object(watch, "write_daemon_poll"), self.assertRaises(self.Stop):
-            watch.daemon(60)
-        # Then
-        sleep.assert_called_once_with(35.0)
-
-    def test_the_ssh_session_cap_waits_for_the_lingering_sessions_to_time_out(self):
-        # Given
-        stderr = "Received disconnect from x port 29418:12: Too many concurrent connections (10)\nDisconnected\n"
-        capped = watch.subprocess.CalledProcessError(255, ["git", "fetch"], stderr=stderr)
-        # When
-        self.run_daemon(2, poll=mock.Mock(side_effect=capped), write_status=mock.Mock())
-        # Then
-        self.assertTrue(all(c.args[0] > 60 * 9 for c in self.sleeps.call_args_list))
-
-    def test_another_failure_retries_on_the_next_round(self):
-        # Given
-        down = watch.subprocess.CalledProcessError(255, ["ssh"], stderr="ssh: Could not resolve hostname\n")
-        # When
-        self.run_daemon(2, poll=mock.Mock(side_effect=down), write_status=mock.Mock())
-        # Then
-        self.assertTrue(all(c.args[0] <= 60 for c in self.sleeps.call_args_list))
-
-    def test_a_bug_inside_the_poll_does_not_crash_the_daemon(self):
-        # Given
-        status = mock.Mock()
-        # When
-        log = self.run_daemon(2, poll=mock.Mock(side_effect=KeyError("status")), write_status=status)
-        # Then
-        self.assertEqual(1, log.count("Traceback"))
-        self.assertEqual([mock.call(error="KeyError: 'status'")] * 2, status.call_args_list)
-
-    def test_the_poll_is_published_even_if_the_status_write_fails(self):
-        # Given
-        published = mock.Mock()
-        # When
-        with mock.patch.object(watch, "write_daemon_poll", published), \
-                mock.patch.object(watch, "write_status", side_effect=OSError("disk full")), \
-                self.assertRaises(OSError):
-            watch.daemon_round({"changes": []}, first_run=True)
-        # Then
-        published.assert_called_once_with({"changes": []})
-
-
 class FlakyMemoryTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -716,69 +558,6 @@ class FlakyMemoryTest(unittest.TestCase):
         row = json.loads(status.read_text())["changes"][0]
         self.assertEqual(([{"job": "unit", "result": "FAILURE"}], 1, 1),
                          (row["ci_failed_jobs"], row["flaky"]["unit"]["month"], row["rechecks"]))
-
-
-class AutoSubmitAllTest(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.tagged = pathlib.Path(tmp.name) / "tagged.json"
-        for patcher in (mock.patch.object(watch, "AUTO_SUBMIT_TAGGED", self.tagged),
-                        mock.patch.dict(watch.CONFIG, auto_submit_all=True, auto_submit_hashtag="auto-submit"),
-                        mock.patch.object(watch, "log")):
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-    def run_tagging(self, *changes, fail=None):
-        with mock.patch.object(gerrit, "rest_post", side_effect=fail) as post:
-            watch.tag_auto_submit({"changes": list(changes)})
-        return [c.args[0] for c in post.call_args_list]
-
-    def test_ready_changes_get_the_hashtag_but_not_wip_or_already_tagged_ones(self):
-        # When
-        posted = self.run_tagging(change(1), change(2, wip=True), change(3, hashtags=["auto-submit"]))
-        # Then
-        self.assertEqual(["/changes/1/hashtags"], posted)
-        self.assertEqual({"1": True, "3": True}, json.loads(self.tagged.read_text()))
-
-    def test_a_hashtag_removed_by_hand_is_not_added_again(self):
-        # Given
-        self.run_tagging(change(1))
-        # When
-        posted = self.run_tagging(change(1))
-        # Then
-        self.assertEqual([], posted)
-
-    def test_a_change_out_of_wip_gets_it(self):
-        # Given
-        self.run_tagging(change(1, wip=True))
-        # When
-        posted = self.run_tagging(change(1))
-        # Then
-        self.assertEqual(["/changes/1/hashtags"], posted)
-
-    def test_a_failed_post_is_retried_on_the_next_round(self):
-        # Given
-        self.run_tagging(change(1), fail=OSError("down"))
-        # When
-        posted = self.run_tagging(change(1))
-        # Then
-        self.assertEqual(["/changes/1/hashtags"], posted)
-
-    def test_merged_changes_leave_the_memory(self):
-        # Given
-        self.run_tagging(change(1), change(2))
-        # When
-        self.run_tagging(change(2))
-        # Then
-        self.assertEqual({"2": True}, json.loads(self.tagged.read_text()))
-
-    def test_off_by_default(self):
-        # When
-        with mock.patch.dict(watch.CONFIG, auto_submit_all=False):
-            posted = self.run_tagging(change(1))
-        # Then
-        self.assertEqual([], posted)
 
 
 class PreparedRebasesTest(unittest.TestCase):
@@ -913,23 +692,6 @@ class SnoozeFilterTest(unittest.TestCase):
         # Then
         self.assertEqual(["2:10:reviewer"], list(held))
         self.assertIn("1:10:reviewer", back)
-
-    def test_the_daemon_neither_notifies_nor_marks_a_snoozed_change_seen(self):
-        # Given
-        watch.snooze.set_snooze(1, until=NOW + 3600)
-        result = poll_result([change(comments=[message("reviewer", "Patch Set 1:\n\nwhy?", 10)])])
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        state = pathlib.Path(tmp.name) / "daemon-seen.json"
-        # When
-        with mock.patch.object(watch, "DAEMON_STATE", state), mock.patch.object(watch, "write_daemon_poll"), \
-                mock.patch.object(watch, "write_status"), mock.patch.object(watch, "record_flaky"), \
-                mock.patch.object(events, "is_quiet", return_value=False), \
-                mock.patch.object(watch, "swiftbar") as swiftbar:
-            watch.daemon_round(result, first_run=False)
-        # Then
-        self.assertEqual([], [c for c in swiftbar.call_args_list if c.args[0] == "notify"])
-        self.assertEqual({}, json.loads(state.read_text()))
 
 
 class MyAttentionSetsTest(unittest.TestCase):
