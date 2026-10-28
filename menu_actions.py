@@ -136,7 +136,7 @@ def add_hashtag(number, kind):
 def recheck(number, patch_set):
     comment = CONFIG["recheck_comment"]
     row = acted_row(number, patch_set)
-    # The comment goes through Gerrit's SSH command line: only a plain recheck variant.
+    # Only a comment zuul takes for a recheck: anything else would be published for nothing.
     if not ci.RECHECK.fullmatch(comment) or not row:
         return
     subject = row.get("subject", "")

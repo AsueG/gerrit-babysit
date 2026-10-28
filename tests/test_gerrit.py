@@ -280,6 +280,43 @@ class ReviewTest(unittest.TestCase):
         ssh.assert_not_called()
         self.assertEqual("HTTP Error 409: Conflict: change is closed", gerrit.error_detail(raised.exception))
 
+    def test_a_forbidden_action_is_raised_rather_than_tried_again_over_ssh(self):
+        # Given
+        forbidden = gerrit.urllib.error.HTTPError("url", 403, "Forbidden", {}, io.BytesIO(b"submit not permitted"))
+        self.addCleanup(forbidden.close)
+        # When / Then
+        with (
+            mock.patch.object(gerrit, "rest_auth", return_value="token"),
+            mock.patch.object(gerrit, "rest_post", side_effect=forbidden),
+            mock.patch.object(gerrit, "ssh") as ssh,
+            self.assertRaises(gerrit.urllib.error.HTTPError) as raised,
+        ):
+            gerrit.review(7, "2", submit=True)
+        ssh.assert_not_called()
+        self.assertEqual("HTTP Error 403: Forbidden: submit not permitted", gerrit.error_detail(raised.exception))
+
+    def test_a_vote_posted_over_rest_is_not_posted_again_when_only_the_submit_falls_back(self):
+        # Given
+        refused = gerrit.urllib.error.HTTPError("url", 401, "Unauthorized", {}, io.BytesIO())
+        # When
+        with (
+            mock.patch.object(gerrit, "rest_auth", return_value="token"),
+            mock.patch.object(gerrit, "rest_post", side_effect=[{}, refused]),
+            mock.patch.object(gerrit, "ssh") as ssh,
+        ):
+            gerrit.review(7, "2", message="ship it", labels={"Workflow": 1}, submit=True)
+        # Then
+        ssh.assert_called_once_with("gerrit", "review", "--submit", "7,2", timeout=120, check=True)
+
+    def test_the_message_reaches_the_remote_shell_as_one_word(self):
+        # Given
+        message = "it's fixed; recheck"
+        # When
+        with mock.patch.object(gerrit, "ssh") as ssh:
+            gerrit.ssh_review(7, "2", message, None, False)
+        # Then: ssh joins its arguments with spaces into the remote command line.
+        self.assertEqual(["gerrit", "review", "--message", message, "7,2"], shlex.split(" ".join(ssh.call_args.args)))
+
 
 class RestGetTest(unittest.TestCase):
     def setUp(self):
@@ -308,6 +345,19 @@ class RestGetTest(unittest.TestCase):
         self.assertIn(
             "me:new".encode(), [gerrit.base64.b64decode(c.args[0].get_header("Authorization")[6:]) for c in urlopen.call_args_list]
         )
+
+    def test_an_empty_body_reads_as_none(self):
+        # Given
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        # When
+        with (
+            mock.patch.object(gerrit, "http_credentials", return_value=("me", "token")),
+            mock.patch.object(gerrit.urllib.request, "urlopen", return_value=response),
+        ):
+            found = gerrit.rest_post("/changes/1/hashtags", {"add": ["x"]})
+        # Then
+        self.assertIsNone(found)
 
     def test_a_token_still_refused_after_rereading_raises(self):
         # Given

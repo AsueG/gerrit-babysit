@@ -257,21 +257,27 @@ def review(number, patch_set, message=None, labels=None, submit=False):
     except (OSError, ValueError, KeyError):
         return ssh_review(number, patch_set, message, labels, submit)
     revision = f"/changes/{number}/revisions/{patch_set}"
+    reviewed = False
     try:
         if message or labels:
             rest_post(f"{revision}/review", {k: v for k, v in (("message", message), ("labels", labels)) if v})
+            reviewed = True
         if submit:
             rest_post(f"{revision}/submit", {})
     except urllib.error.HTTPError as error:
-        if error.code not in (401, 403):
+        # A 403 is Gerrit refusing the action itself (no submit right, a blocked label): SSH would be refused too, and
+        # say why less clearly.
+        if error.code != 401:
             raise
         error.close()
-        ssh_review(number, patch_set, message, labels, submit)
+        # Only what REST did not do: a comment or a vote already posted is not posted twice.
+        ssh_review(number, patch_set, None if reviewed else message, None if reviewed else labels, submit)
 
 
 def ssh_review(number, patch_set, message, labels, submit):
     options = [
-        *(["--message", message] if message else []),
+        # Quoted: ssh joins its arguments into one remote shell command line.
+        *(["--message", shlex.quote(message)] if message else []),
         *(arg for label, value in (labels or {}).items() for arg in ("--label", f"{label}={value:+d}")),
         *(["--submit"] if submit else []),
     ]
@@ -386,8 +392,9 @@ def rest_get(path, retry=True, data=None, timeout=30):
     request = urllib.request.Request(REST + path, data=data, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            # Gerrit prefixes every JSON body with )]}' against XSSI.
-            return json.loads(response.read().decode().split("\n", 1)[1])
+            # Gerrit prefixes every JSON body with )]}' against XSSI. None for an empty one (204 No Content).
+            body = response.read().decode().partition("\n")[2]
+            return json.loads(body) if body.strip() else None
     except urllib.error.HTTPError as error:
         if error.code != 401 or not retry:
             raise
