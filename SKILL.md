@@ -87,7 +87,7 @@ replays the patch set with `git merge-tree` + `git commit-tree`, keeping its mes
 unpushed or half-done work; the ref is deleted once the rebase is no longer needed. The snapshot row then has `rebase_ready` = `{sha, patch_set, parent}`, and the
 SwiftBar menu offers "Push the rebase onto …" behind a confirmation dialog (the user's "yes"), warning that
 the worktree stays on the old patch set. Nothing is pushed otherwise.
-After editing `watch.py` or `poll.py`, restart it: `launchctl kickstart -k gui/$(id -u)/<launchd_label>`. Its heartbeat
+After editing `watch.py`, `daemon.py`, `poll.py`, `extras.py` or `status_writer.py`, restart it: `launchctl kickstart -k gui/$(id -u)/<launchd_label>`. Its heartbeat
 carries its version: when it differs from the menu's, the SwiftBar menu shows `Daemon vX ≠ menu vY` with a
 "Restart the daemon" item.
 

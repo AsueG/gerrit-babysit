@@ -85,6 +85,8 @@ clone free of local edits, so updating is just `git pull`.
 | `SKILL.md` | What Claude does with each event |
 | `watch.py` | Turns each poll into events, prints them as JSON and exits (session mode); `--daemon` runs `daemon.py` |
 | `daemon.py` | The background loop: status snapshot, macOS notifications, the auto-submit hashtag |
+| `extras.py` | What is added to the events about to be reported: CI diagnosis, known flakes, local rebase, interdiff, zuul queue |
+| `status_writer.py` | Writes the status snapshot, with the diagnosis of each red change, the prepared rebases and the cleanup candidates |
 | `poll.py` | One poll: Gerrit queries, threads, submit requirements, parents, base health and the local conflict check, side by side |
 | `gerrit.py` | Change queries and reviews (votes, rechecks, submits) over REST, shaped like `gerrit query` rows (SSH without an HTTP password) |
 | `repo.py` | Local git work: fetches, conflict checks, prepared rebases, cleanup of merged or abandoned branches |

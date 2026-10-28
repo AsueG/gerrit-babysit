@@ -9,13 +9,14 @@ import unittest
 from unittest import mock
 
 # First: points the config at the fixtures before any module reads it.
-from fakes import ZUUL, NOW, GREEN_CI, approval, patch_set, message, change, poll_result, inline, zuul_verdict
+from fakes import NOW, GREEN_CI, approval, patch_set, message, change, poll_result, inline
 import ci
 import events
 import gerrit
 import poll
 import daemon
 import repo
+import status_writer
 import watch
 
 
@@ -127,78 +128,6 @@ class RememberTest(unittest.TestCase):
         self.assertEqual(set(), fresh)
 
 
-class EnrichTest(unittest.TestCase):
-    def test_stuck_ci_gets_the_zuul_queue_and_requests_the_prereview_path(self):
-        # Given
-        stuck = {"kind": "ci_stuck", "change": 1, "patch_set": 2}
-        requested = {"kind": "review_requested", "change": 3, "patch_set": 4, "participated": False}
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        # When
-        with mock.patch.object(ci, "zuul_queue", return_value=[]), mock.patch.object(watch, "CACHE", pathlib.Path(tmp.name)):
-            watch.enrich([stuck, requested])
-        # Then
-        self.assertEqual([], stuck["zuul_queue"])
-        self.assertEqual({"path": f"{tmp.name}/prereview/3-4.md", "done": False}, requested["prereview"])
-
-    def test_a_job_red_on_several_changes_fetches_its_history_once(self):
-        # Given
-        events = [
-            {"kind": "message", "change": n, "branch": "main", "author_username": "zuul", "message": ZUUL["failed"]["message"]}
-            for n in (1, 2)
-        ]
-        build = {"log_url": "https://logs/x/", "end_time": "2026-09-29T12:00:00", "artifacts": []}
-        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}", "/builds?": "[]"}
-        get = lambda url: next(body for marker, body in answers.items() if marker in url)
-        jobs = {j["job"] for j in ci.failed_jobs(ZUUL["failed"]["message"])}
-        # When
-        with (
-            mock.patch.object(ci, "http_get", side_effect=get) as http,
-            mock.patch.object(ci, "ZUUL_API", "https://zuul/api"),
-            mock.patch.object(ci, "PERIODIC_BUILD", None),
-        ):
-            watch.enrich(events)
-        # Then
-        self.assertEqual(len(jobs), sum("/builds?" in c.args[0] for c in http.call_args_list))
-
-    def test_failures_reuse_the_polled_base_health(self):
-        # Given
-        failures = [
-            {"kind": "message", "change": n, "branch": branch, "author_username": "zuul", "message": "m"}
-            for n, branch in ((1, "main"), (2, "main"), (3, "release"))
-        ]
-        base = {"main": {"result": "FAILURE"}, "release": {"result": "SUCCESS"}}
-        # When
-        with (
-            mock.patch.object(ci, "ZUUL_API", "https://zuul/api"),
-            mock.patch.object(ci, "PERIODIC_BUILD", {"pipeline": "periodic", "job": "build"}),
-            mock.patch.object(ci, "submit_diagnosis", side_effect=lambda _, event, *__: [done(event["change"])]),
-            mock.patch.object(ci, "base_health") as base_health,
-        ):
-            watch.enrich(failures, base)
-        # Then
-        base_health.assert_not_called()
-        self.assertEqual(
-            [([1], "FAILURE"), ([2], "FAILURE"), ([3], "SUCCESS")], [(f["ci_diagnosis"], f["base_build"]["result"]) for f in failures]
-        )
-
-    def test_only_ci_failures_and_new_patch_sets_get_extras(self):
-        # Given
-        failure = {"kind": "message", "change": 1, "branch": "main", "author_username": "zuul", "message": "m"}
-        human = {"kind": "message", "change": 1, "branch": "main", "author_username": "reviewer", "message": "m"}
-        patch = {"kind": "review_new_patch_set", "change": 2, "since_ref": "a", "current_ref": "b"}
-        # When
-        with (
-            mock.patch.object(ci, "submit_diagnosis", return_value=[done("d")]),
-            mock.patch.object(repo, "interdiff", return_value={"stat": "s"}),
-        ):
-            watch.enrich([failure, human, patch], {"main": {"result": "SUCCESS"}})
-        # Then
-        self.assertEqual((["d"], {"result": "SUCCESS"}), (failure["ci_diagnosis"], failure["base_build"]))
-        self.assertNotIn("ci_diagnosis", human)
-        self.assertEqual({"stat": "s"}, patch["interdiff"])
-
-
 class SettleTest(unittest.TestCase):
     def test_a_burst_waits_once_then_goes_out_whole_with_the_latest_versions(self):
         # Given
@@ -282,6 +211,7 @@ class SessionRetryTest(unittest.TestCase):
         with (
             mock.patch.object(watch, "STATE", self.cache / "seen.json"),
             mock.patch.object(watch, "STATUS", self.cache / "status.json"),
+            mock.patch.object(status_writer, "STATUS", self.cache / "status.json"),
             mock.patch.object(watch.network, "checks", return_value=NETWORK),
             mock.patch.object(watch, "INBOX", self.cache / "inbox.json"),
             mock.patch.object(watch, "write_session_lock"),
@@ -433,7 +363,7 @@ class SessionPollTest(unittest.TestCase):
         )
         result = poll_result([change()])
         with (
-            mock.patch.object(watch, "STATUS", status),
+            mock.patch.object(status_writer, "STATUS", status),
             mock.patch.object(watch, "daemon_poll", return_value=result),
             mock.patch.object(repo, "worktree_listing") as listing,
             mock.patch.object(repo, "cleanup_candidates") as check,
@@ -557,213 +487,6 @@ class OutdatedParentsTest(unittest.TestCase):
         # Then
         self.assertEqual(["1:parent_updated:1:new"], [k for k, e in found.items() if e["kind"] != "message"])
         self.assertEqual("1 · parent 9 has a new patch set", events.notification(found["1:parent_updated:1:new"])[0])
-
-
-class FlakyMemoryTest(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        patcher = mock.patch.object(watch, "FLAKY", pathlib.Path(tmp.name) / "flaky.json")
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_flakes_outlive_the_change_and_expire(self):
-        # Given
-        flaked = change(comments=[zuul_verdict(1, NOW - 20, "FAILURE"), zuul_verdict(1, NOW - 10, "SUCCESS")])
-        watch.record_flaky(poll_result([flaked]), NOW)
-        # When
-        watch.record_flaky(poll_result([]), NOW)
-        kept = watch.load_flaky()
-        watch.record_flaky(poll_result([]), NOW + watch.FLAKY_RETENTION_S)
-        # Then
-        self.assertEqual(["unit"], [r["job"] for r in kept.values()])
-        self.assertEqual({}, watch.load_flaky())
-
-    def test_a_failure_carries_the_local_flake_count_even_without_zuul_api(self):
-        # Given
-        watch.record_flaky(
-            poll_result([change(comments=[zuul_verdict(1, NOW - 20, "FAILURE"), zuul_verdict(1, NOW - 10, "SUCCESS")])]), NOW
-        )
-        event = {
-            "kind": "message",
-            "change": 2,
-            "branch": "main",
-            "author_username": "zuul",
-            "message": zuul_verdict(3, NOW, "FAILURE")["message"],
-        }
-        # When
-        with mock.patch.object(ci, "ZUUL_API", None):
-            watch.enrich([event])
-        # Then
-        self.assertEqual({"unit": {"week": 1, "month": 1, "last": NOW - 10}}, event["known_flaky"])
-
-    def test_the_status_row_lists_failed_jobs_their_flakes_and_my_rechecks(self):
-        # Given
-        watch.record_flaky(
-            poll_result([change(2, comments=[zuul_verdict(1, NOW - 20, "FAILURE"), zuul_verdict(1, NOW - 10, "SUCCESS")])]), NOW
-        )
-        red = change(
-            current=patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS]),
-            comments=[zuul_verdict(1, NOW - 5, "FAILURE"), message(gerrit.USER, "Patch Set 1:\n\nrecheck", NOW)],
-        )
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        status = pathlib.Path(tmp.name) / "status.json"
-        # When
-        with (
-            mock.patch.object(watch, "STATUS", status),
-            mock.patch.object(repo, "worktrees_by_change_id", return_value={}),
-            mock.patch.object(repo, "cleanup_candidates", return_value=[]),
-        ):
-            watch.write_status(poll_result([red]))
-        # Then
-        row = json.loads(status.read_text())["changes"][0]
-        self.assertEqual(
-            ([{"job": "unit", "result": "FAILURE"}], 1, 1), (row["ci_failed_jobs"], row["flaky"]["unit"]["month"], row["rechecks"])
-        )
-
-
-class PreparedRebasesTest(unittest.TestCase):
-    def test_candidates_are_what_a_plain_rebase_unblocks(self):
-        # Given
-        merge_failed = patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS])
-        verdict = message("zuul", "Patch Set 1: Verified-1\n\nMerge Failed.", 5)
-        changes = [change(1), change(2), change(3), change(4), change(5, current=merge_failed, comments=[verdict])]
-        result = {
-            **poll_result(
-                changes, conflicts={3: ["A.kt"], 4: ["B.kt"]}, parents={1: 9, 4: 8}, stale={2: {"parent": 7, "old_parent_sha": "old"}}
-            ),
-            "outdated_parents": {1: {"parent": 9, "new_parent_sha": "p9"}},
-        }
-        # When
-        with mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}):
-            found = {n: (onto, parent) for n, (_, onto, parent) in watch.rebase_candidates(result).items()}
-        # Then
-        self.assertEqual({1: ("p9", 9), 2: ("tip", None), 3: ("tip", None), 5: ("tip", None)}, found)
-
-    def test_a_change_with_work_left_in_its_worktree_is_not_prepared(self):
-        # Given
-        result = poll_result([change(1), change(2)], conflicts={1: ["A.kt"], 2: ["A.kt"]})
-        with (
-            mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}),
-            mock.patch.object(repo, "unfinished_work", return_value={1: {"worktree": "/wt1"}}),
-            mock.patch.object(repo, "worktrees_by_change_id", return_value={"I1": "/wt1", "I2": "/wt2"}),
-            mock.patch.object(repo, "prepare_replays", side_effect=lambda wanted: {n: "new" for n in wanted}) as replays,
-        ):
-            # When
-            found = watch.prepared_rebases(result)
-        # Then
-        replays.assert_called_once_with({2: ("rev1", "tip")})
-        self.assertEqual({2: {"sha": "new", "patch_set": 1, "parent": None}}, found)
-
-    def test_the_worktree_listing_is_reused(self):
-        # Given
-        result = poll_result([change(1)], conflicts={1: ["A.kt"]})
-        with (
-            mock.patch.object(repo, "branch_tips", return_value={"main": "tip"}),
-            mock.patch.object(repo, "worktree_listing") as listing,
-            mock.patch.object(repo, "change_ids_by_worktree", return_value={}),
-            mock.patch.object(repo, "prepare_replays", return_value={}),
-        ):
-            # When
-            watch.prepared_rebases(result, "worktree /repo\n")
-        # Then
-        listing.assert_not_called()
-
-    def test_without_candidates_the_old_rebases_are_still_dropped(self):
-        # Given
-        result = poll_result([change(1)])
-        with (
-            mock.patch.object(repo, "branch_tips", return_value={}),
-            mock.patch.object(repo, "prepare_replays", return_value={}) as replays,
-        ):
-            # When
-            found = watch.prepared_rebases(result)
-        # Then
-        self.assertEqual({}, found)
-        replays.assert_called_once_with({})
-
-
-class DiagnoseRedTest(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        patcher = mock.patch.object(watch, "DIAGNOSES", pathlib.Path(tmp.name) / "diagnoses.json")
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def red(self, number, verdict_at):
-        return change(
-            number,
-            current=patch_set(1, *[approval(label, -1, "zuul") for label in events.CI_LABELS]),
-            comments=[zuul_verdict(1, verdict_at, "FAILURE")],
-        )
-
-    def test_each_verdict_is_diagnosed_once_and_kept_while_the_change_is_open(self):
-        # Given
-        def diagnose(reported, base=None):
-            for event in reported:
-                event["ci_diagnosis"] = [
-                    {"job": "unit", "category": "unknown", "log_url": "https://logs/u", "log_tail": "x" * 1000, "others_failing": [3]}
-                ]
-            return reported
-
-        with mock.patch.object(ci, "ZUUL_API", "https://zuul/api"), mock.patch.object(watch, "enrich", side_effect=diagnose) as enrich:
-            # When
-            first = watch.diagnose_red(poll_result([self.red(1, 10), change(2)]))
-            again = watch.diagnose_red(poll_result([self.red(1, 10)]))
-            rechecked = watch.diagnose_red(poll_result([self.red(1, 20)]))
-            closed = watch.diagnose_red(poll_result([change(2)]))
-        # Then
-        self.assertEqual([1, 0, 1, 0], [len(c.args[0]) for c in enrich.call_args_list])
-        self.assertEqual(
-            {1: [{"job": "unit", "category": "unknown", "log_url": "https://logs/u", "excerpt": "x" * watch.EXCERPT_CHARS}]}, first
-        )
-        self.assertEqual((first, first), (again, rechecked))
-        self.assertEqual(({}, {}), (closed, json.loads(watch.DIAGNOSES.read_text())))
-
-    def test_nothing_without_zuul(self):
-        # Given / When
-        with mock.patch.object(ci, "ZUUL_API", None):
-            found = watch.diagnose_red(poll_result([self.red(1, 10)]))
-        # Then
-        self.assertEqual({}, found)
-
-    def test_an_unknown_failure_a_newer_patch_set_got_past_is_offered_for_the_memory(self):
-        # Given
-        jobs = [
-            {"job": "unit", "category": "unknown", "log_url": "https://logs/u", "excerpt": "boom"},
-            {"job": "lint", "category": "lint"},
-        ]
-        watch.DIAGNOSES.write_text(
-            json.dumps(
-                {"101:1:10": {"jobs": jobs}, "102:1:10": {"jobs": jobs}, "103:1:10": {"jobs": jobs}, "104:3:10": {"jobs": jobs}}
-            )
-        )
-        green = patch_set(2, *GREEN_CI)
-        changes = [
-            change(101, current=green),
-            change(102, current=green),
-            self.red(103, 20),
-            change(104, current=patch_set(3, *GREEN_CI)),
-        ]
-        with mock.patch.object(watch.known_failures, "load", return_value={"102:1:unit": {}}):
-            # When
-            found = dict(watch.fixed_failures(poll_result(changes)))
-        # Then
-        self.assertEqual(["101:fixed:1:unit"], list(found))
-        self.assertEqual(
-            {
-                "kind": "failure_fixed",
-                "job": "unit",
-                "failed_patch_set": 1,
-                "failed_ref": "refs/changes/01/101/1",
-                "fixed_ref": "refs/changes/01/1/2",
-                "log_url": "https://logs/u",
-                "excerpt": "boom",
-            },
-            {k: v for k, v in found["101:fixed:1:unit"].items() if k not in events.event_base(changes[0])},
-        )
 
 
 class SnoozeFilterTest(unittest.TestCase):
@@ -909,51 +632,6 @@ class BaseHealthTest(unittest.TestCase):
         found = [bool(watch.snoozed_changes(result, NOW)) for result in polls]
         # Then
         self.assertEqual([True, True, False], found)
-
-    def test_the_snapshot_flags_rows_on_a_red_base(self):
-        # Given
-        result = {**poll_result([change(1), change(2, branch="release")]), "base_health": {"main": RED}}
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        status = pathlib.Path(tmp.name) / "status.json"
-        watch.snooze.set_snooze(1, base_green=True)
-        # When
-        with (
-            mock.patch.object(watch, "STATUS", status),
-            mock.patch.object(repo, "worktrees_by_change_id", return_value={}),
-            mock.patch.object(repo, "cleanup_candidates", return_value=[]),
-        ):
-            watch.write_status(result)
-        snapshot = json.loads(status.read_text())
-        # Then
-        self.assertEqual([True, False], [row["base_red"] for row in snapshot["changes"]])
-        self.assertEqual([1], list(watch.snooze.snapshot_active(snapshot, NOW)))
-
-    def test_the_snapshot_lists_the_branches_to_clean_up(self):
-        # Given
-        candidate = {
-            "kind": "cleanup_candidate",
-            "branch": "old",
-            "worktree": "/wt/old",
-            "change": 7,
-            "subject": "fix: x",
-            "status": "merged",
-        }
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        status = pathlib.Path(tmp.name) / "status.json"
-        # When
-        with (
-            mock.patch.object(watch, "STATUS", status),
-            mock.patch.object(repo, "worktrees_by_change_id", return_value={}),
-            mock.patch.object(repo, "cleanup_candidates", return_value=[("cleanup:old:sha", candidate)]) as found,
-        ):
-            watch.write_status(poll_result([change(1)]), listing="listing")
-        # Then
-        self.assertEqual([{"key": "cleanup:old:sha", **candidate}], json.loads(status.read_text())["cleanup"])
-        self.assertEqual("listing", found.call_args.args[1])
-        with mock.patch.object(watch, "STATUS", status):
-            self.assertEqual({"cleanup:old:sha": candidate}, watch.snapshot_cleanup())
 
 
 class WithIntKeysTest(unittest.TestCase):

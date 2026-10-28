@@ -179,7 +179,7 @@ class DaemonTest(unittest.TestCase):
         # When
         with (
             mock.patch.object(daemon, "write_daemon_poll", published),
-            mock.patch.object(watch, "write_status", side_effect=OSError("disk full")),
+            mock.patch.object(daemon, "write_status", side_effect=OSError("disk full")),
             self.assertRaises(OSError),
         ):
             daemon.daemon_round({"changes": []}, first_run=True)
@@ -282,8 +282,8 @@ class SnoozedRoundTest(unittest.TestCase):
         with (
             mock.patch.object(daemon, "DAEMON_STATE", state),
             mock.patch.object(daemon, "write_daemon_poll"),
-            mock.patch.object(watch, "write_status"),
-            mock.patch.object(watch, "record_flaky"),
+            mock.patch.object(daemon, "write_status"),
+            mock.patch.object(daemon, "record_flaky"),
             mock.patch.object(events, "is_quiet", return_value=False),
             mock.patch.object(daemon, "swiftbar") as swiftbar,
         ):

@@ -16,8 +16,10 @@ import repo
 import watch
 from config import CACHE, CONFIG, DAEMON_POLL, SKILL_DIR, SWIFTBAR_PLUGIN, VERSION, atomic_write, launched_skill_dir
 from config import read_json
+from extras import record_flaky
 from i18n import t
 from poll import poll
+from status_writer import write_status
 
 DAEMON_STATE = CACHE / "daemon-seen.json"
 AUTO_SUBMIT_TAGGED = CACHE / "auto-submit-tagged.json"
@@ -83,7 +85,7 @@ def run(interval):
         if detail != last_error:
             log(f"poll failed: {detail}" if expected else traceback.format_exc())
             last_error = detail
-        watch.write_status(error=detail)
+        write_status(error=detail)
         swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
         return detail
 
@@ -123,7 +125,7 @@ def run(interval):
 def daemon_round(result, first_run):
     # Published first: a bug further down must not starve the session of a poll that is fine.
     write_daemon_poll(result)
-    watch.write_status(result, listing=repo.worktree_listing())
+    write_status(result, listing=repo.worktree_listing())
     swiftbar("refreshplugin", name=SWIFTBAR_PLUGIN)
 
     now = time.time()
@@ -136,7 +138,7 @@ def daemon_round(result, first_run):
     # Held back at night and on weekends: still unseen, they notify at the start of the next working day.
     marked = () if quiet and not first_run else current.keys()
     watch.save_seen(watch.remember(seen, marked, result, current, now), DAEMON_STATE)
-    watch.record_flaky(result, now)
+    record_flaky(result, now)
     tag_auto_submit(result)
 
 
