@@ -112,7 +112,7 @@ clone free of local edits, so updating is just `git pull`.
 | `tests/` | Unit tests, their builders (`fakes.py`) and sample Gerrit and zuul payloads (`fixtures/`) |
 | `.claude-plugin/`, `hooks/` | Claude Code plugin manifest, marketplace entry and Stop hook |
 
-State lives in `~/.cache/gerrit-babysit/`. Run the tests with `python3 -m unittest`.
+State lives in `~/.cache/gerrit-babysit/`. Run the tests with `python3 -m unittest`; CI also runs them on `/usr/bin/python3` (3.9, what launchd runs) and checks `ruff check` and `ruff format`.
 
 ## License
 
