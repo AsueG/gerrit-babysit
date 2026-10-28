@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import json
 import pathlib
 import tempfile
@@ -28,8 +29,20 @@ class KnownFailuresTest(unittest.TestCase):
         found = ci.similar_failures(known_failures.load(), ci.log_tail(LOG.replace("10:00", "11:30")))
         # Then
         self.assertEqual("https://logs/x/job-output.txt", get.call_args.args[0])
-        self.assertEqual([{"similarity": 1.0, "change": 9, "patch_set": 2, "job": "app-e2e", "cause": "emulator OOM",
-                           "fix": "bump the heap", "recorded_at": 100}], found)
+        self.assertEqual(
+            [
+                {
+                    "similarity": 1.0,
+                    "change": 9,
+                    "patch_set": 2,
+                    "job": "app-e2e",
+                    "cause": "emulator OOM",
+                    "fix": "bump the heap",
+                    "recorded_at": 100,
+                }
+            ],
+            found,
+        )
 
     def test_old_records_are_pruned_and_the_same_failure_is_overwritten(self):
         # Given
@@ -72,16 +85,16 @@ class MainTest(unittest.TestCase):
 
     def run_main(self, *argv):
         out = []
-        with mock.patch("sys.argv", ["known_failures.py", *argv]), \
-                mock.patch("builtins.print", side_effect=out.append):
+        with mock.patch("sys.argv", ["known_failures.py", *argv]), mock.patch("builtins.print", side_effect=out.append):
             code = known_failures.main()
         return code, out
 
     def test_record(self):
         # When
         with mock.patch.object(ci, "http_get", return_value=LOG):
-            code, out = self.run_main("record", "9", "2", "app-e2e", "--log-url", "https://logs/x/",
-                                      "--cause", "emulator OOM", "--fix", "bump the heap")
+            code, out = self.run_main(
+                "record", "9", "2", "app-e2e", "--log-url", "https://logs/x/", "--cause", "emulator OOM", "--fix", "bump the heap"
+            )
         # Then
         self.assertEqual(0, code)
         printed = json.loads(out[0])

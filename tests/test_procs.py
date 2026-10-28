@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import os
 import unittest
 from unittest import mock
@@ -23,10 +24,13 @@ class ProcessesTest(unittest.TestCase):
             table = procs.processes()
         # Then
         self.assertEqual(
-            {1: (0, "/sbin/launchd"),
-             412: (1, "/usr/bin/python3 /path/watch.py --interval 60"),
-             413: (412, "/bin/zsh -c exec ps -axo pid=,ppid=,command=")},
-            table)
+            {
+                1: (0, "/sbin/launchd"),
+                412: (1, "/usr/bin/python3 /path/watch.py --interval 60"),
+                413: (412, "/bin/zsh -c exec ps -axo pid=,ppid=,command="),
+            },
+            table,
+        )
 
     def test_a_line_without_a_command_is_dropped_rather_than_crashing(self):
         # Given: pid 414's command was empty, so its line only has two fields.

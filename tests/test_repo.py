@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import pathlib
 import subprocess
 import unittest
@@ -132,8 +133,7 @@ class MergeConflictsTest(GitRepoTest):
         self.git("update-ref", ref, "HEAD")
         self.git("checkout", "-q", "main")
         self.git("branch", "-f", branch, "main")
-        return change(number, current={**patch_set(1), "revision": self.git("rev-parse", ref), "ref": ref},
-                      branch=branch)
+        return change(number, current={**patch_set(1), "revision": self.git("rev-parse", ref), "ref": ref}, branch=branch)
 
     def test_the_memo_only_keeps_the_current_branch_tip(self):
         # Given
@@ -145,8 +145,7 @@ class MergeConflictsTest(GitRepoTest):
         conflicts = repo.merge_conflicts([c])
         # Then
         self.assertEqual({1: ["A.kt"]}, conflicts)
-        self.assertEqual([(self.git("rev-parse", "release"), c["currentPatchSet"]["revision"], True)],
-                         list(repo._conflicts_memo.kept))
+        self.assertEqual([(self.git("rev-parse", "release"), c["currentPatchSet"]["revision"], True)], list(repo._conflicts_memo.kept))
 
     def test_the_content_merge_setting_is_asked_once_per_project(self):
         # Given
@@ -185,8 +184,7 @@ class MergeConflictsTest(GitRepoTest):
     def test_a_vanished_branch_does_not_hide_other_conflicts(self):
         # Given
         live = self.conflicting_change(1, "release")
-        gone = change(2, current={**patch_set(1), "revision": "0" * 40, "ref": "refs/changes/02/2/1"},
-                      branch="deleted")
+        gone = change(2, current={**patch_set(1), "revision": "0" * 40, "ref": "refs/changes/02/2/1"}, branch="deleted")
         # When
         conflicts = repo.merge_conflicts([live, gone])
         # Then
@@ -205,9 +203,11 @@ class MergeConflictsTest(GitRepoTest):
         c = self.conflicting_change(1, "release")
         fetches = []
         # When
-        with mock.patch.object(repo, "TIPS_REFRESH_S", 300), \
-                mock.patch.object(repo, "fetch_refs", side_effect=fetches.append), \
-                mock.patch.object(repo.time, "monotonic", side_effect=[1000, 1100, 1300]):
+        with (
+            mock.patch.object(repo, "TIPS_REFRESH_S", 300),
+            mock.patch.object(repo, "fetch_refs", side_effect=fetches.append),
+            mock.patch.object(repo.time, "monotonic", side_effect=[1000, 1100, 1300]),
+        ):
             for _ in range(3):
                 repo.merge_conflicts([c])
         # Then
@@ -219,9 +219,11 @@ class MergeConflictsTest(GitRepoTest):
         repo._tips_fetched_at["release"] = 1000
         fetches = []
         # When
-        with mock.patch.object(repo, "TIPS_REFRESH_S", 300), \
-                mock.patch.object(repo, "fetch_refs", side_effect=fetches.append), \
-                mock.patch.object(repo.time, "monotonic", return_value=1010):
+        with (
+            mock.patch.object(repo, "TIPS_REFRESH_S", 300),
+            mock.patch.object(repo, "fetch_refs", side_effect=fetches.append),
+            mock.patch.object(repo.time, "monotonic", return_value=1010),
+        ):
             repo.merge_conflicts([c])
         # Then
         self.assertEqual([[f"+refs/changes/01/1/1:{repo.FETCH_NAMESPACE}/changes/1"]], fetches)
@@ -231,8 +233,7 @@ class MergeConflictsTest(GitRepoTest):
         self.git("remote", "set-url", "origin", str(self.repo / "missing"))
         c = change(1, current={**patch_set(1), "revision": "0" * 40})
         # When
-        with mock.patch.object(repo, "git_run", wraps=repo.git_run) as git_run, \
-                self.assertRaises(subprocess.CalledProcessError):
+        with mock.patch.object(repo, "git_run", wraps=repo.git_run) as git_run, self.assertRaises(subprocess.CalledProcessError):
             repo.merge_conflicts([c])
         # Then: an unreachable remote is not retried once per refspec
         self.assertEqual(1, sum(call.args[0] == "fetch" for call in git_run.call_args_list))
@@ -301,6 +302,7 @@ class InterdiffTest(GitRepoTest):
             if args[0] == "diff":
                 raise subprocess.TimeoutExpired("git diff", 60)
             return real(*args, **kwargs)
+
         # When
         with mock.patch.object(repo, "git_run", side_effect=git_run):
             found = repo.interdiff(self.event())
@@ -323,8 +325,7 @@ class ReplayTest(GitRepoTest):
         super().setUp()
         repo._replay_memo = repo.PollMemo()
         self.base = self.write_commit({"A.kt": "a\n", "B.kt": "b\n"}, "base")
-        self.change = self.write_commit({"A.kt": "a changed\n"}, f"feat: a\n\nChange-Id: {CHANGE_ID}",
-                                        author="Ann <ann@x>")
+        self.change = self.write_commit({"A.kt": "a changed\n"}, f"feat: a\n\nChange-Id: {CHANGE_ID}", author="Ann <ann@x>")
         self.git("reset", "-q", "--hard", self.base)
 
     def test_replays_the_change_onto_the_new_base_keeping_its_message_and_author(self):
@@ -398,8 +399,16 @@ class PrepareRebaseTest(GitRepoTest):
         return sha
 
     def event(self, new_sha):
-        return {"kind": "parent_updated", "change": 1, "change_id": CHANGE_ID, "branch": "main", "parent": 9,
-                "parent_ref": "refs/changes/09/9/2", "old_parent_sha": self.old_parent, "new_parent_sha": new_sha}
+        return {
+            "kind": "parent_updated",
+            "change": 1,
+            "change_id": CHANGE_ID,
+            "branch": "main",
+            "parent": 9,
+            "parent_ref": "refs/changes/09/9/2",
+            "old_parent_sha": self.old_parent,
+            "new_parent_sha": new_sha,
+        }
 
     def in_worktree(self, *args):
         return subprocess.run(["git", "-C", str(self.worktree), *args], capture_output=True, text=True).stdout.strip()
@@ -417,8 +426,9 @@ class PrepareRebaseTest(GitRepoTest):
     def test_a_conflict_is_aborted_and_reported(self):
         # Given
         (self.worktree / "A.kt").write_text("child\n")
-        subprocess.run(["git", "-C", str(self.worktree), "commit", "-q", "--amend", "-am",
-                        f"child\n\nChange-Id: {CHANGE_ID}"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "commit", "-q", "--amend", "-am", f"child\n\nChange-Id: {CHANGE_ID}"], check=True
+        )
         head = self.in_worktree("rev-parse", "HEAD")
         new = self.new_parent("parent\n")
         # When
@@ -473,8 +483,9 @@ class CleanupCandidatesTest(GitRepoTest):
         repo._cleanup_memo.clear()
 
     def run_cleanup(self, merged_revisions, open_ids=frozenset(), status="MERGED"):
-        rows = [{"id": CHANGE_ID, "number": 7, "subject": "s", "status": status,
-                 "patchSets": [{"revision": r} for r in merged_revisions]}]
+        rows = [
+            {"id": CHANGE_ID, "number": 7, "subject": "s", "status": status, "patchSets": [{"revision": r} for r in merged_revisions]}
+        ]
         with mock.patch.object(gerrit, "query", return_value=rows) as self.query:
             return [e for _, e in repo.cleanup_candidates(open_ids)]
 

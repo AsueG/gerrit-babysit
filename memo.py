@@ -1,5 +1,6 @@
 """A memo that only keeps what the latest poll asked for: keyed by branch tip or patch set, it would otherwise grow with
 every push."""
+
 import concurrent.futures
 import contextlib
 

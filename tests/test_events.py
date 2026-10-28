@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import json
 import time
 import unittest
@@ -79,17 +80,18 @@ class AwaitingThreadsTest(unittest.TestCase):
     def test_unresolved_threads_whose_last_word_is_not_mine(self):
         # Given
         answered = [inline("a1", "reviewer", "nit", 1), inline("a2", gerrit.USER, "Done", 2, "a1", unresolved=False)]
-        open_ = [inline("b1", "reviewer", "why?", 3), inline("b2", gerrit.USER, "because", 4, "b1"),
-                 inline("b3", "reviewer", "ok but", 5, "b2")]
+        open_ = [
+            inline("b1", "reviewer", "why?", 3),
+            inline("b2", gerrit.USER, "because", 4, "b1"),
+            inline("b3", "reviewer", "ok but", 5, "b2"),
+        ]
         resolved_by_them = [inline("c1", "reviewer", "fyi", 6, unresolved=False)]
         comments = {"A.kt": answered + resolved_by_them, "B.kt": open_}
         # When
         threads = events.awaiting_threads(comments)
         # Then
-        self.assertEqual([("B.kt", 3, "Reviewer", "b3")],
-                         [(t["file"], t["line"], t["author"], t["reply_to"]) for t in threads])
-        self.assertEqual(["reviewer: why?", f"{gerrit.USER}: because", "reviewer: ok but"],
-                         threads[0]["messages"])
+        self.assertEqual([("B.kt", 3, "Reviewer", "b3")], [(t["file"], t["line"], t["author"], t["reply_to"]) for t in threads])
+        self.assertEqual(["reviewer: why?", f"{gerrit.USER}: because", "reviewer: ok but"], threads[0]["messages"])
 
     def test_a_bot_having_the_last_word_awaits_nobody(self):
         # Given
@@ -183,8 +185,7 @@ class GatedProjectTest(unittest.TestCase):
 
     def test_ready_only_until_the_gate_is_voted(self):
         # Given
-        changes = [self.gated(), change(2, current=self.gated(approval("Workflow", 1))["currentPatchSet"],
-                                        submitRecords=GATED)]
+        changes = [self.gated(), change(2, current=self.gated(approval("Workflow", 1))["currentPatchSet"], submitRecords=GATED)]
         # When
         kinds = {(e["change"], e["kind"], e.get("gate")) for _, e in events.events(poll_result(changes), NOW)}
         # Then
@@ -258,9 +259,10 @@ class EventsTest(unittest.TestCase):
         found = dict(events.events(result))
         # Then
         self.assertEqual(["1:parent_merged:1"], list(found))
-        self.assertEqual((99, "abc", ["A.kt"]),
-                         (found["1:parent_merged:1"]["parent"], found["1:parent_merged:1"]["old_parent_sha"],
-                          found["1:parent_merged:1"]["files"]))
+        self.assertEqual(
+            (99, "abc", ["A.kt"]),
+            (found["1:parent_merged:1"]["parent"], found["1:parent_merged:1"]["old_parent_sha"], found["1:parent_merged:1"]["files"]),
+        )
 
     def test_conflict_without_merged_parent(self):
         # Given
@@ -286,15 +288,17 @@ class EventsTest(unittest.TestCase):
         # When
         found = [e for _, e in events.events(poll_result([c], threads=threads))]
         # Then
-        self.assertEqual([1, None], [len(e["threads_awaiting_me"]) if "threads_awaiting_me" in e else None
-                                     for e in found])
+        self.assertEqual([1, None], [len(e["threads_awaiting_me"]) if "threads_awaiting_me" in e else None for e in found])
 
     def test_ci_silent_for_two_hours_is_stuck(self):
         # Given
         starting = message("zuul", "Patch Set 1:\n\nStarting check-integration jobs.", timestamp=NOW - 3 * 3600)
         stuck = change(current=patch_set(1, GREEN_CI[0], created=NOW - 4 * 3600), comments=[starting])
-        rechecked = change(2, current=patch_set(1, created=NOW - 4 * 3600),
-                           comments=[message("zuul", "Patch Set 1:\n\nStarting check-build jobs.", timestamp=NOW - 60)])
+        rechecked = change(
+            2,
+            current=patch_set(1, created=NOW - 4 * 3600),
+            comments=[message("zuul", "Patch Set 1:\n\nStarting check-build jobs.", timestamp=NOW - 60)],
+        )
         green = change(3, current=patch_set(1, *GREEN_CI, created=NOW - 4 * 3600))
         # When
         keys = list(dict(events.events(poll_result([stuck, rechecked, green]), NOW)))
@@ -312,10 +316,12 @@ class EventsTest(unittest.TestCase):
 
     def test_zuul_failure_counts_my_earlier_rechecks_on_the_patch_set(self):
         # Given
-        comments = [message(gerrit.USER, "Patch Set 1:\n\nrecheck-integration", timestamp=5),
-                    message(gerrit.USER, "Patch Set 1:\n\nrecheck is not needed", timestamp=6),
-                    message("zuul", "Patch Set 1: Integration-1\n\nBuild Failed.", timestamp=10),
-                    message(gerrit.USER, "Patch Set 1:\n\nrecheck", timestamp=15)]
+        comments = [
+            message(gerrit.USER, "Patch Set 1:\n\nrecheck-integration", timestamp=5),
+            message(gerrit.USER, "Patch Set 1:\n\nrecheck is not needed", timestamp=6),
+            message("zuul", "Patch Set 1: Integration-1\n\nBuild Failed.", timestamp=10),
+            message(gerrit.USER, "Patch Set 1:\n\nrecheck", timestamp=15),
+        ]
         # When
         found = [e for _, e in events.events(poll_result([change(comments=comments)])) if e["kind"] == "message"]
         # Then
@@ -325,20 +331,28 @@ class EventsTest(unittest.TestCase):
         # Given
         friday, tuesday = local(2026, 9, 25, 17), local(2026, 9, 29, 10)
         reviewers = [{"username": gerrit.USER}, {"username": "zuul"}, {"username": "r", "name": "Rev"}]
-        waiting = change(current=patch_set(1, *GREEN_CI, created=friday), allReviewers=reviewers,
-                         comments=[message("zuul", "Patch Set 1: Build+1", timestamp=friday + 60)])
-        answered = change(2, current=patch_set(1, *GREEN_CI, created=friday),
-                          comments=[message("r", "Patch Set 1:\n\nwhy?", timestamp=friday + 60)])
+        waiting = change(
+            current=patch_set(1, *GREEN_CI, created=friday),
+            allReviewers=reviewers,
+            comments=[message("zuul", "Patch Set 1: Build+1", timestamp=friday + 60)],
+        )
+        answered = change(
+            2, current=patch_set(1, *GREEN_CI, created=friday), comments=[message("r", "Patch Set 1:\n\nwhy?", timestamp=friday + 60)]
+        )
         voted = change(3, current=patch_set(1, approval("Code-Review", 1, "r"), *GREEN_CI, created=friday))
         wip = change(4, current=patch_set(1, *GREEN_CI, created=friday), wip=True)
         red = change(5, current=patch_set(1, approval("Build", -1, "zuul"), created=friday))
         # When
-        found = {k: e for k, e in events.events(poll_result([waiting, answered, voted, wip, red]), tuesday)
-                 if e["kind"] == "waiting_for_review"}
+        found = {
+            k: e
+            for k, e in events.events(poll_result([waiting, answered, voted, wip, red]), tuesday)
+            if e["kind"] == "waiting_for_review"
+        }
         # Then
         self.assertEqual(["1:unreviewed:1:2026-09-29"], list(found))
-        self.assertEqual((2, ["Rev"]), (found["1:unreviewed:1:2026-09-29"]["working_days"],
-                                        found["1:unreviewed:1:2026-09-29"]["reviewers"]))
+        self.assertEqual(
+            (2, ["Rev"]), (found["1:unreviewed:1:2026-09-29"]["working_days"], found["1:unreviewed:1:2026-09-29"]["reviewers"])
+        )
 
     def test_one_working_day_is_not_waiting_yet(self):
         # Given
@@ -382,9 +396,17 @@ class EventsTest(unittest.TestCase):
 class ByUrgencyTest(unittest.TestCase):
     def test_blockers_before_quick_wins_before_waits_and_same_kinds_keep_their_order(self):
         # Given
-        reported = [{"kind": k, "change": n} for k, n in (("cleanup_candidate", 1), ("waiting_for_review", 2),
-                                                          ("ready_to_submit", 3), ("merge_conflict", 4),
-                                                          ("ready_to_submit", 5), ("unfinished", 6))]
+        reported = [
+            {"kind": k, "change": n}
+            for k, n in (
+                ("cleanup_candidate", 1),
+                ("waiting_for_review", 2),
+                ("ready_to_submit", 3),
+                ("merge_conflict", 4),
+                ("ready_to_submit", 5),
+                ("unfinished", 6),
+            )
+        ]
         # When
         found = [e["change"] for e in events.by_urgency(reported)]
         # Then
@@ -394,10 +416,14 @@ class ByUrgencyTest(unittest.TestCase):
 class UnsatisfiedRequirementsTest(unittest.TestCase):
     def test_only_unsatisfied_or_broken_requirements_block(self):
         # Given
-        row = {"submit_requirements": [{"name": "Code-Review", "status": "SATISFIED"},
-                                       {"name": "Code-Owners", "status": "UNSATISFIED"},
-                                       {"name": "No-Wip", "status": "NOT_APPLICABLE"},
-                                       {"name": "Custom", "status": "ERROR"}]}
+        row = {
+            "submit_requirements": [
+                {"name": "Code-Review", "status": "SATISFIED"},
+                {"name": "Code-Owners", "status": "UNSATISFIED"},
+                {"name": "No-Wip", "status": "NOT_APPLICABLE"},
+                {"name": "Custom", "status": "ERROR"},
+            ]
+        }
         # When
         found = events.unsatisfied_requirements(row)
         # Then
@@ -417,14 +443,26 @@ def local(year, month, day, hour):
 class WorkingHoursTest(unittest.TestCase):
     def test_work_day_flips_in_the_morning_and_skips_weekends(self):
         # Given
-        moments = {"tuesday 08:00": local(2026, 9, 29, 8), "tuesday 10:00": local(2026, 9, 29, 10),
-                   "saturday": local(2026, 10, 3, 15), "monday 08:00": local(2026, 10, 5, 8),
-                   "monday 09:00": local(2026, 10, 5, 9)}
+        moments = {
+            "tuesday 08:00": local(2026, 9, 29, 8),
+            "tuesday 10:00": local(2026, 9, 29, 10),
+            "saturday": local(2026, 10, 3, 15),
+            "monday 08:00": local(2026, 10, 5, 8),
+            "monday 09:00": local(2026, 10, 5, 9),
+        }
         # When
         days = {name: events.work_day(now) for name, now in moments.items()}
         # Then
-        self.assertEqual({"tuesday 08:00": "2026-09-28", "tuesday 10:00": "2026-09-29", "saturday": "2026-10-02",
-                          "monday 08:00": "2026-10-02", "monday 09:00": "2026-10-05"}, days)
+        self.assertEqual(
+            {
+                "tuesday 08:00": "2026-09-28",
+                "tuesday 10:00": "2026-09-29",
+                "saturday": "2026-10-02",
+                "monday 08:00": "2026-10-02",
+                "monday 09:00": "2026-10-05",
+            },
+            days,
+        )
 
     def test_quiet_at_night_and_on_weekends(self):
         # Given
@@ -443,8 +481,7 @@ class PendingEventsTest(unittest.TestCase):
         # When
         found = list(events.pending_events(poll_result([change(current=ps, comments=[verdict])])))
         # Then
-        self.assertEqual([("pending", "failed", verdict["message"])],
-                         [(e["kind"], e["ci"], e.get("ci_verdict")) for e in found])
+        self.assertEqual([("pending", "failed", verdict["message"])], [(e["kind"], e["ci"], e.get("ci_verdict")) for e in found])
 
     def test_quiet_change_and_past_messages_are_not_replayed(self):
         # Given
@@ -475,8 +512,11 @@ RED_CI = [approval(label, -1, "zuul") for label in events.CI_LABELS]
 class ReviewTriageTest(unittest.TestCase):
     def test_a_request_says_why_it_is_not_worth_reading_yet(self):
         # Given
-        cases = [review(), review(patch_sets=[patch_set(1, *RED_CI)]),
-                 review(patch_sets=[patch_set(1, approval("Code-Review", -1, "r0"))], reviewers=2)]
+        cases = [
+            review(),
+            review(patch_sets=[patch_set(1, *RED_CI)]),
+            review(patch_sets=[patch_set(1, approval("Code-Review", -1, "r0"))], reviewers=2),
+        ]
         # When
         found = [dict(events.review_events(c, DAY))[f"1:review_requested:{DAY}"]["blocked_by"] for c in cases]
         # Then
@@ -484,9 +524,11 @@ class ReviewTriageTest(unittest.TestCase):
 
     def test_reviewable_requests_come_before_the_ones_that_will_move(self):
         # Given
-        reported = [{"kind": "review_requested", "change": 1, "blocked_by": "ci_failed"},
-                    {"kind": "review_requested", "change": 2, "blocked_by": None},
-                    {"kind": "message", "change": 3}]
+        reported = [
+            {"kind": "review_requested", "change": 1, "blocked_by": "ci_failed"},
+            {"kind": "review_requested", "change": 2, "blocked_by": None},
+            {"kind": "message", "change": 3},
+        ]
         # When
         ordered = [e["change"] for e in events.by_urgency(reported)]
         # Then
@@ -494,11 +536,13 @@ class ReviewTriageTest(unittest.TestCase):
 
     def test_rows_list_what_waits_on_me_reviewable_first_then_oldest(self):
         # Given
-        reviews = [review(patch_sets=[patch_set(1, created=300)], number=1),
-                   review(patch_sets=[patch_set(1, *RED_CI, created=100)], number=2),
-                   review(patch_sets=[patch_set(1, created=200)], number=3),
-                   review(patch_sets=[patch_set(1, approval("Code-Review", 1, gerrit.USER))], number=4),
-                   review(wip=True, number=5)]
+        reviews = [
+            review(patch_sets=[patch_set(1, created=300)], number=1),
+            review(patch_sets=[patch_set(1, *RED_CI, created=100)], number=2),
+            review(patch_sets=[patch_set(1, created=200)], number=3),
+            review(patch_sets=[patch_set(1, approval("Code-Review", 1, gerrit.USER))], number=4),
+            review(wip=True, number=5),
+        ]
         # When
         rows = events.review_rows(poll_result(reviews=reviews))
         # Then
@@ -546,16 +590,21 @@ class ReviewEventsTest(unittest.TestCase):
         untouched = review()
         joined = review(number=2, patch_sets=[patch_set(1, approval("Code-Review", 1, gerrit.USER))])
         # When
-        keys = [k for c in (untouched, joined) for day in (DAY, "2026-09-30")
-                for k, e in events.review_events(c, day) if e["kind"] == "review_requested"]
+        keys = [
+            k
+            for c in (untouched, joined)
+            for day in (DAY, "2026-09-30")
+            for k, e in events.review_events(c, day)
+            if e["kind"] == "review_requested"
+        ]
         # Then
-        self.assertEqual(["1:review_requested:2026-09-29", "1:review_requested:2026-09-30",
-                          "2:review_requested", "2:review_requested"], keys)
+        self.assertEqual(
+            ["1:review_requested:2026-09-29", "1:review_requested:2026-09-30", "2:review_requested", "2:review_requested"], keys
+        )
 
     def test_copied_vote_on_the_current_patch_set_means_nothing_to_do(self):
         # Given
-        sets = [patch_set(1, approval("Code-Review", 2, gerrit.USER)),
-                patch_set(2, approval("Code-Review", 2, gerrit.USER))]
+        sets = [patch_set(1, approval("Code-Review", 2, gerrit.USER)), patch_set(2, approval("Code-Review", 2, gerrit.USER))]
         # When
         found = kinds(review(patch_sets=sets))
         # Then
@@ -579,12 +628,14 @@ class ReviewEventsTest(unittest.TestCase):
 
     def test_owner_reply_after_my_comment(self):
         # Given
-        comments = [message("owner", "Patch Set 1:\n\n(1 comment)", 5),
-                    message(gerrit.USER, "Patch Set 1:\n\n(2 comments)", 10),
-                    message("owner", "Uploaded patch set 2.", 20),
-                    message("owner", "Patch Set 2: Patch Set 1 was rebased", 25),
-                    message("other", "Patch Set 2:\n\nLGTM", 28),
-                    message("owner", "Patch Set 2:\n\n(2 comments)", 30)]
+        comments = [
+            message("owner", "Patch Set 1:\n\n(1 comment)", 5),
+            message(gerrit.USER, "Patch Set 1:\n\n(2 comments)", 10),
+            message("owner", "Uploaded patch set 2.", 20),
+            message("owner", "Patch Set 2: Patch Set 1 was rebased", 25),
+            message("other", "Patch Set 2:\n\nLGTM", 28),
+            message("owner", "Patch Set 2:\n\n(2 comments)", 30),
+        ]
         # When
         found = dict(events.review_events(review(current=2, comments=comments), DAY))
         # Then
@@ -592,13 +643,16 @@ class ReviewEventsTest(unittest.TestCase):
 
     def test_another_reviewer_reply_counts_when_gerrit_wants_my_attention(self):
         # Given
-        comments = [message(gerrit.USER, "Patch Set 1:\n\n(1 comment)", 10),
-                    message("other", "Patch Set 1:\n\n(1 comment)", 20),
-                    message("zuul", "Patch Set 1: Build+1", 25)]
+        comments = [
+            message(gerrit.USER, "Patch Set 1:\n\n(1 comment)", 10),
+            message("other", "Patch Set 1:\n\n(1 comment)", 20),
+            message("zuul", "Patch Set 1: Build+1", 25),
+        ]
         result = poll_result(reviews=[review(comments=comments)])
         # When
-        replies = [[k for k, e in events.events({**result, "attention": attention}) if e["kind"] == "review_reply"]
-                   for attention in ([], [1])]
+        replies = [
+            [k for k, e in events.events({**result, "attention": attention}) if e["kind"] == "review_reply"] for attention in ([], [1])
+        ]
         # Then
         self.assertEqual([[], ["1:review_reply:20"]], replies)
 
@@ -606,8 +660,10 @@ class ReviewEventsTest(unittest.TestCase):
 class BotsTest(unittest.TestCase):
     def test_bot_messages_are_not_actionable(self):
         # Given
-        messages = [message("autosubmit-bot", "Hashtag added: auto-submit"),
-                    {"reviewer": {"name": "Gerrit Code Review"}, "message": "Abandoned\n\nAuto-Abandoned"}]
+        messages = [
+            message("autosubmit-bot", "Hashtag added: auto-submit"),
+            {"reviewer": {"name": "Gerrit Code Review"}, "message": "Abandoned\n\nAuto-Abandoned"},
+        ]
         # When
         actionable = [events.is_actionable(m) for m in messages]
         # Then
@@ -616,9 +672,11 @@ class BotsTest(unittest.TestCase):
     def test_bot_activity_does_not_count_as_a_review(self):
         # Given
         friday, tuesday = local(2026, 9, 25, 17), local(2026, 9, 29, 10)
-        c = change(current=patch_set(1, *GREEN_CI, created=friday),
-                   allReviewers=[{"username": "autosubmit-bot", "name": "autosubmit-bot"}, {"username": "r", "name": "Rev"}],
-                   comments=[message("autosubmit-bot", "Hashtag added: auto-submit", timestamp=friday + 60)])
+        c = change(
+            current=patch_set(1, *GREEN_CI, created=friday),
+            allReviewers=[{"username": "autosubmit-bot", "name": "autosubmit-bot"}, {"username": "r", "name": "Rev"}],
+            comments=[message("autosubmit-bot", "Hashtag added: auto-submit", timestamp=friday + 60)],
+        )
         # When
         found = [e for _, e in events.events(poll_result([c]), tuesday) if e["kind"] == "waiting_for_review"]
         # Then
@@ -638,8 +696,13 @@ class AttentionSetTest(unittest.TestCase):
 
     def test_rest_attention_set_becomes_entries(self):
         # Given
-        rest = {"1000": {"account": {"_account_id": 1000, "username": "alice", "name": "Alice"},
-                         "last_update": "2026-09-29 08:00:00.000000000", "reason": "Reviewer was added"}}
+        rest = {
+            "1000": {
+                "account": {"_account_id": 1000, "username": "alice", "name": "Alice"},
+                "last_update": "2026-09-29 08:00:00.000000000",
+                "reason": "Reviewer was added",
+            }
+        }
         # When
         found = events.attention_entries(rest)
         # Then
@@ -647,20 +710,26 @@ class AttentionSetTest(unittest.TestCase):
 
     def test_a_reviewer_holding_it_after_a_first_round_is_waited_on(self):
         # Given
-        c = change(current=patch_set(2, approval("Code-Review", 1, "bob"), *GREEN_CI, created=self.friday),
-                   comments=[message("bob", "Patch Set 2: Code-Review+1", timestamp=self.friday + 60)])
+        c = change(
+            current=patch_set(2, approval("Code-Review", 1, "bob"), *GREEN_CI, created=self.friday),
+            comments=[message("bob", "Patch Set 2: Code-Review+1", timestamp=self.friday + 60)],
+        )
         # When
         [event] = self.waiting(c, holders=[holder("alice", self.friday)])
         # Then
-        self.assertEqual((2, [{"name": "Alice", "username": "alice", "working_days": 2}], []),
-                         (event["working_days"], event["waiting_on"], event["dismissed"]))
+        self.assertEqual(
+            (2, [{"name": "Alice", "username": "alice", "working_days": 2}], []),
+            (event["working_days"], event["waiting_on"], event["dismissed"]),
+        )
 
     def test_nothing_is_waited_on_while_the_ball_is_mine_or_just_handed_over(self):
         # Given
         c = change(current=patch_set(1, *GREEN_CI, created=self.friday))
         # When
-        found = [self.waiting(c, holders=[holder("alice", self.friday), holder(gerrit.USER, self.friday)]),
-                 self.waiting(c, holders=[holder("alice", self.tuesday - 3600)])]
+        found = [
+            self.waiting(c, holders=[holder("alice", self.friday), holder(gerrit.USER, self.friday)]),
+            self.waiting(c, holders=[holder("alice", self.tuesday - 3600)]),
+        ]
         # Then
         self.assertEqual([[], []], found)
 
@@ -671,8 +740,9 @@ class AttentionSetTest(unittest.TestCase):
         # When
         [event] = self.waiting(c, removed=removed)
         # Then
-        self.assertEqual(([], [{"name": "Alice", "username": "alice", "reason": "removed by alice"}]),
-                         (event["waiting_on"], event["dismissed"]))
+        self.assertEqual(
+            ([], [{"name": "Alice", "username": "alice", "reason": "removed by alice"}]), (event["waiting_on"], event["dismissed"])
+        )
 
     def test_without_the_attention_set_only_the_day_count_is_left(self):
         # Given
@@ -685,27 +755,39 @@ class AttentionSetTest(unittest.TestCase):
     def test_nudges_are_grouped_by_reviewer(self):
         # Given
         alice, bob = ({"name": n.title(), "username": n, "working_days": d} for n, d in (("alice", 3), ("bob", 2)))
-        waiting = [{"kind": "waiting_for_review", "change": 1, "waiting_on": [alice]},
-                   {"kind": "waiting_for_review", "change": 2, "waiting_on": [{**alice, "working_days": 5}, bob]},
-                   {"kind": "waiting_for_review", "change": 3, "waiting_on": None}, {"kind": "merge_conflict", "change": 4}]
+        waiting = [
+            {"kind": "waiting_for_review", "change": 1, "waiting_on": [alice]},
+            {"kind": "waiting_for_review", "change": 2, "waiting_on": [{**alice, "working_days": 5}, bob]},
+            {"kind": "waiting_for_review", "change": 3, "waiting_on": None},
+            {"kind": "merge_conflict", "change": 4},
+        ]
         # When
         found = events.nudges(waiting)
         # Then
-        self.assertEqual([{"reviewer": "Alice", "username": "alice", "changes": [1, 2], "working_days": 5},
-                          {"reviewer": "Bob", "username": "bob", "changes": [2], "working_days": 2}], found)
+        self.assertEqual(
+            [
+                {"reviewer": "Alice", "username": "alice", "changes": [1, 2], "working_days": 5},
+                {"reviewer": "Bob", "username": "bob", "changes": [2], "working_days": 2},
+            ],
+            found,
+        )
 
 
 class StatusRowsTest(unittest.TestCase):
     def test_open_threads_keep_an_approved_change_from_being_ready(self):
         # Given
         ps = patch_set(1, approval("Code-Review", 2), *GREEN_CI)
-        result = {**poll_result([change(1, current=ps), change(2, current=ps)], threads={1: [{"file": "A.kt"}]}),
-                  "outdated_parents": {2: {"parent": 9}}}
+        result = {
+            **poll_result([change(1, current=ps), change(2, current=ps)], threads={1: [{"file": "A.kt"}]}),
+            "outdated_parents": {2: {"parent": 9}},
+        }
         # When
         rows = events.status_rows(result, {}, {"I2": "/wt/2"}, NOW)
         # Then
-        self.assertEqual([(1, False, 1, None, None), (2, True, 0, 9, "/wt/2")],
-                         [(r["number"], r["ready"], r["threads"], r["outdated_parent"], r["worktree"]) for r in rows])
+        self.assertEqual(
+            [(1, False, 1, None, None), (2, True, 0, 9, "/wt/2")],
+            [(r["number"], r["ready"], r["threads"], r["outdated_parent"], r["worktree"]) for r in rows],
+        )
 
     def test_unknown_threads_are_none_and_block_ready(self):
         # Given
@@ -736,8 +818,14 @@ class NotificationsTest(unittest.TestCase):
         # When
         found = events.notifications(fresh)
         # Then
-        self.assertEqual([("1 has conflicts", "A.kt", "https://review/1"), ("2 has conflicts", "A.kt", "https://review/2"),
-                          ("3 has conflicts", "A.kt", "https://review/3")], found)
+        self.assertEqual(
+            [
+                ("1 has conflicts", "A.kt", "https://review/1"),
+                ("2 has conflicts", "A.kt", "https://review/2"),
+                ("3 has conflicts", "A.kt", "https://review/3"),
+            ],
+            found,
+        )
 
     def test_a_burst_becomes_a_single_summary_opening_the_dashboard(self):
         # Given
@@ -745,8 +833,16 @@ class NotificationsTest(unittest.TestCase):
         # When
         found = events.notifications(fresh)
         # Then
-        self.assertEqual([("4 Gerrit events", "1 has conflicts · 2 has conflicts · 3 has conflicts · 4 has conflicts",
-                           "https://gerrit.example.com/dashboard/self")], found)
+        self.assertEqual(
+            [
+                (
+                    "4 Gerrit events",
+                    "1 has conflicts · 2 has conflicts · 3 has conflicts · 4 has conflicts",
+                    "https://gerrit.example.com/dashboard/self",
+                )
+            ],
+            found,
+        )
 
     def test_waiting_for_review(self):
         # Given
@@ -758,8 +854,13 @@ class NotificationsTest(unittest.TestCase):
 
     def test_waiting_on_a_reviewer(self):
         # Given
-        event = {"kind": "waiting_for_review", "change": 1, "working_days": 3, "subject": "s",
-                 "waiting_on": [{"name": "Alice", "username": "alice", "working_days": 3}]}
+        event = {
+            "kind": "waiting_for_review",
+            "change": 1,
+            "working_days": 3,
+            "subject": "s",
+            "waiting_on": [{"name": "Alice", "username": "alice", "working_days": 3}],
+        }
         # When
         found = events.notification(event)
         # Then
@@ -768,14 +869,31 @@ class NotificationsTest(unittest.TestCase):
     def test_changes_waiting_on_the_same_reviewer_notify_once(self):
         # Given
         alice = [{"name": "Alice", "username": "alice", "working_days": 2}]
-        fresh = [{"kind": "waiting_for_review", "change": n, "working_days": 2, "subject": "s", "waiting_on": alice,
-                  "url": f"https://review/{n}"} for n in (1, 2, 3)] + [self.event(4)]
+        fresh = [
+            {
+                "kind": "waiting_for_review",
+                "change": n,
+                "working_days": 2,
+                "subject": "s",
+                "waiting_on": alice,
+                "url": f"https://review/{n}",
+            }
+            for n in (1, 2, 3)
+        ] + [self.event(4)]
         # When
         found = events.notifications(fresh)
         # Then
-        self.assertEqual([("3 CLs waiting on Alice", "1 · 2 · 3",
-                           "https://gerrit.example.com/q/owner%3Aself%20status%3Aopen%20attention%3Aalice"),
-                          ("4 has conflicts", "A.kt", "https://review/4")], found)
+        self.assertEqual(
+            [
+                (
+                    "3 CLs waiting on Alice",
+                    "1 · 2 · 3",
+                    "https://gerrit.example.com/q/owner%3Aself%20status%3Aopen%20attention%3Aalice",
+                ),
+                ("4 has conflicts", "A.kt", "https://review/4"),
+            ],
+            found,
+        )
 
 
 if __name__ == "__main__":

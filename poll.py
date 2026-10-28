@@ -1,4 +1,5 @@
 """One poll of Gerrit, zuul and the local repo: the raw state watch.py turns into events and the snapshot."""
+
 import concurrent.futures
 import subprocess
 import urllib.parse
@@ -16,13 +17,11 @@ DRAFTS_QUERY = "has:draft status:open"
 
 
 def fetch_changes():
-    return gerrit.query(QUERY, "--current-patch-set", "--comments", "--dependencies", "--all-reviewers",
-                        "--submit-records")
+    return gerrit.query(QUERY, "--current-patch-set", "--comments", "--dependencies", "--all-reviewers", "--submit-records")
 
 
 def fetch_reviews():
-    return gerrit.query(REVIEW_QUERY, "--current-patch-set", "--all-approvals", "--all-reviewers", "--comments",
-                        "--submit-records")
+    return gerrit.query(REVIEW_QUERY, "--current-patch-set", "--all-approvals", "--all-reviewers", "--comments", "--submit-records")
 
 
 def fetch_attention():
@@ -36,9 +35,13 @@ def my_attention_sets():
         rows = gerrit.rest_get(f"/changes/?q={urllib.parse.quote(QUERY)}&o=DETAILED_ACCOUNTS")
     except (OSError, ValueError, KeyError):
         return None
-    return {row["_number"]: {"holders": events.attention_entries(row.get("attention_set")),
-                             "removed": events.attention_entries(row.get("removed_from_attention_set"))}
-            for row in rows}
+    return {
+        row["_number"]: {
+            "holders": events.attention_entries(row.get("attention_set")),
+            "removed": events.attention_entries(row.get("removed_from_attention_set")),
+        }
+        for row in rows
+    }
 
 
 _threads_memo = PollMemo()
@@ -48,8 +51,7 @@ def open_threads(changes):
     """{change number: threads awaiting me}; the REST call only reruns when the change moves."""
     keys = {c["number"]: (c["number"], c.get("lastUpdated")) for c in changes}
     with _threads_memo.poll() as memo:
-        threads = memo.get_all(keys.values(),
-                               lambda key: events.awaiting_threads(gerrit.rest_get(f"/changes/{key[0]}/comments")))
+        threads = memo.get_all(keys.values(), lambda key: events.awaiting_threads(gerrit.rest_get(f"/changes/{key[0]}/comments")))
     return {number: threads[key] for number, key in keys.items()}
 
 
@@ -83,8 +85,10 @@ def parent_statuses(changes):
     if others:
         query = " OR ".join(f"change:{n}" for n in others)
         parents |= {row["number"]: row for row in gerrit.query(query, "--current-patch-set")}
-    return {number: (parent, parents.get(parent, {}).get("status"), parents.get(parent, {}).get("currentPatchSet", {}))
-            for number, parent in parent_of.items()}
+    return {
+        number: (parent, parents.get(parent, {}).get("status"), parents.get(parent, {}).get("currentPatchSet", {}))
+        for number, parent in parent_of.items()
+    }
 
 
 def outdated_parents(changes, statuses):
@@ -96,9 +100,13 @@ def outdated_parents(changes, statuses):
         base = repo.first_parent(change)
         new = (parent_patch_set or {}).get("revision")
         if status == "NEW" and base and new and base != new:
-            outdated[change["number"]] = {"parent": parent, "parent_patch_set": parent_patch_set.get("number"),
-                                          "parent_ref": parent_patch_set.get("ref"), "old_parent_sha": base,
-                                          "new_parent_sha": new}
+            outdated[change["number"]] = {
+                "parent": parent,
+                "parent_patch_set": parent_patch_set.get("number"),
+                "parent_ref": parent_patch_set.get("ref"),
+                "old_parent_sha": base,
+                "new_parent_sha": new,
+            }
     return outdated
 
 

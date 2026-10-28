@@ -42,8 +42,10 @@ class SkillDirTest(unittest.TestCase):
     def test_a_plugin_runs_the_version_installed_last(self):
         # Given
         old, new = self.version("1.4.0"), self.version("1.4.1")
-        self.install({"scope": "project", "installPath": str(old), "lastUpdated": "2026-10-02"},
-                     {"scope": "user", "installPath": str(new), "lastUpdated": "2026-10-01"})
+        self.install(
+            {"scope": "project", "installPath": str(old), "lastUpdated": "2026-10-02"},
+            {"scope": "user", "installPath": str(new), "lastUpdated": "2026-10-01"},
+        )
         # When
         found = launch.skill_dir(old)
         # Then

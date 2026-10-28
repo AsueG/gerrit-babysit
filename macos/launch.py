@@ -2,6 +2,7 @@
 """Stable entry point for launchd, SwiftBar and the applet, copied to ~/.config/gerrit-babysit by install.sh.
 
 Each plugin version lands in its own folder: this runs `<file> [args…]` from the one Claude Code installed last."""
+
 import json
 import os
 import pathlib
@@ -25,8 +26,7 @@ def skill_dir(fallback=None):
         return fallback
     # The user-scope install first, then the latest update.
     entries = sorted(entries, key=lambda e: (e.get("scope") == "user", e.get("lastUpdated", "")), reverse=True)
-    return next((path for e in entries if e.get("installPath") and (path := pathlib.Path(e["installPath"])).is_dir()),
-                fallback)
+    return next((path for e in entries if e.get("installPath") and (path := pathlib.Path(e["installPath"])).is_dir()), fallback)
 
 
 def main():

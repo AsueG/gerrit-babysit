@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import io
 import json
 import pathlib
@@ -27,14 +28,15 @@ class StopHookTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def run_hook(self, extra_processes=(), hook_input=None, hook_parent=HOOK):
-        table = {BABYSIT: (1, "claude"), OTHER: (1, "claude"), HOOK: (BABYSIT, "zsh"), 250: (OTHER, "zsh"),
-                 **dict(extra_processes)}
+        table = {BABYSIT: (1, "claude"), OTHER: (1, "claude"), HOOK: (BABYSIT, "zsh"), 250: (OTHER, "zsh"), **dict(extra_processes)}
         out = io.StringIO()
-        with mock.patch.object(stop_hook, "SESSION", self.session), \
-                mock.patch.object(stop_hook, "processes", return_value=table), \
-                mock.patch.object(stop_hook.os, "getppid", return_value=hook_parent), \
-                mock.patch("sys.stdin", io.StringIO(json.dumps(hook_input or {}))), \
-                mock.patch("sys.stdout", out):
+        with (
+            mock.patch.object(stop_hook, "SESSION", self.session),
+            mock.patch.object(stop_hook, "processes", return_value=table),
+            mock.patch.object(stop_hook.os, "getppid", return_value=hook_parent),
+            mock.patch("sys.stdin", io.StringIO(json.dumps(hook_input or {}))),
+            mock.patch("sys.stdout", out),
+        ):
             stop_hook.main()
         return json.loads(out.getvalue()) if out.getvalue() else None
 

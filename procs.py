@@ -1,4 +1,5 @@
 """The process tree, read with a single `ps`: finds the Claude session a watcher or a hook runs under."""
+
 import subprocess
 
 

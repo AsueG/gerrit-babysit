@@ -1,4 +1,5 @@
 """What to look at first when Gerrit or zuul stops answering: the VPN (GlobalProtect) and DNS."""
+
 import pathlib
 import socket
 import subprocess
@@ -41,5 +42,8 @@ def globalprotect_running():
 
 def checks():
     hosts = [gerrit.HOST] + ([urllib.parse.urlparse(ci.ZUUL_API).hostname] if ci.ZUUL_API else [])
-    return {"dns": {host: resolves(host) for host in dict.fromkeys(h for h in hosts if h)},
-            "vpn_tunnel": vpn_tunnel(), "globalprotect_running": globalprotect_running()}
+    return {
+        "dns": {host: resolves(host) for host in dict.fromkeys(h for h in hosts if h)},
+        "vpn_tunnel": vpn_tunnel(),
+        "globalprotect_running": globalprotect_running(),
+    }

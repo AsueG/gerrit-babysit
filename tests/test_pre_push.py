@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import contextlib
 import io
 import json
@@ -24,8 +25,11 @@ class PrePushTest(GitRepoTest):
         self.git("worktree", "add", "-q", str(self.worktree), "feature")
         self.status = pathlib.Path(self.tmp.name) / "status.json"
         self.write_status(self.worktree)
-        for patcher in (mock.patch.object(pre_push, "STATUS", self.status), mock.patch.object(pre_push, "REPO", self.repo),
-                        mock.patch.dict(pre_push.os.environ, {pre_push.OVERRIDE: ""})):
+        for patcher in (
+            mock.patch.object(pre_push, "STATUS", self.status),
+            mock.patch.object(pre_push, "REPO", self.repo),
+            mock.patch.dict(pre_push.os.environ, {pre_push.OVERRIDE: ""}),
+        ):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -33,15 +37,15 @@ class PrePushTest(GitRepoTest):
         self.status.write_text(json.dumps({"changes": [{"number": 7, "change_id": CHANGE_ID, "worktree": str(worktree)}]}))
 
     def in_worktree(self, *args):
-        return subprocess.run(["git", "-C", str(self.worktree), *args], capture_output=True, text=True,
-                              check=True).stdout.strip()
+        return subprocess.run(["git", "-C", str(self.worktree), *args], capture_output=True, text=True, check=True).stdout.strip()
 
     def amend(self, message):
         self.in_worktree("commit", "-q", "--amend", "--allow-empty", "-m", message)
 
     def push(self, cwd=None, remote_ref="refs/for/main"):
-        head = subprocess.run(["git", "-C", str(cwd or self.worktree), "rev-parse", "HEAD"], capture_output=True,
-                              text=True).stdout.strip()
+        head = subprocess.run(
+            ["git", "-C", str(cwd or self.worktree), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
         with contextlib.redirect_stderr(io.StringIO()) as err:
             code = pre_push.check([f"HEAD {head} {remote_ref} {'0' * 40}"], str(cwd or self.worktree))
         return code, err.getvalue()
@@ -78,8 +82,9 @@ class PrePushTest(GitRepoTest):
     def test_someone_elses_parent_keeps_its_own_change_id(self):
         # Given
         self.in_worktree("reset", "-q", "--hard", "main")
-        self.in_worktree("-c", "user.email=other@x", "commit", "-q", "--allow-empty", "-m",
-                         f"feat: their parent\n\nChange-Id: {OTHER_ID}")
+        self.in_worktree(
+            "-c", "user.email=other@x", "commit", "-q", "--allow-empty", "-m", f"feat: their parent\n\nChange-Id: {OTHER_ID}"
+        )
         self.in_worktree("commit", "-q", "--allow-empty", "-m", f"feat: mine\n\nChange-Id: {CHANGE_ID}")
         # When
         code, _ = self.push()
@@ -119,16 +124,20 @@ class PrePushTest(GitRepoTest):
         chained = hooks / "pre-push.local"
         chained.write_text(f"#!/bin/sh\ncat > {self.tmp.name}/chained-input\n")
         chained.chmod(0o755)
-        with mock.patch.object(pre_push, "LAUNCHER", pathlib.Path("/nonexistent")), \
-                contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(pre_push, "LAUNCHER", pathlib.Path("/nonexistent")), contextlib.redirect_stdout(io.StringIO()):
             pre_push.install()
         self.amend("feat: mine, no id")
         head = self.in_worktree("rev-parse", "HEAD")
         line = f"HEAD {head} refs/for/main {'0' * 40}\n"
         # When
-        run = subprocess.run([str(hooks / "pre-push"), "origin", "ssh://x"], input=line, capture_output=True, text=True,
-                             cwd=self.worktree, env={**pre_push.os.environ, "GERRIT_BABYSIT_CACHE": str(self.status.parent),
-                                                     "PATH": "/usr/bin:/bin"})
+        run = subprocess.run(
+            [str(hooks / "pre-push"), "origin", "ssh://x"],
+            input=line,
+            capture_output=True,
+            text=True,
+            cwd=self.worktree,
+            env={**pre_push.os.environ, "GERRIT_BABYSIT_CACHE": str(self.status.parent), "PATH": "/usr/bin:/bin"},
+        )
         # Then
         self.assertEqual(line, (pathlib.Path(self.tmp.name) / "chained-input").read_text())
         self.assertEqual(1, run.returncode, run.stderr)

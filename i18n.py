@@ -1,4 +1,5 @@
 """UI strings in English and French, in the macOS UI language unless config.json sets one."""
+
 import os
 import re
 import subprocess
@@ -9,8 +10,7 @@ from config import CONFIG
 def system_language():
     """macOS UI language (`AppleLanguages`), else $LANG."""
     try:
-        out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True, text=True,
-                             timeout=5).stdout
+        out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True, text=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
         out = ""
     match = re.search(r"[a-z]{2}", out) or re.match(r"[a-z]{2}", os.environ.get("LANG", ""))
@@ -54,9 +54,9 @@ MESSAGES = {
         "bar_threads": " · {count} thread(s) to handle",
         "bar_open_gerrit": "Open in Gerrit",
         "bar_investigate": "Investigate with Claude",
-        "bar_investigate_prompt": "Change {n} ({url}) — \"{subject}\" — is in state: {state}. Investigate why "
-                                  "(CI logs, reviewer comments, conflict), explain the cause and propose a fix. "
-                                  "Do not push or post anything on Gerrit without asking me.",
+        "bar_investigate_prompt": 'Change {n} ({url}) — "{subject}" — is in state: {state}. Investigate why '
+        "(CI logs, reviewer comments, conflict), explain the cause and propose a fix. "
+        "Do not push or post anything on Gerrit without asking me.",
         "bar_investigate_diagnosis": "The watcher already diagnosed the failed jobs, start from there: {jobs}.",
         "bar_resembles": "looks like #{change}, fixed by: {fix}",
         "bar_reviews_section": "To review ({count} ready)",
@@ -69,7 +69,7 @@ MESSAGES = {
         "bar_onto_parent": "parent {parent}",
         "bar_push_rebase_confirm": "Push change {n} (patch set {ps}) rebased onto {onto} as a new patch set?",
         "bar_push_rebase_worktree": "The worktree {path} stays on patch set {ps}: run `git review -d {n}` there "
-                                    "before editing it again.",
+        "before editing it again.",
         "bar_push_button": "Push",
         "bar_pushed": "{n} rebased and pushed",
         "bar_push_failed": "Push of {n} failed",
@@ -107,7 +107,7 @@ MESSAGES = {
         "bar_recheck": "Recheck ({detail})…",
         "bar_flaky_week": "{job} flaky {count}× this week",
         "bar_flaky_month": "{job} flaky {count}× in 30 days",
-        "bar_recheck_confirm": "Post \"{comment}\" on change {n} (patch set {ps})?",
+        "bar_recheck_confirm": 'Post "{comment}" on change {n} (patch set {ps})?',
         "bar_recheck_button": "Recheck",
         "bar_rechecked": "Recheck posted on {n}",
         "bar_recheck_failed": "Recheck of {n} failed",
@@ -185,8 +185,8 @@ MESSAGES = {
         "bar_open_gerrit": "Ouvrir sur Gerrit",
         "bar_investigate": "Investiguer avec Claude",
         "bar_investigate_prompt": "La CL {n} ({url}) — « {subject} » — est en état : {state}. Investigue pourquoi "
-                                  "(logs CI, commentaires des reviewers, conflit), explique la cause et propose un "
-                                  "correctif. Ne pousse rien et ne poste rien sur Gerrit sans me demander.",
+        "(logs CI, commentaires des reviewers, conflit), explique la cause et propose un "
+        "correctif. Ne pousse rien et ne poste rien sur Gerrit sans me demander.",
         "bar_investigate_diagnosis": "Le watcher a déjà diagnostiqué les jobs en échec, pars de là : {jobs}.",
         "bar_resembles": "ressemble à #{change}, corrigé par : {fix}",
         "bar_reviews_section": "À reviewer ({count} prête(s))",
@@ -199,7 +199,7 @@ MESSAGES = {
         "bar_onto_parent": "la parente {parent}",
         "bar_push_rebase_confirm": "Pousser la CL {n} (patch set {ps}) rebasée sur {onto} en nouveau patch set ?",
         "bar_push_rebase_worktree": "Le worktree {path} reste sur le patch set {ps} : lance `git review -d {n}` "
-                                    "dedans avant de le modifier.",
+        "dedans avant de le modifier.",
         "bar_push_button": "Pousser",
         "bar_pushed": "{n} rebasée et poussée",
         "bar_push_failed": "Échec du push de {n}",
@@ -227,8 +227,9 @@ MESSAGES = {
         "bar_gate_failed": "Échec du vote {label}+1 sur {n}",
         "bar_auto_submit": "Auto-submit…",
         "bar_auto_submit_on": "Auto-submit activé",
-        "bar_auto_submit_confirm": ("Ajouter le hashtag {tag} sur la CL {n} ? "
-                                    "Gerrit la merge dès que toutes les conditions sont remplies."),
+        "bar_auto_submit_confirm": (
+            "Ajouter le hashtag {tag} sur la CL {n} ? Gerrit la merge dès que toutes les conditions sont remplies."
+        ),
         "bar_claude_review": "Review Claude…",
         "bar_claude_review_on": "Review Claude demandée",
         "bar_claude_review_confirm": "Ajouter le hashtag {tag} sur la CL {n} ? Claude y poste une review.",

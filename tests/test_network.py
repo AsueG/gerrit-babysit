@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import unittest
 from unittest import mock
 
@@ -28,13 +29,14 @@ class ChecksTest(unittest.TestCase):
         # Given
         table = {1: (0, "/sbin/launchd"), 2: (1, "/Applications/GlobalProtect.app/Contents/Resources/PanGPS")}
         # When
-        with mock.patch.object(network.socket, "getaddrinfo", side_effect=OSError("nodename nor servname")), \
-                mock.patch.object(network, "vpn_tunnel", return_value=False), \
-                mock.patch.object(network.procs, "processes", return_value=table):
+        with (
+            mock.patch.object(network.socket, "getaddrinfo", side_effect=OSError("nodename nor servname")),
+            mock.patch.object(network, "vpn_tunnel", return_value=False),
+            mock.patch.object(network.procs, "processes", return_value=table),
+        ):
             found = network.checks()
         # Then
-        self.assertEqual({"vpn_tunnel": False, "globalprotect_running": True},
-                         {k: v for k, v in found.items() if k != "dns"})
+        self.assertEqual({"vpn_tunnel": False, "globalprotect_running": True}, {k: v for k, v in found.items() if k != "dns"})
         self.assertEqual({False}, set(found["dns"].values()))
         self.assertIn(network.gerrit.HOST, found["dns"])
 

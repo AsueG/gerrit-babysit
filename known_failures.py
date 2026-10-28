@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Memory of the CI failures diagnosed by hand: the next look-alike failure points at the change that fixed it."""
+
 import argparse
 import json
 import sys
@@ -28,8 +29,16 @@ def record(change, patch_set, job, log_url, cause, fix, now=None):
     if not lines:
         raise ValueError(f"nothing to fingerprint in {log_url}/job-output.txt")
     kept = {k: r for k, r in load().items() if now - r.get("recorded_at", 0) < RETENTION_S}
-    kept[f"{change}:{patch_set}:{job}"] = {"change": change, "patch_set": patch_set, "job": job, "cause": cause,
-                                           "fix": fix, "log_url": log_url, "recorded_at": now, "fingerprint": lines}
+    kept[f"{change}:{patch_set}:{job}"] = {
+        "change": change,
+        "patch_set": patch_set,
+        "job": job,
+        "cause": cause,
+        "fix": fix,
+        "log_url": log_url,
+        "recorded_at": now,
+        "fingerprint": lines,
+    }
     atomic_write(KNOWN, dict(sorted(kept.items())))
     return kept[f"{change}:{patch_set}:{job}"]
 
@@ -64,8 +73,11 @@ def main():
     elif args.command == "forget":
         return 0 if forget(args.change, args.patch_set, args.job) else 1
     else:
-        print(json.dumps({k: {f: v for f, v in r.items() if f != "fingerprint"} for k, r in load().items()},
-                         indent=1, ensure_ascii=False))
+        print(
+            json.dumps(
+                {k: {f: v for f, v in r.items() if f != "fingerprint"} for k, r in load().items()}, indent=1, ensure_ascii=False
+            )
+        )
     return 0
 
 

@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import concurrent.futures
 import io
 import json
@@ -14,6 +15,7 @@ os.environ.setdefault("GERRIT_BABYSIT_CACHE", tempfile.mkdtemp(prefix="gerrit-ba
 
 import ci  # noqa: E402
 import known_failures  # noqa: E402
+
 ZUUL = json.loads((FIXTURES / "zuul_messages.json").read_text())
 
 
@@ -46,16 +48,31 @@ class CiDiagnosisTest(unittest.TestCase):
 
     def test_gradle_failure_keeps_every_block_of_a_continued_build(self):
         # Given
-        log = "\n".join(f"2026-09-29 10:00:00.1 | main | {line}" for line in [
-            "FAILURE: Build completed with 2 failures.", "1: Task failed with an exception.", "* What went wrong:",
-            "Execution failed for task ':app:compileKotlin'.", "* Try:", "> Run with --stacktrace",
-            "2: Task failed with an exception.", "* What went wrong:", "Execution failed for task ':app:test'.",
-            "> There were failing tests.", "* Try:", "> Run with --scan", "BUILD FAILED in 1m"])
+        log = "\n".join(
+            f"2026-09-29 10:00:00.1 | main | {line}"
+            for line in [
+                "FAILURE: Build completed with 2 failures.",
+                "1: Task failed with an exception.",
+                "* What went wrong:",
+                "Execution failed for task ':app:compileKotlin'.",
+                "* Try:",
+                "> Run with --stacktrace",
+                "2: Task failed with an exception.",
+                "* What went wrong:",
+                "Execution failed for task ':app:test'.",
+                "> There were failing tests.",
+                "* Try:",
+                "> Run with --scan",
+                "BUILD FAILED in 1m",
+            ]
+        )
         # When
         failure = ci.gradle_failure(log)
         # Then
-        self.assertEqual("Execution failed for task ':app:compileKotlin'.\n\n"
-                         "Execution failed for task ':app:test'.\n> There were failing tests.", failure)
+        self.assertEqual(
+            "Execution failed for task ':app:compileKotlin'.\n\nExecution failed for task ':app:test'.\n> There were failing tests.",
+            failure,
+        )
 
     def test_gradle_failure_absent(self):
         # Given
@@ -67,10 +84,17 @@ class CiDiagnosisTest(unittest.TestCase):
 
     def test_log_tail_stops_before_the_failed_task_and_the_post_run(self):
         # Given
-        log = "\n".join([f"2026-09-29 10:00:0{i}.1 | main | step {i}" for i in range(3)]
-                        + ["2026-09-29 10:00:03.1 | main |", "2026-09-29 10:00:04.1 | main | npm ERR! code E401",
-                           "2026-09-29 10:00:05.1 | main | ERROR", "2026-09-29 10:00:06.1 | main | {",
-                           "2026-09-29 10:00:07.1 | PLAY RECAP", "2026-09-29 10:00:08.1 | post-run noise"])
+        log = "\n".join(
+            [f"2026-09-29 10:00:0{i}.1 | main | step {i}" for i in range(3)]
+            + [
+                "2026-09-29 10:00:03.1 | main |",
+                "2026-09-29 10:00:04.1 | main | npm ERR! code E401",
+                "2026-09-29 10:00:05.1 | main | ERROR",
+                "2026-09-29 10:00:06.1 | main | {",
+                "2026-09-29 10:00:07.1 | PLAY RECAP",
+                "2026-09-29 10:00:08.1 | post-run noise",
+            ]
+        )
         # When
         tail = ci.log_tail(log)
         # Then
@@ -89,8 +113,12 @@ class CiDiagnosisTest(unittest.TestCase):
         # Given
         event = {"change": 1, "message": "Patch Set 1: Verified-1\n\n- app-e2e https://z/build/abc : FAILURE"}
         build = {"log_url": "https://logs/x/", "artifacts": []}
-        answers = {"/build/": json.dumps(build), "job-output.txt": "2026-09-29 10:00:00.1 | main | emulator died",
-                   "zuul-file-comments.json": "{}", "/builds?": "[]"}
+        answers = {
+            "/build/": json.dumps(build),
+            "job-output.txt": "2026-09-29 10:00:00.1 | main | emulator died",
+            "zuul-file-comments.json": "{}",
+            "/builds?": "[]",
+        }
         get = lambda url: next(body for marker, body in answers.items() if marker in url)
         # When
         with mock.patch.object(ci, "http_get", side_effect=get):
@@ -100,20 +128,17 @@ class CiDiagnosisTest(unittest.TestCase):
 
     def test_known_failures_snippet_matches_diagnose_jobs_fingerprint(self):
         # Given: a Gradle failure and a plain log, so a recorded fix's fingerprint matches its next occurrence.
-        for log in [(FIXTURES / "job-output-unit-test.txt").read_text(),
-                    "2026-09-29 10:00:00.1 | main | emulator died"]:
+        for log in [(FIXTURES / "job-output-unit-test.txt").read_text(), "2026-09-29 10:00:00.1 | main | emulator died"]:
             event = {"change": 1, "message": "Patch Set 1: Verified-1\n\n- app-e2e https://z/build/abc : FAILURE"}
             build = {"log_url": "https://logs/x/", "artifacts": []}
-            answers = {"/build/": json.dumps(build), "job-output.txt": log,
-                       "zuul-file-comments.json": "{}", "/builds?": "[]"}
+            answers = {"/build/": json.dumps(build), "job-output.txt": log, "zuul-file-comments.json": "{}", "/builds?": "[]"}
             get = lambda url, answers=answers: next(body for marker, body in answers.items() if marker in url)
             # When
             with mock.patch.object(ci, "http_get", side_effect=get):
                 entry = diagnose_ci(event)[0]
                 snippet = known_failures.snippet_of("https://logs/x")
             # Then
-            self.assertEqual(ci.fingerprint(entry.get("failure") or entry.get("log_tail", "")),
-                             ci.fingerprint(snippet))
+            self.assertEqual(ci.fingerprint(entry.get("failure") or entry.get("log_tail", "")), ci.fingerprint(snippet))
 
     def test_fingerprints_ignore_ids_hashes_and_numbers(self):
         # Given
@@ -128,12 +153,35 @@ class CiDiagnosisTest(unittest.TestCase):
     def test_similar_failures_rank_look_alikes_and_drop_strangers(self):
         # Given
         snippet = "adb: device offline\nemulator-5554 disconnected\ninstrumentation run failed"
-        known = {"9:2:e2e": {"change": 9, "patch_set": 2, "job": "e2e", "cause": "emulator OOM", "fix": "bump heap",
-                             "recorded_at": 1, "fingerprint": ci.fingerprint(snippet + "\nretrying")},
-                 "8:1:e2e": {"change": 8, "patch_set": 1, "job": "e2e", "cause": "c", "fix": "f", "recorded_at": 1,
-                             "fingerprint": ci.fingerprint("adb: device offline\nnpm ERR! code E401\nlogin failed")},
-                 "7:1:e2e": {"change": 7, "patch_set": 1, "job": "e2e", "cause": "c", "fix": "f", "recorded_at": 1,
-                             "fingerprint": ci.fingerprint(snippet)}}
+        known = {
+            "9:2:e2e": {
+                "change": 9,
+                "patch_set": 2,
+                "job": "e2e",
+                "cause": "emulator OOM",
+                "fix": "bump heap",
+                "recorded_at": 1,
+                "fingerprint": ci.fingerprint(snippet + "\nretrying"),
+            },
+            "8:1:e2e": {
+                "change": 8,
+                "patch_set": 1,
+                "job": "e2e",
+                "cause": "c",
+                "fix": "f",
+                "recorded_at": 1,
+                "fingerprint": ci.fingerprint("adb: device offline\nnpm ERR! code E401\nlogin failed"),
+            },
+            "7:1:e2e": {
+                "change": 7,
+                "patch_set": 1,
+                "job": "e2e",
+                "cause": "c",
+                "fix": "f",
+                "recorded_at": 1,
+                "fingerprint": ci.fingerprint(snippet),
+            },
+        }
         # When
         found = ci.similar_failures(known, snippet)
         # Then
@@ -145,27 +193,36 @@ class CiDiagnosisTest(unittest.TestCase):
         event = {"change": 1, "message": "Patch Set 1: Verified-1\n\n- app-e2e https://z/build/abc : FAILURE"}
         build = {"log_url": "https://logs/x/", "artifacts": []}
         known = {"k": {"change": 9, "fingerprint": ci.fingerprint("emulator died\n> There were failing tests.")}}
-        logs = ["2026-09-29 10:00:00.1 | main | emulator died\n2026-09-29 10:00:00.1 | main | > There were failing tests.",
-                "2026-09-29 10:00:00.1 | main | * What went wrong:\n> There were failing tests.\n* Try:"]
+        logs = [
+            "2026-09-29 10:00:00.1 | main | emulator died\n2026-09-29 10:00:00.1 | main | > There were failing tests.",
+            "2026-09-29 10:00:00.1 | main | * What went wrong:\n> There were failing tests.\n* Try:",
+        ]
         found = []
         for log in logs:
-            answers = {"/build/": json.dumps(build), "job-output.txt": log, "zuul-file-comments.json": "{}",
-                       "/builds?": "[]"}
+            answers = {"/build/": json.dumps(build), "job-output.txt": log, "zuul-file-comments.json": "{}", "/builds?": "[]"}
             get = lambda url, answers=answers: next(body for marker, body in answers.items() if marker in url)
             # When
             with mock.patch.object(ci, "http_get", side_effect=get):
                 found.append(diagnose_ci(event, known=known)[0])
         # Then
-        self.assertEqual([("unknown", [9]), ("unit_tests", None)],
-                         [(e["category"], [m["change"] for m in e["resembles"]] if "resembles" in e else None)
-                          for e in found])
+        self.assertEqual(
+            [("unknown", [9]), ("unit_tests", None)],
+            [(e["category"], [m["change"] for m in e["resembles"]] if "resembles" in e else None) for e in found],
+        )
 
     def test_lint_errors_keep_only_error_level(self):
         # Given
         location = {"physicalLocation": {"artifactLocation": {"uri": "A.kt"}, "region": {"startLine": 3}}}
-        sarif = {"runs": [{"results": [
-            {"ruleId": "EndOfLifeRequired", "level": "error", "locations": [location], "message": {"text": "m"}},
-            {"ruleId": "DeprecatedCall", "locations": [location], "message": {"text": "w"}}]}]}
+        sarif = {
+            "runs": [
+                {
+                    "results": [
+                        {"ruleId": "EndOfLifeRequired", "level": "error", "locations": [location], "message": {"text": "m"}},
+                        {"ruleId": "DeprecatedCall", "locations": [location], "message": {"text": "w"}},
+                    ]
+                }
+            ]
+        }
         # When
         errors = ci.lint_errors(sarif)
         # Then
@@ -174,12 +231,22 @@ class CiDiagnosisTest(unittest.TestCase):
     def test_lint_errors_fall_back_to_the_rule_default_level(self):
         # Given
         location = {"physicalLocation": {"artifactLocation": {"uri": "A.kt"}, "region": {"startLine": 84}}}
-        rules = [{"id": "PriceFormat", "defaultConfiguration": {"level": "error"}},
-                 {"id": "Named", "defaultConfiguration": {"level": "note"}}]
-        sarif = {"runs": [{"tool": {"driver": {"rules": rules}}, "results": [
-            {"ruleId": "PriceFormat", "locations": [location], "message": {"text": "m"}},
-            {"ruleId": "Named", "locations": [location], "message": {"text": "n"}},
-            {"ruleId": "PriceFormat", "level": "warning", "locations": [location], "message": {"text": "w"}}]}]}
+        rules = [
+            {"id": "PriceFormat", "defaultConfiguration": {"level": "error"}},
+            {"id": "Named", "defaultConfiguration": {"level": "note"}},
+        ]
+        sarif = {
+            "runs": [
+                {
+                    "tool": {"driver": {"rules": rules}},
+                    "results": [
+                        {"ruleId": "PriceFormat", "locations": [location], "message": {"text": "m"}},
+                        {"ruleId": "Named", "locations": [location], "message": {"text": "n"}},
+                        {"ruleId": "PriceFormat", "level": "warning", "locations": [location], "message": {"text": "w"}},
+                    ],
+                }
+            ]
+        }
         # When
         errors = ci.lint_errors(sarif)
         # Then
@@ -187,8 +254,7 @@ class CiDiagnosisTest(unittest.TestCase):
 
     def test_lint_errors_keep_locationless_results(self):
         # Given
-        sarif = {"runs": [{"results": [
-            {"ruleId": "UnusedResources", "level": "error", "locations": [], "message": {"text": "m"}}]}]}
+        sarif = {"runs": [{"results": [{"ruleId": "UnusedResources", "level": "error", "locations": [], "message": {"text": "m"}}]}]}
         # When
         errors = ci.lint_errors(sarif)
         # Then
@@ -214,23 +280,29 @@ class CiDiagnosisTest(unittest.TestCase):
         # Given
         verdict = ZUUL["screenshots"]["message"]
         # When
-        categories = [ci.categorize(job, verdict, "FAILURE", "> Kotlin compiler: X", ())
-                      for job in ("app-unit-test", "app-build")]
+        categories = [ci.categorize(job, verdict, "FAILURE", "> Kotlin compiler: X", ()) for job in ("app-unit-test", "app-build")]
         # Then
         self.assertEqual(["screenshots", "compile"], categories)
 
     def test_file_comments_keep_errors_and_untagged_findings(self):
         # Given
-        payload = {"A.kt": [
-            {"message": "**🔴 Misleading**\n\n**Fix:** Replace with 200_00\n\n---\n> `PriceFormat` • `Error` • `C`\n> d",
-             "line": 84},
-            {"message": "**🔵 Named**\n\n---\n> `MissingNamedParameters` • `Note` • `Productivity`", "line": 26},
-            {"message": "detekt: too long", "line": 3}]}
+        payload = {
+            "A.kt": [
+                {
+                    "message": "**🔴 Misleading**\n\n**Fix:** Replace with 200_00\n\n---\n> `PriceFormat` • `Error` • `C`\n> d",
+                    "line": 84,
+                },
+                {"message": "**🔵 Named**\n\n---\n> `MissingNamedParameters` • `Note` • `Productivity`", "line": 26},
+                {"message": "detekt: too long", "line": 3},
+            ]
+        }
         # When
         found = ci.file_comments(payload)
         # Then
-        self.assertEqual([("PriceFormat", 84, "**🔴 Misleading**\n\n**Fix:** Replace with 200_00"), (None, 3, "detekt: too long")],
-                         [(c["rule"], c["line"], c["message"]) for c in found])
+        self.assertEqual(
+            [("PriceFormat", 84, "**🔴 Misleading**\n\n**Fix:** Replace with 200_00"), (None, 3, "detekt: too long")],
+            [(c["rule"], c["line"], c["message"]) for c in found],
+        )
 
     def test_missing_file_comments_are_not_an_error(self):
         # Given
@@ -246,10 +318,15 @@ class CiDiagnosisTest(unittest.TestCase):
         # Given
         event = {"change": 1, "message": ZUUL["failed"]["message"]}
         build = {"log_url": "https://logs/x/", "end_time": "2026-09-29T12:00:00", "artifacts": []}
-        history = [{"job_name": "app-build", "result": "FAILURE", "end_time": "2026-09-29T11:00:00",
-                    "ref": {"change": "2", "patchset": "1"}}]
-        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}",
-                   "/builds?": json.dumps(history)}
+        history = [
+            {"job_name": "app-build", "result": "FAILURE", "end_time": "2026-09-29T11:00:00", "ref": {"change": "2", "patchset": "1"}}
+        ]
+        answers = {
+            "/build/": json.dumps(build),
+            "job-output.txt": "",
+            "zuul-file-comments.json": "{}",
+            "/builds?": json.dumps(history),
+        }
         get = lambda url: next(body for marker, body in answers.items() if marker in url)
         # When
         with mock.patch.object(ci, "http_get", side_effect=get) as http:
@@ -262,8 +339,7 @@ class CiDiagnosisTest(unittest.TestCase):
         # Given
         event = {"change": 1, "message": "Patch Set 1: Verified-1\n\n- app&x https://z/build/abc : FAILURE"}
         build = {"log_url": "https://logs/x/", "artifacts": []}
-        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}",
-                   "/builds?": "[]"}
+        answers = {"/build/": json.dumps(build), "job-output.txt": "", "zuul-file-comments.json": "{}", "/builds?": "[]"}
         get = lambda url: next(body for marker, body in answers.items() if marker in url)
         # When
         with mock.patch.object(ci, "http_get", side_effect=get) as http:
@@ -291,10 +367,16 @@ class CiDiagnosisTest(unittest.TestCase):
         # Given
         def build(change_, ps, result, end):
             return {"result": result, "end_time": f"2026-09-29T{end}:00:00", "ref": {"change": change_, "patchset": ps}}
-        builds = [build(1, "1", "SUCCESS", "12"), build(1, "1", "FAILURE", "10"),
-                  build(2, "3", "FAILURE", "11"), build(2, "3", "FAILURE", "13"),
-                  build(3, "1", "FAILURE", "09"), build(4, "1", "SUCCESS", "09"),
-                  build(5, "1", "ABORTED", "09")]
+
+        builds = [
+            build(1, "1", "SUCCESS", "12"),
+            build(1, "1", "FAILURE", "10"),
+            build(2, "3", "FAILURE", "11"),
+            build(2, "3", "FAILURE", "13"),
+            build(3, "1", "FAILURE", "09"),
+            build(4, "1", "SUCCESS", "09"),
+            build(5, "1", "ABORTED", "09"),
+        ]
         # When
         history = ci.job_history(builds)
         # Then
@@ -342,13 +424,17 @@ class FlakyRunsTest(unittest.TestCase):
         # When
         found = dict(ci.flaky_runs({"number": 7, "comments": comments}))
         # Then
-        self.assertEqual({"7:1:unit:20": {"job": "unit", "change": 7, "patch_set": 1, "result": "FAILURE",
-                                          "failed_at": 10, "passed_at": 20}}, found)
+        self.assertEqual(
+            {"7:1:unit:20": {"job": "unit", "change": 7, "patch_set": 1, "result": "FAILURE", "failed_at": 10, "passed_at": 20}}, found
+        )
 
     def test_green_on_a_new_patch_set_was_a_fix_not_a_flake(self):
         # Given
-        comments = [verdict(1, 10, unit="FAILURE"), verdict(2, 20, unit="SUCCESS"),
-                    {"reviewer": {"username": "someone"}, "timestamp": 30, "message": "Patch Set 2:\n\n- unit x : SUCCESS"}]
+        comments = [
+            verdict(1, 10, unit="FAILURE"),
+            verdict(2, 20, unit="SUCCESS"),
+            {"reviewer": {"username": "someone"}, "timestamp": 30, "message": "Patch Set 2:\n\n- unit x : SUCCESS"},
+        ]
         # When
         found = list(ci.flaky_runs({"number": 7, "comments": comments}))
         # Then
@@ -357,8 +443,10 @@ class FlakyRunsTest(unittest.TestCase):
     def test_counts_over_the_week_and_the_month(self):
         # Given
         now = 100 * 86400
-        records = {str(i): {"job": job, "passed_at": now - days * 86400}
-                   for i, (job, days) in enumerate([("unit", 1), ("unit", 10), ("unit", 40), ("lint", 1)])}
+        records = {
+            str(i): {"job": job, "passed_at": now - days * 86400}
+            for i, (job, days) in enumerate([("unit", 1), ("unit", 10), ("unit", 40), ("lint", 1)])
+        }
         # When
         counts = ci.flaky_counts(records, ["unit", "e2e"], now)
         # Then
@@ -372,16 +460,28 @@ def periodic(result, end_time, log_url="https://logs/x/"):
 class BaseHealthTest(unittest.TestCase):
     def test_a_red_streak_starts_at_its_first_failure_after_the_last_green(self):
         # Given
-        builds = [periodic("FAILURE", "2026-09-29T12:00:00"), periodic("CANCELED", "2026-09-29T11:00:00"),
-                  periodic("FAILURE", "2026-09-29T10:00:00"), periodic("SUCCESS", "2026-09-29T09:00:00"),
-                  periodic("FAILURE", "2026-09-29T08:00:00")]
+        builds = [
+            periodic("FAILURE", "2026-09-29T12:00:00"),
+            periodic("CANCELED", "2026-09-29T11:00:00"),
+            periodic("FAILURE", "2026-09-29T10:00:00"),
+            periodic("SUCCESS", "2026-09-29T09:00:00"),
+            periodic("FAILURE", "2026-09-29T08:00:00"),
+        ]
         # When
         with mock.patch.object(ci, "http_get", return_value=json.dumps(builds)) as get:
             found = ci.base_health("main")
         # Then
-        self.assertEqual({"result": "FAILURE", "end_time": "2026-09-29T12:00:00", "log_url": "https://logs/x/",
-                          "red_since": "2026-09-29T10:00:00", "failures": 2, "last_green": "2026-09-29T09:00:00"},
-                         found)
+        self.assertEqual(
+            {
+                "result": "FAILURE",
+                "end_time": "2026-09-29T12:00:00",
+                "log_url": "https://logs/x/",
+                "red_since": "2026-09-29T10:00:00",
+                "failures": 2,
+                "last_green": "2026-09-29T09:00:00",
+            },
+            found,
+        )
         self.assertIn("pipeline=periodic", get.call_args.args[0])
         self.assertIn("branch=main", get.call_args.args[0])
         self.assertIn(f"limit={ci.BASE_HISTORY_LIMIT}", get.call_args.args[0])
@@ -406,8 +506,10 @@ class BaseHealthTest(unittest.TestCase):
 
     def test_no_build_or_offline(self):
         # Given
-        answers = [mock.patch.object(ci, "http_get", return_value="[]"),
-                   mock.patch.object(ci, "http_get", side_effect=OSError("offline"))]
+        answers = [
+            mock.patch.object(ci, "http_get", return_value="[]"),
+            mock.patch.object(ci, "http_get", side_effect=OSError("offline")),
+        ]
         # When
         found = []
         for answer in answers:
@@ -421,22 +523,39 @@ class BaseHealthTest(unittest.TestCase):
 class ZuulQueueTest(unittest.TestCase):
     def test_queued_patch_set_lists_waiting_and_running_jobs(self):
         # Given
-        item = {"enqueue_time": 1790687541256, "remaining_time": 343846, "jobs": [
-            {"name": "lint", "pipeline": "check-quality", "start_time": 1.0, "result": None},
-            {"name": "lava", "pipeline": "check-quality", "start_time": 1.0, "result": "SUCCESS"},
-            {"name": "unit", "pipeline": "check-quality", "start_time": None, "result": None}]}
+        item = {
+            "enqueue_time": 1790687541256,
+            "remaining_time": 343846,
+            "jobs": [
+                {"name": "lint", "pipeline": "check-quality", "start_time": 1.0, "result": None},
+                {"name": "lava", "pipeline": "check-quality", "start_time": 1.0, "result": "SUCCESS"},
+                {"name": "unit", "pipeline": "check-quality", "start_time": None, "result": None},
+            ],
+        }
         # When
         with mock.patch.object(ci, "http_get", return_value=json.dumps([item])) as get:
             queue = ci.zuul_queue(1, 2)
         # Then
-        self.assertEqual([{"pipeline": "check-quality", "enqueued_at": 1790687541, "remaining_s": 343,
-                           "jobs_waiting": ["unit"], "jobs_running": ["lint"]}], queue)
+        self.assertEqual(
+            [
+                {
+                    "pipeline": "check-quality",
+                    "enqueued_at": 1790687541,
+                    "remaining_s": 343,
+                    "jobs_waiting": ["unit"],
+                    "jobs_running": ["lint"],
+                }
+            ],
+            queue,
+        )
         self.assertTrue(get.call_args.args[0].endswith("/status/change/1,2"))
 
     def test_unknown_to_zuul_or_offline(self):
         # Given
-        answers = [mock.patch.object(ci, "http_get", return_value="[]"),
-                   mock.patch.object(ci, "http_get", side_effect=OSError("offline"))]
+        answers = [
+            mock.patch.object(ci, "http_get", return_value="[]"),
+            mock.patch.object(ci, "http_get", side_effect=OSError("offline")),
+        ]
         # When
         found = []
         for answer in answers:

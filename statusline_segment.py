@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Claude Code status line segment, e.g. `⎇ 2 · 1⚠`, read from the watcher snapshot (never hits Gerrit)."""
+
 import time
 
 import snapshot

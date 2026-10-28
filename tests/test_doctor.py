@@ -1,4 +1,5 @@
 """Run from the skill directory: python3 -m unittest"""
+
 import json
 import os
 import pathlib
@@ -24,8 +25,10 @@ class DoctorStateTest(GitRepoTest):
         self.addCleanup(tmp.cleanup)
         self.cache = pathlib.Path(tmp.name)
         (self.cache / "prereview").mkdir()
-        for patcher in (mock.patch.object(doctor, "CACHE", self.cache),
-                        mock.patch.object(snooze, "SNOOZE", self.cache / "snooze.json")):
+        for patcher in (
+            mock.patch.object(doctor, "CACHE", self.cache),
+            mock.patch.object(snooze, "SNOOZE", self.cache / "snooze.json"),
+        ):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -150,15 +153,17 @@ class MainTest(unittest.TestCase):
     def test_a_failing_ssh_exits_1_and_prunes_no_gerrit_backed_state(self):
         # Given
         out = []
-        with mock.patch.object(doctor, "check_ssh", return_value={"ok": False, "detail": "Connection refused"}), \
-                mock.patch.object(doctor, "check_http", return_value={"ok": True}), \
-                mock.patch.object(doctor, "open_patch_sets") as open_patch_sets, \
-                mock.patch.object(doctor, "prunable", return_value={"temp_files": []}) as prunable, \
-                mock.patch.object(doctor.network, "checks", return_value={"vpn_tunnel": False}), \
-                mock.patch.object(doctor, "versions", return_value={"match": True}), \
-                mock.patch.object(doctor.pre_push, "installed", return_value=False), \
-                mock.patch("sys.argv", ["doctor.py"]), \
-                mock.patch("builtins.print", side_effect=out.append):
+        with (
+            mock.patch.object(doctor, "check_ssh", return_value={"ok": False, "detail": "Connection refused"}),
+            mock.patch.object(doctor, "check_http", return_value={"ok": True}),
+            mock.patch.object(doctor, "open_patch_sets") as open_patch_sets,
+            mock.patch.object(doctor, "prunable", return_value={"temp_files": []}) as prunable,
+            mock.patch.object(doctor.network, "checks", return_value={"vpn_tunnel": False}),
+            mock.patch.object(doctor, "versions", return_value={"match": True}),
+            mock.patch.object(doctor.pre_push, "installed", return_value=False),
+            mock.patch("sys.argv", ["doctor.py"]),
+            mock.patch("builtins.print", side_effect=out.append),
+        ):
             # When
             code = doctor.main()
         # Then
@@ -189,14 +194,18 @@ class VersionsTest(unittest.TestCase):
         launcher = self.root / "launch.py"
         launcher.write_text(f"import pathlib\ndef skill_dir():\n    return pathlib.Path({str(self.install('1.7.0'))!r})\n")
         stub(plugins / "gerrit.30s.py", launcher)
-        with mock.patch.object(doctor, "LAUNCHER", launcher), mock.patch.object(doctor, "VERSION", "1.7.0"), \
-                mock.patch.object(doctor.subprocess, "run", return_value=mock.Mock(stdout=f"{plugins}\n")):
+        with (
+            mock.patch.object(doctor, "LAUNCHER", launcher),
+            mock.patch.object(doctor, "VERSION", "1.7.0"),
+            mock.patch.object(doctor.subprocess, "run", return_value=mock.Mock(stdout=f"{plugins}\n")),
+        ):
             return doctor.versions(daemon)
 
     def test_everything_on_the_installed_version_matches(self):
         # When
-        found = self.versions({"running": True, "version": "1.7.0"},
-                              lambda stub, launcher: stub.write_text(f"os.execv(sys.executable, ['{launcher}'])"))
+        found = self.versions(
+            {"running": True, "version": "1.7.0"}, lambda stub, launcher: stub.write_text(f"os.execv(sys.executable, ['{launcher}'])")
+        )
         # Then
         self.assertEqual({"doctor": "1.7.0", "plugin": "1.7.0", "daemon": "1.7.0", "swiftbar": "1.7.0", "match": True}, found)
 

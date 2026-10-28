@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Snoozed changes: their events are held back, not dropped, until a date, their next patch set or a green base."""
+
 import argparse
 import datetime
 import json
@@ -40,16 +41,17 @@ def active(patch_sets, now=None, entries=None, base_red=frozenset()):
 def red_base(changes, base_health):
     """Numbers of the changes whose target branch is red. An unreadable build (zuul down) counts as red: a snooze
     must not end on a network error."""
+
     def holds(health):
         return bool(health) and (health.get("result") == "FAILURE" or "error" in health)
+
     return {c["number"] for c in changes if holds(base_health.get(c.get("branch")))}
 
 
 def snapshot_active(status, now=None):
     """The snoozes holding for the rows of status.json."""
     changes = status.get("changes", [])
-    return active({c["number"]: c.get("patch_set") for c in changes}, now,
-                  base_red=red_base(changes, status.get("base_health", {})))
+    return active({c["number"]: c.get("patch_set") for c in changes}, now, base_red=red_base(changes, status.get("base_health", {})))
 
 
 def morning(day):
@@ -71,8 +73,7 @@ def set_snooze(number, until=None, patch_set=None, base_green=False, now=None):
     """Expired date snoozes are pruned on the way; patch-set and base ones need the snapshot, so they wait for a
     wake."""
     now = now or time.time()
-    entries = {n: e for n, e in load().items()
-               if e.get("patch_set") is not None or e.get("base_green") or now < e.get("until", 0)}
+    entries = {n: e for n, e in load().items() if e.get("patch_set") is not None or e.get("base_green") or now < e.get("until", 0)}
     if base_green:
         entries[int(number)] = {"base_green": True}
     else:
@@ -101,8 +102,9 @@ def main():
     group.add_argument("--until", metavar="YYYY-MM-DD", help="until that day's working hours start")
     group.add_argument("--days", type=int, help="until the start of the working day, that many days from now")
     group.add_argument("--patch-set", type=int, metavar="N", help="while the current patch set is still N")
-    group.add_argument("--base-green", action="store_true",
-                       help="while the target branch's periodic build is red (needs periodic_build)")
+    group.add_argument(
+        "--base-green", action="store_true", help="while the target branch's periodic build is red (needs periodic_build)"
+    )
     group.add_argument("--clear", action="store_true", help="wake the change up now")
     args = parser.parse_args()
     if args.change is None:

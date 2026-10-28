@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Claude Code Stop hook: in the /gerrit-babysit session, refuse to end a turn while no session watcher runs."""
+
 import importlib.util
 import json
 import os
@@ -28,17 +29,21 @@ def unread_report():
     events = inbox.get("report", {}).get("events", [])
     items = [f"{e['change']} {e['kind']}" if e.get("change") else e["kind"] for e in events[:INBOX_SUMMARY_MAX]]
     more = f" and {len(events) - INBOX_SUMMARY_MAX} more" if len(events) > INBOX_SUMMARY_MAX else ""
-    return (f" Its last report (id {inbox['id']}: {', '.join(items) or inbox['report'].get('status')}{more}) is not "
-            f"acknowledged yet: once handled, relaunch with `--ack {inbox['id']}`; without it the relaunch prints "
-            "that report again at once.")
+    return (
+        f" Its last report (id {inbox['id']}: {', '.join(items) or inbox['report'].get('status')}{more}) is not "
+        f"acknowledged yet: once handled, relaunch with `--ack {inbox['id']}`; without it the relaunch prints "
+        "that report again at once."
+    )
 
 
 def reason():
     """Points at the latest install: a session keeps the hook of the plugin version it started on."""
     watch_py = launch.skill_dir(WATCH_PY.parent) / "watch.py"
-    return (f"The gerrit-babysit watcher is no longer running in this session. Relaunch `python3 {watch_py}` "
-            f"with run_in_background before ending the turn.{unread_report()} If watching should stop (stop "
-            f"requested), delete {SESSION} instead.")
+    return (
+        f"The gerrit-babysit watcher is no longer running in this session. Relaunch `python3 {watch_py}` "
+        f"with run_in_background before ending the turn.{unread_report()} If watching should stop (stop "
+        f"requested), delete {SESSION} instead."
+    )
 
 
 def is_watch_py(path):
@@ -56,9 +61,12 @@ def is_session_watcher(command):
     args = command.split()
     if "--daemon" in args or "--pending" in args:
         return False
-    return any(is_watch_py(pathlib.Path(" ".join(args[start:end + 1])).expanduser().resolve())
-               for end, arg in enumerate(args) if arg.endswith("watch.py")
-               for start in range(end + 1))
+    return any(
+        is_watch_py(pathlib.Path(" ".join(args[start : end + 1])).expanduser().resolve())
+        for end, arg in enumerate(args)
+        if arg.endswith("watch.py")
+        for start in range(end + 1)
+    )
 
 
 def main():
@@ -70,8 +78,7 @@ def main():
     table = processes()
     if not babysit_pid or not descends_from(os.getppid(), babysit_pid, table):
         return 0
-    watching = any(is_session_watcher(command) and descends_from(pid, babysit_pid, table)
-                   for pid, (_, command) in table.items())
+    watching = any(is_session_watcher(command) and descends_from(pid, babysit_pid, table) for pid, (_, command) in table.items())
     if not watching:
         print(json.dumps({"decision": "block", "reason": reason()}, ensure_ascii=False))
     return 0

@@ -1,4 +1,5 @@
 """Builders shared by the test modules. Imported first: it points the config at the fixtures."""
+
 import json
 import os
 import pathlib
@@ -30,8 +31,14 @@ CHANGE_ID = "I" + "abc0" * 10
 
 
 def patch_set(number=1, *approvals, parents=("base",), created=NOW):
-    return {"number": number, "revision": f"rev{number}", "ref": f"refs/changes/01/1/{number}",
-            "parents": list(parents), "approvals": list(approvals), "createdOn": created}
+    return {
+        "number": number,
+        "revision": f"rev{number}",
+        "ref": f"refs/changes/01/1/{number}",
+        "parents": list(parents),
+        "approvals": list(approvals),
+        "createdOn": created,
+    }
 
 
 def message(author, text, timestamp=1):
@@ -39,24 +46,46 @@ def message(author, text, timestamp=1):
 
 
 def change(number=1, current=None, comments=(), **extra):
-    return {"number": number, "id": f"I{number}", "subject": f"subject {number}", "project": "app", "branch": "main",
-            "url": f"https://review/{number}", "status": "NEW", "currentPatchSet": current or patch_set(),
-            "comments": list(comments), **extra}
+    return {
+        "number": number,
+        "id": f"I{number}",
+        "subject": f"subject {number}",
+        "project": "app",
+        "branch": "main",
+        "url": f"https://review/{number}",
+        "status": "NEW",
+        "currentPatchSet": current or patch_set(),
+        "comments": list(comments),
+        **extra,
+    }
 
 
 GREEN_CI = [approval(label, 1, "zuul") for label in events.CI_LABELS]
 
 
 def poll_result(changes=(), reviews=(), conflicts=None, parents=None, stale=None, threads=None):
-    return {"changes": list(changes), "reviews": list(reviews), "conflicts": conflicts or {},
-            "parents": parents or {}, "stale_parents": stale or {}, "threads": threads or {}}
+    return {
+        "changes": list(changes),
+        "reviews": list(reviews),
+        "conflicts": conflicts or {},
+        "parents": parents or {},
+        "stale_parents": stale or {},
+        "threads": threads or {},
+    }
 
 
 def inline(id_, author, text, updated, reply_to=None, unresolved=True, line=3, ps=1):
     """A comment as REST `/changes/<n>/comments` returns it."""
-    return {"id": id_, "in_reply_to": reply_to, "unresolved": unresolved, "patch_set": ps, "line": line,
-            "updated": f"2026-09-29 10:00:{updated:02d}.000000000", "message": text,
-            "author": {"username": author, "name": author.title()}}
+    return {
+        "id": id_,
+        "in_reply_to": reply_to,
+        "unresolved": unresolved,
+        "patch_set": ps,
+        "line": line,
+        "updated": f"2026-09-29 10:00:{updated:02d}.000000000",
+        "message": text,
+        "author": {"username": author, "name": author.title()},
+    }
 
 
 def review(current=1, patch_sets=None, comments=(), reviewers=1, **extra):
@@ -68,8 +97,11 @@ def review(current=1, patch_sets=None, comments=(), reviewers=1, **extra):
 
 
 def zuul_verdict(ps, timestamp, result):
-    return message("zuul", f"Patch Set {ps}: Build{'+1' if result == 'SUCCESS' else '-1'}\n\n"
-                           f"- unit https://zuul/build/u{int(timestamp)} : {result}", timestamp)
+    return message(
+        "zuul",
+        f"Patch Set {ps}: Build{'+1' if result == 'SUCCESS' else '-1'}\n\n- unit https://zuul/build/u{int(timestamp)} : {result}",
+        timestamp,
+    )
 
 
 _template = None
@@ -101,8 +133,7 @@ class GitRepoTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def git(self, *args):
-        return subprocess.run(["git", "-C", str(self.repo), *args], capture_output=True, text=True,
-                              check=True).stdout.strip()
+        return subprocess.run(["git", "-C", str(self.repo), *args], capture_output=True, text=True, check=True).stdout.strip()
 
     def commit(self, subject, change_id=None):
         message = f"{subject}\n\nChange-Id: {change_id}" if change_id else subject
